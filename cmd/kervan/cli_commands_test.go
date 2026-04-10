@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -12,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kervanserver/kervan/internal/auth"
 	"github.com/kervanserver/kervan/internal/config"
 	"gopkg.in/yaml.v3"
 )
@@ -79,6 +81,195 @@ func TestRunUserLifecycleCommands(t *testing.T) {
 	}
 	if !strings.Contains(deleteOut.String(), "User deleted: alice") {
 		t.Fatalf("unexpected delete output: %s", deleteOut.String())
+	}
+}
+
+func TestRunUserImportCommandJSON(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "data")
+	configPath := writeTestConfig(t, func(cfg *config.Config) {
+		cfg.Server.DataDir = dataDir
+	})
+
+	importFile := filepath.Join(t.TempDir(), "users.json")
+	if err := os.WriteFile(importFile, []byte(`[
+  {"username":"alice","password":"StrongPass123!","email":"alice@example.com","home_dir":"/alice"},
+  {"username":"ops-admin","password":"AdminPass123!","role":"admin","home_dir":"/ops","enabled":false},
+  {"username":"","password":"MissingUser123!"},
+  {"username":"alice","password":"Duplicate123!"}
+]`), 0o600); err != nil {
+		t.Fatalf("write import file: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	if err := runUserImportCommand(&stdout, []string{
+		"--config", configPath,
+		"--file", importFile,
+		"--json",
+	}); err != nil {
+		t.Fatalf("runUserImportCommand: %v", err)
+	}
+
+	var report userImportReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("decode report: %v", err)
+	}
+	if report.Total != 4 || report.Created != 2 || report.Skipped != 2 {
+		t.Fatalf("unexpected import report: %#v", report)
+	}
+
+	ctx, err := openCLIContext(configPath)
+	if err != nil {
+		t.Fatalf("openCLIContext: %v", err)
+	}
+	defer ctx.close()
+
+	alice, err := ctx.repo.GetByUsername("alice")
+	if err != nil {
+		t.Fatalf("get alice: %v", err)
+	}
+	if alice == nil {
+		t.Fatal("expected alice to exist")
+	}
+	if alice.Email != "alice@example.com" || alice.HomeDir != "/alice" {
+		t.Fatalf("unexpected alice data: %#v", alice)
+	}
+	if !auth.VerifyPassword("StrongPass123!", alice.PasswordHash) {
+		t.Fatalf("expected alice password hash to match")
+	}
+
+	admin, err := ctx.repo.GetByUsername("ops-admin")
+	if err != nil {
+		t.Fatalf("get ops-admin: %v", err)
+	}
+	if admin == nil {
+		t.Fatal("expected ops-admin to exist")
+	}
+	if admin.Type != auth.UserTypeAdmin {
+		t.Fatalf("expected admin type, got %s", admin.Type)
+	}
+	if admin.Enabled {
+		t.Fatalf("expected imported admin to be disabled")
+	}
+}
+
+func TestRunUserImportCommandCSV(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "data")
+	configPath := writeTestConfig(t, func(cfg *config.Config) {
+		cfg.Server.DataDir = dataDir
+	})
+
+	importFile := filepath.Join(t.TempDir(), "users.csv")
+	if err := os.WriteFile(importFile, []byte(strings.Join([]string{
+		"username,password,email,role,home_dir,enabled",
+		"carol,StrongPass123!,carol@example.com,user,/carol,true",
+		"dave,,dave@example.com,admin,/dave,false",
+	}, "\n")), 0o600); err != nil {
+		t.Fatalf("write csv import file: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	if err := runUserImportCommand(&stdout, []string{
+		"--config", configPath,
+		"--file", importFile,
+	}); err != nil {
+		t.Fatalf("runUserImportCommand: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "Created: 1") || !strings.Contains(stdout.String(), "Skipped: 1") {
+		t.Fatalf("unexpected import output: %s", stdout.String())
+	}
+
+	ctx, err := openCLIContext(configPath)
+	if err != nil {
+		t.Fatalf("openCLIContext: %v", err)
+	}
+	defer ctx.close()
+
+	carol, err := ctx.repo.GetByUsername("carol")
+	if err != nil {
+		t.Fatalf("get carol: %v", err)
+	}
+	if carol == nil {
+		t.Fatal("expected carol to exist")
+	}
+	if !auth.VerifyPassword("StrongPass123!", carol.PasswordHash) {
+		t.Fatalf("expected carol password hash to match")
+	}
+
+	dave, err := ctx.repo.GetByUsername("dave")
+	if err != nil {
+		t.Fatalf("get dave: %v", err)
+	}
+	if dave != nil {
+		t.Fatalf("expected dave import to be skipped")
+	}
+}
+
+func TestRunUserExportCommand(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "data")
+	configPath := writeTestConfig(t, func(cfg *config.Config) {
+		cfg.Server.DataDir = dataDir
+	})
+
+	if err := runUserCreateCommand(io.Discard, []string{
+		"--config", configPath,
+		"--username", "alice",
+		"--password", "StrongPass123!",
+		"--home-dir", "/alice",
+	}); err != nil {
+		t.Fatalf("create alice: %v", err)
+	}
+	if err := runUserCreateCommand(io.Discard, []string{
+		"--config", configPath,
+		"--username", "ops-admin",
+		"--password", "AdminPass123!",
+		"--home-dir", "/ops",
+		"--admin",
+	}); err != nil {
+		t.Fatalf("create ops-admin: %v", err)
+	}
+
+	exportFile := filepath.Join(t.TempDir(), "users.json")
+	var summary bytes.Buffer
+	if err := runUserExportCommand(&summary, []string{
+		"--config", configPath,
+		"--format", "json",
+		"--output", exportFile,
+		"--include-password-hashes",
+	}); err != nil {
+		t.Fatalf("runUserExportCommand json: %v", err)
+	}
+	if !strings.Contains(summary.String(), "Exported 2 users") {
+		t.Fatalf("unexpected export summary: %s", summary.String())
+	}
+
+	rawJSON, err := os.ReadFile(exportFile)
+	if err != nil {
+		t.Fatalf("read export json: %v", err)
+	}
+	var exported []userExportRecord
+	if err := json.Unmarshal(rawJSON, &exported); err != nil {
+		t.Fatalf("decode exported json: %v", err)
+	}
+	if len(exported) != 2 {
+		t.Fatalf("expected 2 exported users, got %d", len(exported))
+	}
+	if exported[0].PasswordHash == "" || exported[1].PasswordHash == "" {
+		t.Fatalf("expected password hashes in export: %#v", exported)
+	}
+
+	var csvOut bytes.Buffer
+	if err := runUserExportCommand(&csvOut, []string{
+		"--config", configPath,
+		"--format", "csv",
+		"--output", "-",
+	}); err != nil {
+		t.Fatalf("runUserExportCommand csv: %v", err)
+	}
+	if !strings.Contains(csvOut.String(), "username,email,role,type,home_dir,enabled") {
+		t.Fatalf("expected csv header in output: %s", csvOut.String())
+	}
+	if !strings.Contains(csvOut.String(), "alice,,user,virtual,/alice,true") {
+		t.Fatalf("expected alice in csv output: %s", csvOut.String())
 	}
 }
 
