@@ -234,15 +234,19 @@ The management API is served from the same process as the WebUI (default
 | `GET`  | `/api/v1/files/{user}/stat`  | File or directory metadata                |
 | `POST` | `/api/v1/files/{user}/mkdir` | Create directory                          |
 | `POST` | `/api/v1/files/{user}/rename`| Rename or move file/directory            |
+| `POST` | `/api/v1/files/{user}/share` | Create file share link                    |
 | `POST` | `/api/v1/files/{user}/upload`| Upload file content                       |
 | `GET`  | `/api/v1/files/{user}/download` | Stream file download                   |
 | `DELETE` | `/api/v1/files/{user}/rm`  | Remove file or directory                  |
+| `GET`  | `/api/v1/share`              | List own share links                      |
+| `DELETE` | `/api/v1/share?token=…`    | Revoke a share link                       |
+| `GET`  | `/api/v1/share/{token}`      | Public share download                     |
 | `GET`  | `/api/v1/transfers`          | Transfer registry (active + recent)      |
 | `GET`  | `/api/v1/audit/events`       | Paginated audit events                    |
 | `GET`  | `/api/v1/ws?token=...&types=server,sessions,transfers,audit` | WebSocket live snapshots |
 
 The full `/api/v1/...` surface from Spec §8.4 still has planned gaps (groups,
-bulk import/export, share links, advanced server config editing).
+bulk import/export, advanced server config editing).
 Current reload endpoint validates and reloads config from disk, but runtime
 apply still requires restart for most subsystems.
 

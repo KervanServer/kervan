@@ -1,6 +1,7 @@
 import type {
   ApiFileEntry,
   ApiSession,
+  ApiShareLink,
   ApiKey,
   ApiTransfer,
   ApiUser,
@@ -140,6 +141,22 @@ export const api = {
       token,
       { method: "POST" },
     )
+  },
+
+  createShareLink(token: string, targetPath: string, ttl = "24h"): Promise<{ token: string; share_url: string; expires_at: string }> {
+    return request<{ token: string; share_url: string; expires_at: string }>(
+      `/api/v1/files/me/share?path=${encodeURIComponent(targetPath)}&ttl=${encodeURIComponent(ttl)}`,
+      token,
+      { method: "POST" },
+    )
+  },
+
+  shareLinks(token: string): Promise<{ links: ApiShareLink[] }> {
+    return request<{ links: ApiShareLink[] }>("/api/v1/share", token)
+  },
+
+  revokeShareLink(token: string, shareToken: string): Promise<void> {
+    return request<void>(`/api/v1/share?token=${encodeURIComponent(shareToken)}`, token, { method: "DELETE" })
   },
 
   upload(token: string, targetPath: string, file: File): Promise<void> {

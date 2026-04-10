@@ -65,3 +65,14 @@ export type ApiKey = {
   created_at: string
   last_used?: string
 }
+
+export type ApiShareLink = {
+  token: string
+  username: string
+  path: string
+  created_at: string
+  expires_at: string
+  download_count: number
+  max_downloads: number
+  share_url: string
+}

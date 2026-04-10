@@ -1,26 +1,30 @@
 ﻿import { useEffect, useMemo, useState } from "react"
-import { FolderPlus, Pencil, Upload } from "lucide-react"
+import { Copy, FolderPlus, Pencil, Share2, Upload } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { api } from "@/lib/api"
-import type { ApiFileEntry } from "@/lib/types"
+import type { ApiFileEntry, ApiShareLink } from "@/lib/types"
 
 type Props = { token: string }
 
 export function FilesPage({ token }: Props) {
   const [path, setPath] = useState("/")
   const [entries, setEntries] = useState<ApiFileEntry[]>([])
+  const [shareLinks, setShareLinks] = useState<ApiShareLink[]>([])
   const [error, setError] = useState<string | null>(null)
   const [folderName, setFolderName] = useState("")
+  const [shareLink, setShareLink] = useState<string | null>(null)
+  const [shareExpiresAt, setShareExpiresAt] = useState<string | null>(null)
 
   const load = async (targetPath = path) => {
     try {
-      const data = await api.files(token, targetPath)
-      setEntries(data.entries)
-      setPath(data.path)
+      const [filesData, linksData] = await Promise.all([api.files(token, targetPath), api.shareLinks(token)])
+      setEntries(filesData.entries)
+      setPath(filesData.path)
+      setShareLinks(linksData.links)
       setError(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to browse files")
@@ -72,6 +76,51 @@ export function FilesPage({ token }: Props) {
       await load(path)
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to delete entry")
+    }
+  }
+
+  const share = async (entry: ApiFileEntry) => {
+    if (entry.is_dir) {
+      setError("Directory sharing is not supported yet")
+      return
+    }
+    const ttl = window.prompt("Share TTL (e.g. 24h, 7d)", "24h")
+    if (ttl === null) {
+      return
+    }
+    try {
+      const response = await api.createShareLink(token, entry.path, ttl.trim() || "24h")
+      const full = response.share_url.startsWith("http") ? response.share_url : `${window.location.origin}${response.share_url}`
+      setShareLink(full)
+      setShareExpiresAt(response.expires_at)
+      await load(path)
+      setError(null)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to create share link")
+    }
+  }
+
+  const copyShareLink = async () => {
+    if (!shareLink) {
+      return
+    }
+    try {
+      await navigator.clipboard.writeText(shareLink)
+    } catch {
+      // no-op
+    }
+  }
+
+  const revokeShareLink = async (shareToken: string) => {
+    if (!window.confirm("Revoke this share link?")) {
+      return
+    }
+    try {
+      await api.revokeShareLink(token, shareToken)
+      await load(path)
+      setError(null)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to revoke share link")
     }
   }
 
@@ -142,6 +191,21 @@ export function FilesPage({ token }: Props) {
           </div>
 
           {error ? <p className="text-sm text-[var(--destructive)]">{error}</p> : null}
+          {shareLink ? (
+            <div className="rounded-xl border border-[var(--border)] bg-[var(--muted)] p-3">
+              <p className="text-sm font-medium">Share link created</p>
+              <p className="mt-1 break-all text-xs">{shareLink}</p>
+              <div className="mt-2 flex items-center gap-2">
+                <Button size="sm" variant="outline" onClick={() => void copyShareLink()}>
+                  <Copy className="mr-2 h-3.5 w-3.5" />
+                  Copy
+                </Button>
+                {shareExpiresAt ? (
+                  <span className="text-xs text-[var(--muted-foreground)]">Expires: {new Date(shareExpiresAt).toLocaleString()}</span>
+                ) : null}
+              </div>
+            </div>
+          ) : null}
 
           <Table>
             <TableHeader>
@@ -168,6 +232,12 @@ export function FilesPage({ token }: Props) {
                   <TableCell>{entry.size}</TableCell>
                   <TableCell className="text-right">
                     <div className="flex justify-end gap-2">
+                      {!entry.is_dir ? (
+                        <Button variant="outline" size="sm" onClick={() => void share(entry)}>
+                          <Share2 className="mr-2 h-3.5 w-3.5" />
+                          Share
+                        </Button>
+                      ) : null}
                       <Button variant="outline" size="sm" onClick={() => void rename(entry)}>
                         <Pencil className="mr-2 h-3.5 w-3.5" />
                         Rename
@@ -181,6 +251,41 @@ export function FilesPage({ token }: Props) {
               ))}
             </TableBody>
           </Table>
+
+          <div className="space-y-2 rounded-xl border border-[var(--border)] p-3">
+            <h3 className="text-sm font-medium">Share Links</h3>
+            {shareLinks.length === 0 ? (
+              <p className="text-xs text-[var(--muted-foreground)]">No active links yet.</p>
+            ) : (
+              <div className="space-y-2">
+                {shareLinks.map((link) => {
+                  const full = link.share_url.startsWith("http") ? link.share_url : `${window.location.origin}${link.share_url}`
+                  return (
+                    <div key={link.token} className="rounded-lg border border-[var(--border)] bg-[var(--muted)] p-2 text-xs">
+                      <p className="font-medium">{link.path}</p>
+                      <p className="mt-1 break-all">{full}</p>
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        <Button size="sm" variant="outline" onClick={() => void navigator.clipboard.writeText(full)}>
+                          <Copy className="mr-2 h-3.5 w-3.5" />
+                          Copy
+                        </Button>
+                        <Button size="sm" variant="destructive" onClick={() => void revokeShareLink(link.token)}>
+                          Revoke
+                        </Button>
+                        <span className="text-[var(--muted-foreground)]">
+                          Expires: {new Date(link.expires_at).toLocaleString()}
+                        </span>
+                        <span className="text-[var(--muted-foreground)]">
+                          Downloads: {link.download_count}
+                          {link.max_downloads > 0 ? `/${link.max_downloads}` : ""}
+                        </span>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </div>
         </CardContent>
       </Card>
     </section>

@@ -52,6 +52,7 @@ type Server struct {
 	configUpdate ConfigUpdateProvider
 	configCheck  ConfigValidateProvider
 	apiKeys      *apiKeyRepository
+	shareLinks   *shareLinkRepository
 	fsBuilder    UserFSBuilder
 	auditLogPath string
 	secret       []byte
@@ -105,6 +106,7 @@ func NewServer(
 		configUpdate: updateProvider,
 		configCheck:  validateProvider,
 		apiKeys:      newAPIKeyRepository(keyStore),
+		shareLinks:   newShareLinkRepository(keyStore),
 		fsBuilder:    fsBuilder,
 		auditLogPath: auditLogPath,
 		secret:       secret,
@@ -146,6 +148,10 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/api/files/upload", s.withAuth(s.handleFilesUpload))
 	mux.HandleFunc("/api/files/download", s.withAuth(s.handleFilesDownload))
 	mux.HandleFunc("/api/v1/files/", s.withAuth(s.handleFilesV1))
+	mux.HandleFunc("/api/share", s.withAuth(s.handleShareLinks))
+	mux.HandleFunc("/api/v1/share", s.withAuth(s.handleShareLinks))
+	mux.HandleFunc("/api/share/", s.handleShareDownload)
+	mux.HandleFunc("/api/v1/share/", s.handleShareDownload)
 
 	mux.HandleFunc("/api/audit", s.withAuth(s.handleAudit))
 	mux.HandleFunc("/api/v1/audit/events", s.withAuth(s.handleAudit))
@@ -667,6 +673,84 @@ func (s *Server) handleFilesRename(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleFilesShare(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if s.shareLinks == nil {
+		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "share links are not configured"})
+		return
+	}
+
+	var req struct {
+		Path         string `json:"path"`
+		TTL          string `json:"ttl"`
+		MaxDownloads int    `json:"max_downloads"`
+	}
+	if !isBodyEmpty(r) {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+			return
+		}
+	}
+
+	rawPath := strings.TrimSpace(r.URL.Query().Get("path"))
+	if rawPath == "" {
+		rawPath = strings.TrimSpace(req.Path)
+	}
+	if rawPath == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "path is required"})
+		return
+	}
+	p := normalizeAPIPath(rawPath)
+
+	rawTTL := strings.TrimSpace(r.URL.Query().Get("ttl"))
+	if rawTTL == "" {
+		rawTTL = strings.TrimSpace(req.TTL)
+	}
+	ttl, err := parseTTL(rawTTL, 24*time.Hour)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	maxDownloads := req.MaxDownloads
+	if q := strings.TrimSpace(r.URL.Query().Get("max_downloads")); q != "" {
+		maxDownloads = parseInt(q, req.MaxDownloads)
+	}
+
+	user := currentUser(r)
+	fsys, err := s.userFS(user)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	info, err := fsys.Stat(p)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if info.IsDir() {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "sharing directories is not supported"})
+		return
+	}
+
+	link, err := s.shareLinks.Create(user, p, ttl, maxDownloads)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"token":         link.Token,
+		"path":          link.Path,
+		"username":      link.Username,
+		"expires_at":    link.ExpiresAt,
+		"max_downloads": link.MaxDownloads,
+		"share_url":     "/api/v1/share/" + link.Token,
+	})
+}
+
 func (s *Server) handleFilesUpload(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -765,6 +849,8 @@ func (s *Server) handleFilesV1(w http.ResponseWriter, r *http.Request) {
 		s.handleFilesDelete(w, requestWithTarget)
 	case "rename":
 		s.handleFilesRename(w, requestWithTarget)
+	case "share":
+		s.handleFilesShare(w, requestWithTarget)
 	case "upload":
 		s.handleFilesUpload(w, requestWithTarget)
 	case "download":
@@ -803,6 +889,138 @@ func (s *Server) handleFilesStat(w http.ResponseWriter, r *http.Request) {
 		"mod_time":  info.ModTime().UTC(),
 		"timestamp": time.Now().UTC(),
 	})
+}
+
+func (s *Server) handleShareLinks(w http.ResponseWriter, r *http.Request) {
+	if s.shareLinks == nil {
+		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "share links are not configured"})
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		username := currentUser(r)
+		if s.isAdminUser(username) {
+			if requested := strings.TrimSpace(r.URL.Query().Get("user")); requested != "" {
+				username = requested
+			}
+		}
+		links, err := s.shareLinks.ListByUsername(username)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		out := make([]map[string]any, 0, len(links))
+		for _, item := range links {
+			if item == nil {
+				continue
+			}
+			out = append(out, map[string]any{
+				"token":          item.Token,
+				"username":       item.Username,
+				"path":           item.Path,
+				"created_at":     item.CreatedAt,
+				"expires_at":     item.ExpiresAt,
+				"download_count": item.DownloadCount,
+				"max_downloads":  item.MaxDownloads,
+				"share_url":      "/api/v1/share/" + item.Token,
+			})
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"links": out})
+	case http.MethodDelete:
+		token := strings.TrimSpace(r.URL.Query().Get("token"))
+		if token == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "token is required"})
+			return
+		}
+		link, err := s.shareLinks.Get(token)
+		if err != nil || link == nil {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "share link not found"})
+			return
+		}
+		requestUser := currentUser(r)
+		if !s.isAdminUser(requestUser) && !strings.EqualFold(requestUser, link.Username) {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
+			return
+		}
+		if err := s.shareLinks.Delete(token); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"revoked": true, "token": token})
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+	}
+}
+
+func (s *Server) handleShareDownload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if s.shareLinks == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "share link not found"})
+		return
+	}
+
+	token := ""
+	switch {
+	case strings.HasPrefix(r.URL.Path, "/api/v1/share/"):
+		token = strings.TrimPrefix(r.URL.Path, "/api/v1/share/")
+	case strings.HasPrefix(r.URL.Path, "/api/share/"):
+		token = strings.TrimPrefix(r.URL.Path, "/api/share/")
+	}
+	token = strings.Trim(strings.TrimSpace(token), "/")
+	if token == "" {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "share link not found"})
+		return
+	}
+
+	link, err := s.shareLinks.Get(token)
+	if err != nil || link == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "share link not found"})
+		return
+	}
+	now := time.Now().UTC()
+	if !link.ExpiresAt.IsZero() && now.After(link.ExpiresAt) {
+		writeJSON(w, http.StatusGone, map[string]string{"error": "share link expired"})
+		return
+	}
+	if link.MaxDownloads > 0 && link.DownloadCount >= link.MaxDownloads {
+		writeJSON(w, http.StatusGone, map[string]string{"error": "share link download limit exceeded"})
+		return
+	}
+
+	if s.fsBuilder == nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "filesystem builder is not available"})
+		return
+	}
+	fsys, err := s.fsBuilder(link.Username)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "unable to open shared file"})
+		return
+	}
+	f, err := fsys.Open(link.Path, os.O_RDONLY, 0)
+	if err != nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "shared file is not available"})
+		return
+	}
+	defer f.Close()
+
+	info, _ := f.Stat()
+	if info != nil && info.IsDir() {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "shared target is a directory"})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", `attachment; filename="`+path.Base(link.Path)+`"`)
+	if info != nil {
+		w.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
+	}
+	if _, err := io.Copy(w, f); err == nil {
+		_ = s.shareLinks.Increment(token)
+	}
 }
 
 func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
@@ -1036,6 +1254,26 @@ func parseInt(raw string, fallback int) int {
 		return fallback
 	}
 	return v
+}
+
+func parseTTL(raw string, fallback time.Duration) (time.Duration, error) {
+	trimmed := strings.TrimSpace(strings.ToLower(raw))
+	if trimmed == "" {
+		return fallback, nil
+	}
+	if strings.HasSuffix(trimmed, "d") {
+		daysRaw := strings.TrimSpace(strings.TrimSuffix(trimmed, "d"))
+		days, err := strconv.Atoi(daysRaw)
+		if err != nil || days <= 0 {
+			return 0, errors.New("invalid ttl format")
+		}
+		return time.Duration(days) * 24 * time.Hour, nil
+	}
+	out, err := time.ParseDuration(trimmed)
+	if err != nil || out <= 0 {
+		return 0, errors.New("invalid ttl format")
+	}
+	return out, nil
 }
 
 func formatFloat(v float64) string {
