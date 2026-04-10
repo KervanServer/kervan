@@ -14,6 +14,7 @@ type Session struct {
 	RemoteAddr string    `json:"remote_addr"`
 	StartedAt  time.Time `json:"started_at"`
 	LastSeenAt time.Time `json:"last_seen_at"`
+	terminate  func()
 }
 
 type Manager struct {
@@ -58,6 +59,48 @@ func (m *Manager) End(id string) {
 	m.mu.Lock()
 	delete(m.sessions, id)
 	m.mu.Unlock()
+}
+
+func (m *Manager) AttachTerminator(id string, fn func()) bool {
+	if fn == nil {
+		return false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	s, ok := m.sessions[id]
+	if !ok || s == nil {
+		return false
+	}
+	s.terminate = fn
+	return true
+}
+
+func (m *Manager) Get(id string) *Session {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	s, ok := m.sessions[id]
+	if !ok || s == nil {
+		return nil
+	}
+	dup := *s
+	dup.terminate = nil
+	return &dup
+}
+
+func (m *Manager) Kill(id string) bool {
+	m.mu.Lock()
+	s, ok := m.sessions[id]
+	if ok {
+		delete(m.sessions, id)
+	}
+	m.mu.Unlock()
+	if !ok || s == nil {
+		return false
+	}
+	if s.terminate != nil {
+		s.terminate()
+	}
+	return true
 }
 
 func (m *Manager) List() []*Session {

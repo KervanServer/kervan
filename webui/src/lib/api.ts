@@ -170,6 +170,10 @@ export const api = {
     return request<{ sessions: ApiSession[] }>("/api/v1/sessions", token)
   },
 
+  killSession(token: string, id: string): Promise<void> {
+    return request<void>(`/api/v1/sessions/${encodeURIComponent(id)}`, token, { method: "DELETE" })
+  },
+
   files(token: string, targetPath: string): Promise<{ path: string; entries: ApiFileEntry[] }> {
     return request<{ path: string; entries: ApiFileEntry[] }>(
       `/api/v1/files/me/ls?path=${encodeURIComponent(targetPath)}`,

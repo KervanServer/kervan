@@ -246,6 +246,9 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, implicitTLS bool
 			state.fs = userFS
 			state.cwd = "/"
 			state.session = s.sessions.Start(user.Username, "ftp", state.remoteAddr)
+			_ = s.sessions.AttachTerminator(state.session.ID, func() {
+				_ = conn.Close()
+			})
 			writeReply(conn, 230, "User logged in, proceed.")
 			s.emitAudit(audit.EventAuthSuccess, user.Username, "ftp", "", state.remoteAddr, "ok", "login success")
 		case "QUIT":

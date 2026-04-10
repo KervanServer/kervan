@@ -146,6 +146,8 @@ func (s *Server) Start(ctx context.Context) error {
 
 	mux.HandleFunc("/api/sessions", s.withAuth(s.handleSessions))
 	mux.HandleFunc("/api/v1/sessions", s.withAuth(s.handleSessions))
+	mux.HandleFunc("/api/sessions/", s.withAuth(s.handleSessionByID))
+	mux.HandleFunc("/api/v1/sessions/", s.withAuth(s.handleSessionByID))
 
 	mux.HandleFunc("/api/files/list", s.withAuth(s.handleFilesList))
 	mux.HandleFunc("/api/files/mkdir", s.withAuth(s.handleFilesMkdir))
@@ -487,6 +489,43 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"sessions": filterSessionsByUsername(s.sessions.List(), s.viewerScopedUsername(viewer, "")),
 	})
+}
+
+func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
+	id := strings.Trim(strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, "/api/v1/sessions/"), "/api/sessions/"), "/")
+	if id == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id is required"})
+		return
+	}
+	if s.sessions == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
+		return
+	}
+
+	sessionItem := s.sessions.Get(id)
+	if sessionItem == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
+		return
+	}
+
+	viewer := currentUser(r)
+	if !s.isAdminUser(viewer) && !strings.EqualFold(viewer, sessionItem.Username) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, sessionItem)
+	case http.MethodDelete:
+		if !s.sessions.Kill(id) {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"killed": true, "id": id})
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+	}
 }
 
 func (s *Server) handleAPIKeys(w http.ResponseWriter, r *http.Request) {

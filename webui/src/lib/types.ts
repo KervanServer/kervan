@@ -40,10 +40,8 @@ export type ApiSession = {
   username: string
   protocol: string
   remote_addr: string
-  connected_at: string
+  started_at: string
   last_seen_at: string
-  bytes_in: number
-  bytes_out: number
 }
 
 export type ApiFileEntry = {

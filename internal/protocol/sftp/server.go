@@ -176,6 +176,10 @@ func (s *Server) handleConn(cfg *ssh.ServerConfig, c net.Conn) {
 		return
 	}
 	sess := s.sessions.Start(username, "sftp", c.RemoteAddr().String())
+	_ = s.sessions.AttachTerminator(sess.ID, func() {
+		_ = c.Close()
+		_ = sshConn.Close()
+	})
 	defer s.sessions.End(sess.ID)
 	go ssh.DiscardRequests(reqs)
 

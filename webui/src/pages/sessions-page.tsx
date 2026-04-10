@@ -1,6 +1,7 @@
-﻿import { useEffect, useState } from "react"
+import { useEffect, useState } from "react"
 
 import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { api } from "@/lib/api"
@@ -12,6 +13,7 @@ type Props = { token: string }
 export function SessionsPage({ token }: Props) {
   const [sessions, setSessions] = useState<ApiSession[]>([])
   const [error, setError] = useState<string | null>(null)
+  const [killingId, setKillingId] = useState<string | null>(null)
   const { snapshot, connected, error: liveError } = useLiveSnapshot(token, ["sessions"])
 
   useEffect(() => {
@@ -43,6 +45,22 @@ export function SessionsPage({ token }: Props) {
     }
   }, [snapshot])
 
+  const onKill = async (session: ApiSession) => {
+    if (!window.confirm(`Disconnect session ${session.id}?`)) {
+      return
+    }
+    setKillingId(session.id)
+    try {
+      await api.killSession(token, session.id)
+      setSessions((current) => current.filter((item) => item.id !== session.id))
+      setError(null)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to disconnect session")
+    } finally {
+      setKillingId(null)
+    }
+  }
+
   return (
     <Card>
       <CardHeader>
@@ -58,7 +76,9 @@ export function SessionsPage({ token }: Props) {
               <TableHead>User</TableHead>
               <TableHead>Protocol</TableHead>
               <TableHead>Remote</TableHead>
-              <TableHead>Bytes In / Out</TableHead>
+              <TableHead>Started</TableHead>
+              <TableHead>Last Seen</TableHead>
+              <TableHead className="text-right">Action</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -69,8 +89,17 @@ export function SessionsPage({ token }: Props) {
                   <Badge variant="secondary">{session.protocol}</Badge>
                 </TableCell>
                 <TableCell>{session.remote_addr}</TableCell>
-                <TableCell>
-                  {session.bytes_in} / {session.bytes_out}
+                <TableCell>{new Date(session.started_at).toLocaleString()}</TableCell>
+                <TableCell>{new Date(session.last_seen_at).toLocaleString()}</TableCell>
+                <TableCell className="text-right">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={killingId === session.id}
+                    onClick={() => void onKill(session)}
+                  >
+                    {killingId === session.id ? "Disconnecting..." : "Disconnect"}
+                  </Button>
                 </TableCell>
               </TableRow>
             ))}
@@ -80,5 +109,3 @@ export function SessionsPage({ token }: Props) {
     </Card>
   )
 }
-
-

@@ -37,6 +37,57 @@ func TestHandleSessionsScopesNonAdminToOwnSessions(t *testing.T) {
 	}
 }
 
+func TestHandleSessionByIDDeniesOtherUsers(t *testing.T) {
+	srv := newAccessControlServer(t)
+	aliceSession := srv.sessions.Start("alice", "ftp", "10.0.0.1:1000")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions/"+aliceSession.ID, nil)
+	req.Header.Set("X-Auth-User", "bob")
+	rec := httptest.NewRecorder()
+
+	srv.handleSessionByID(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected forbidden, got %d", rec.Code)
+	}
+}
+
+func TestHandleSessionByIDKillAllowsOwnSession(t *testing.T) {
+	srv := newAccessControlServer(t)
+	aliceSession := srv.sessions.Start("alice", "ftp", "10.0.0.1:1000")
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/sessions/"+aliceSession.ID, nil)
+	req.Header.Set("X-Auth-User", "alice")
+	rec := httptest.NewRecorder()
+
+	srv.handleSessionByID(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := srv.sessions.Get(aliceSession.ID); got != nil {
+		t.Fatalf("expected session to be removed, got %#v", got)
+	}
+}
+
+func TestHandleSessionByIDKillAllowsAdmin(t *testing.T) {
+	srv := newAccessControlServer(t)
+	aliceSession := srv.sessions.Start("alice", "ftp", "10.0.0.1:1000")
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/sessions/"+aliceSession.ID, nil)
+	req.Header.Set("X-Auth-User", "admin")
+	rec := httptest.NewRecorder()
+
+	srv.handleSessionByID(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := srv.sessions.Get(aliceSession.ID); got != nil {
+		t.Fatalf("expected session to be removed, got %#v", got)
+	}
+}
+
 func TestHandleTransfersScopesNonAdminToOwnTransfers(t *testing.T) {
 	srv := newAccessControlServer(t)
 
