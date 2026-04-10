@@ -1,0 +1,105 @@
+server:
+  name: Kervan File Server
+  listen_address: 0.0.0.0
+  data_dir: ./data
+  log_level: info
+  log_format: json
+  graceful_shutdown_timeout: 30s
+
+ftp:
+  enabled: true
+  port: 2121
+  banner: Welcome to Kervan File Server
+  passive_port_range: 50000-50100
+  passive_ip: ""
+  active_mode: true
+  ascii_transfer: true
+  max_connections: 500
+  idle_timeout: 300s
+  transfer_timeout: 1h
+
+ftps:
+  enabled: false
+  mode: explicit
+  implicit_port: 990
+  min_tls_version: "1.2"
+  max_tls_version: "1.3"
+  cert_file: ""
+  key_file: ""
+  client_auth: none
+  client_ca_file: ""
+
+sftp:
+  enabled: true
+  port: 2222
+  host_key_dir: ./data/host_keys
+  host_key_algorithms:
+    - ed25519
+    - rsa
+  max_connections: 500
+  idle_timeout: 300s
+  max_packet_size: 32768
+  disable_shell: true
+
+scp:
+  enabled: true
+
+webui:
+  enabled: true
+  port: 8080
+  tls: false
+  bind_address: 0.0.0.0
+  admin_username: admin
+  admin_password: admin123!
+  session_timeout: 24h
+  totp_enabled: false
+  cors_origins:
+    - "*"
+
+auth:
+  default_provider: local
+  password_hash: argon2id
+  min_password_length: 8
+  require_special_char: false
+  ldap:
+    enabled: false
+    url: ""
+    bind_dn: ""
+    bind_password: ""
+    base_dn: ""
+
+storage:
+  default_backend: local
+  backends:
+    local:
+      type: local
+      options:
+        root: ./data/files
+
+quota:
+  enabled: true
+  default_max_storage: 1073741824
+  default_max_files: 100000
+  check_interval: 60s
+
+audit:
+  enabled: true
+  outputs:
+    - type: file
+      path: ./data/audit.jsonl
+
+security:
+  allowed_ips: []
+  denied_ips: []
+  brute_force:
+    enabled: true
+    max_attempts: 5
+    lockout_duration: 15m
+    ip_ban_threshold: 20
+    ip_ban_duration: 1h
+    whitelist_ips: []
+
+mcp:
+  enabled: true
+  transport: stdio
+
