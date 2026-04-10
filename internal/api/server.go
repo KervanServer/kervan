@@ -36,6 +36,7 @@ type StatusProvider func() map[string]any
 type UserFSBuilder func(username string) (vfs.FileSystem, error)
 type ServerConfigProvider func() map[string]any
 type ReloadProvider func() (map[string]any, error)
+type ConfigUpdateProvider func(patch map[string]any) (map[string]any, error)
 
 type Server struct {
 	cfg          Config
@@ -46,6 +47,7 @@ type Server struct {
 	status       StatusProvider
 	config       ServerConfigProvider
 	reload       ReloadProvider
+	configUpdate ConfigUpdateProvider
 	fsBuilder    UserFSBuilder
 	auditLogPath string
 	secret       []byte
@@ -66,6 +68,7 @@ func NewServer(
 	status StatusProvider,
 	configProvider ServerConfigProvider,
 	reloadProvider ReloadProvider,
+	updateProvider ConfigUpdateProvider,
 	fsBuilder UserFSBuilder,
 	auditLogPath string,
 	transfers *transfer.Manager,
@@ -93,6 +96,7 @@ func NewServer(
 		status:       status,
 		config:       configProvider,
 		reload:       reloadProvider,
+		configUpdate: updateProvider,
 		fsBuilder:    fsBuilder,
 		auditLogPath: auditLogPath,
 		secret:       secret,
@@ -110,6 +114,8 @@ func (s *Server) Start(ctx context.Context) error {
 
 	mux.HandleFunc("/api/login", s.handleLogin)
 	mux.HandleFunc("/api/v1/auth/login", s.handleLogin)
+	mux.HandleFunc("/api/ws", s.handleWebSocket)
+	mux.HandleFunc("/api/v1/ws", s.handleWebSocket)
 
 	mux.HandleFunc("/api/server/status", s.withAuth(s.handleServerStatus))
 	mux.HandleFunc("/api/v1/server/status", s.withAuth(s.handleServerStatus))
@@ -256,21 +262,42 @@ func (s *Server) handleServerStatus(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleServerConfig(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-		return
-	}
 	if !s.isAdminUser(currentUser(r)) {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "admin access required"})
 		return
 	}
-	if s.config == nil {
-		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "server config provider is not available"})
-		return
+	switch r.Method {
+	case http.MethodGet:
+		if s.config == nil {
+			writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "server config provider is not available"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"config": s.config(),
+		})
+	case http.MethodPut:
+		if s.configUpdate == nil {
+			writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "server config update handler is not available"})
+			return
+		}
+		var patch map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+			return
+		}
+		result, err := s.configUpdate(patch)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		if result == nil {
+			result = map[string]any{}
+		}
+		result["updated_at"] = time.Now().UTC()
+		writeJSON(w, http.StatusOK, result)
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"config": s.config(),
-	})
 }
 
 func (s *Server) handleServerReload(w http.ResponseWriter, r *http.Request) {
@@ -979,6 +1006,36 @@ func itoaAny(v any) string {
 		return ""
 	}
 	return string(b)
+}
+
+func (s *Server) readRecentAuditEvents(limit int) []map[string]any {
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 500 {
+		limit = 500
+	}
+	if s.auditLogPath == "" {
+		return []map[string]any{}
+	}
+	raw, err := os.ReadFile(s.auditLogPath)
+	if err != nil {
+		return []map[string]any{}
+	}
+	lines := strings.Split(string(raw), "\n")
+	events := make([]map[string]any, 0, limit)
+	for i := len(lines) - 1; i >= 0 && len(events) < limit; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		var evt map[string]any
+		if err := json.Unmarshal([]byte(line), &evt); err != nil {
+			continue
+		}
+		events = append(events, evt)
+	}
+	return events
 }
 
 func normalizeTargetUser(raw, current string) string {

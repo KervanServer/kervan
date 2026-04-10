@@ -4,6 +4,7 @@ import { Badge } from "@/components/ui/badge"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { api } from "@/lib/api"
+import { useLiveSnapshot } from "@/lib/use-live-snapshot"
 import type { ApiSession } from "@/lib/types"
 
 type Props = { token: string }
@@ -11,6 +12,7 @@ type Props = { token: string }
 export function SessionsPage({ token }: Props) {
   const [sessions, setSessions] = useState<ApiSession[]>([])
   const [error, setError] = useState<string | null>(null)
+  const { snapshot, connected, error: liveError } = useLiveSnapshot(token, ["sessions"])
 
   useEffect(() => {
     let cancelled = false
@@ -30,21 +32,26 @@ export function SessionsPage({ token }: Props) {
     }
 
     void load()
-    const id = window.setInterval(() => void load(), 5000)
     return () => {
       cancelled = true
-      window.clearInterval(id)
     }
   }, [token])
+
+  useEffect(() => {
+    if (snapshot?.sessions) {
+      setSessions(snapshot.sessions)
+    }
+  }, [snapshot])
 
   return (
     <Card>
       <CardHeader>
         <CardTitle>Live Sessions</CardTitle>
-        <CardDescription>Auto-refresh every 5 seconds.</CardDescription>
+        <CardDescription>{connected ? "Live updates are active." : "Fallback mode."}</CardDescription>
       </CardHeader>
       <CardContent>
         {error ? <p className="mb-3 text-sm text-[var(--destructive)]">{error}</p> : null}
+        {liveError ? <p className="mb-3 text-sm text-[var(--destructive)]">{liveError}</p> : null}
         <Table>
           <TableHeader>
             <TableRow>

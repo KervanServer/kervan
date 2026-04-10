@@ -58,6 +58,13 @@ export const api = {
     return request<{ config: Record<string, unknown> }>("/api/v1/server/config", token)
   },
 
+  updateServerConfig(token: string, patch: Record<string, unknown>): Promise<Record<string, unknown>> {
+    return request<Record<string, unknown>>("/api/v1/server/config", token, {
+      method: "PUT",
+      body: JSON.stringify(patch),
+    })
+  },
+
   reloadServer(token: string): Promise<Record<string, unknown>> {
     return request<Record<string, unknown>>("/api/v1/server/reload", token, { method: "POST" })
   },

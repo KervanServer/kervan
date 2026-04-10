@@ -220,6 +220,7 @@ The management API is served from the same process as the WebUI (default
 | `POST` | `/api/v1/auth/login`         | Exchange username + password for a token  |
 | `GET`  | `/api/v1/server/status`      | Server status snapshot                    |
 | `GET`  | `/api/v1/server/config`      | Redacted runtime config (admin)           |
+| `PUT`  | `/api/v1/server/config`      | Update config with JSON patch (admin)     |
 | `POST` | `/api/v1/server/reload`      | Validate/reload config file (admin)       |
 | `GET`  | `/api/v1/users`              | List users (admin)                        |
 | `POST` | `/api/v1/users`              | Create user (admin)                       |
@@ -233,11 +234,12 @@ The management API is served from the same process as the WebUI (default
 | `DELETE` | `/api/v1/files/{user}/rm`  | Remove file or directory                  |
 | `GET`  | `/api/v1/transfers`          | Transfer registry (active + recent)      |
 | `GET`  | `/api/v1/audit/events`       | Paginated audit events                    |
+| `GET`  | `/api/v1/ws?token=...&types=server,sessions,transfers,audit` | WebSocket live snapshots |
 
 The full `/api/v1/...` surface from Spec §8.4 still has planned gaps (groups,
-API keys, bulk import/export, WebSocket event stream, share links, server
-config editing). Current reload endpoint validates and reloads config from disk,
-but runtime apply still requires restart for most subsystems.
+API keys, bulk import/export, share links, advanced server config editing).
+Current reload endpoint validates and reloads config from disk, but runtime
+apply still requires restart for most subsystems.
 
 ---
 

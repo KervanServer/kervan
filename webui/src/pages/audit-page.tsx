@@ -3,6 +3,7 @@
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { api } from "@/lib/api"
+import { useLiveSnapshot } from "@/lib/use-live-snapshot"
 import type { AuditEvent } from "@/lib/types"
 
 type Props = { token: string }
@@ -10,6 +11,7 @@ type Props = { token: string }
 export function AuditPage({ token }: Props) {
   const [events, setEvents] = useState<AuditEvent[]>([])
   const [error, setError] = useState<string | null>(null)
+  const { snapshot, connected, error: liveError } = useLiveSnapshot(token, ["audit"])
 
   useEffect(() => {
     let cancelled = false
@@ -29,22 +31,28 @@ export function AuditPage({ token }: Props) {
     }
 
     void load()
-    const id = window.setInterval(() => void load(), 8000)
-
     return () => {
       cancelled = true
-      window.clearInterval(id)
     }
   }, [token])
+
+  useEffect(() => {
+    if (snapshot?.audit?.events) {
+      setEvents(snapshot.audit.events)
+    }
+  }, [snapshot])
 
   return (
     <Card>
       <CardHeader>
         <CardTitle>Audit Log</CardTitle>
-        <CardDescription>Structured events from server audit sink.</CardDescription>
+        <CardDescription>
+          Structured events from server audit sink. {connected ? "Live stream on." : "Fallback mode."}
+        </CardDescription>
       </CardHeader>
       <CardContent>
         {error ? <p className="mb-3 text-sm text-[var(--destructive)]">{error}</p> : null}
+        {liveError ? <p className="mb-3 text-sm text-[var(--destructive)]">{liveError}</p> : null}
         <Tabs defaultValue="timeline" className="w-full">
           <TabsList>
             <TabsTrigger value="timeline">Timeline</TabsTrigger>

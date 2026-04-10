@@ -27,6 +27,7 @@ import (
 	"github.com/kervanserver/kervan/internal/store"
 	"github.com/kervanserver/kervan/internal/transfer"
 	"github.com/kervanserver/kervan/internal/vfs"
+	"gopkg.in/yaml.v3"
 )
 
 type App struct {
@@ -183,7 +184,13 @@ func New(cfg *config.Config, configPath string, logger *slog.Logger) (*App, erro
 			}
 		},
 		func() map[string]any {
-			return redactConfig(cfg)
+			source := cfg
+			if configPath != "" {
+				if loaded, err := config.Load(configPath); err == nil {
+					source = loaded
+				}
+			}
+			return redactConfig(source)
 		},
 		func() (map[string]any, error) {
 			if configPath == "" {
@@ -202,6 +209,28 @@ func New(cfg *config.Config, configPath string, logger *slog.Logger) (*App, erro
 				"requires_restart": true,
 				"message":          "Configuration file is valid. Restart is required to apply runtime changes.",
 				"config":           redactConfig(nextCfg),
+			}, nil
+		},
+		func(patch map[string]any) (map[string]any, error) {
+			if configPath == "" {
+				return nil, errors.New("config path is not available")
+			}
+			currentCfg, err := config.Load(configPath)
+			if err != nil {
+				return nil, err
+			}
+			mergedCfg, err := mergeConfigPatch(currentCfg, patch)
+			if err != nil {
+				return nil, err
+			}
+			if err := writeConfigFile(configPath, mergedCfg); err != nil {
+				return nil, err
+			}
+			return map[string]any{
+				"updated":          true,
+				"requires_restart": true,
+				"message":          "Configuration updated on disk. Restart is required to apply changes.",
+				"config":           redactConfig(mergedCfg),
 			}, nil
 		},
 		func(username string) (vfs.FileSystem, error) {
@@ -419,4 +448,67 @@ func shouldRedact(key string) bool {
 		return true
 	}
 	return false
+}
+
+func mergeConfigPatch(base *config.Config, patch map[string]any) (*config.Config, error) {
+	if base == nil {
+		return nil, errors.New("base config is nil")
+	}
+	if patch == nil {
+		return nil, errors.New("patch is nil")
+	}
+
+	rawBase, err := json.Marshal(base)
+	if err != nil {
+		return nil, err
+	}
+	var baseMap map[string]any
+	if err := json.Unmarshal(rawBase, &baseMap); err != nil {
+		return nil, err
+	}
+
+	deepMergeMap(baseMap, patch)
+
+	rawMerged, err := json.Marshal(baseMap)
+	if err != nil {
+		return nil, err
+	}
+	merged := &config.Config{}
+	if err := json.Unmarshal(rawMerged, merged); err != nil {
+		return nil, err
+	}
+	if err := merged.Validate(); err != nil {
+		return nil, err
+	}
+	return merged, nil
+}
+
+func deepMergeMap(dst, src map[string]any) {
+	for k, v := range src {
+		existing, ok := dst[k]
+		if !ok {
+			dst[k] = v
+			continue
+		}
+
+		srcMap, srcIsMap := v.(map[string]any)
+		dstMap, dstIsMap := existing.(map[string]any)
+		if srcIsMap && dstIsMap {
+			deepMergeMap(dstMap, srcMap)
+			dst[k] = dstMap
+			continue
+		}
+		dst[k] = v
+	}
+}
+
+func writeConfigFile(path string, cfg *config.Config) error {
+	if strings.TrimSpace(path) == "" {
+		return errors.New("config path is empty")
+	}
+	raw, err := yaml.Marshal(cfg)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, raw, 0o600)
 }
