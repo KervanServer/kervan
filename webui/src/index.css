@@ -1,0 +1,92 @@
+@import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap");
+@import "tailwindcss";
+
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  --background: oklch(0.98 0.01 95);
+  --foreground: oklch(0.2 0.02 265);
+  --card: oklch(1 0 0 / 0.84);
+  --card-foreground: oklch(0.24 0.02 265);
+  --muted: oklch(0.95 0.02 95);
+  --muted-foreground: oklch(0.46 0.03 260);
+  --border: oklch(0.9 0.02 95);
+  --input: oklch(0.95 0.02 95);
+  --ring: oklch(0.63 0.2 242);
+  --primary: oklch(0.6 0.2 242);
+  --primary-foreground: oklch(0.98 0.01 95);
+  --secondary: oklch(0.82 0.09 86);
+  --secondary-foreground: oklch(0.2 0.02 265);
+  --accent: oklch(0.86 0.08 168);
+  --accent-foreground: oklch(0.2 0.02 265);
+  --destructive: oklch(0.62 0.23 26);
+  --destructive-foreground: oklch(0.99 0.01 95);
+}
+
+.dark {
+  --background: oklch(0.18 0.02 268);
+  --foreground: oklch(0.95 0.01 100);
+  --card: oklch(0.22 0.03 268 / 0.82);
+  --card-foreground: oklch(0.95 0.01 100);
+  --muted: oklch(0.26 0.03 270);
+  --muted-foreground: oklch(0.74 0.03 95);
+  --border: oklch(0.32 0.03 272);
+  --input: oklch(0.25 0.03 270);
+  --ring: oklch(0.71 0.17 234);
+  --primary: oklch(0.71 0.17 234);
+  --primary-foreground: oklch(0.15 0.02 268);
+  --secondary: oklch(0.7 0.13 85);
+  --secondary-foreground: oklch(0.18 0.02 268);
+  --accent: oklch(0.74 0.12 165);
+  --accent-foreground: oklch(0.18 0.02 268);
+  --destructive: oklch(0.68 0.2 24);
+  --destructive-foreground: oklch(0.99 0.01 100);
+}
+
+* {
+  border-color: var(--border);
+}
+
+html,
+body,
+#root {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  color: var(--foreground);
+  font-family: "Space Grotesk", system-ui, sans-serif;
+  background:
+    radial-gradient(circle at 15% 20%, color-mix(in oklab, var(--primary) 14%, transparent), transparent 42%),
+    radial-gradient(circle at 85% 10%, color-mix(in oklab, var(--accent) 12%, transparent), transparent 40%),
+    radial-gradient(circle at 50% 100%, color-mix(in oklab, var(--secondary) 16%, transparent), transparent 50%),
+    var(--background);
+}
+
+code,
+pre {
+  font-family: "JetBrains Mono", ui-monospace, monospace;
+}
+
+.glass {
+  background: var(--card);
+  backdrop-filter: blur(12px);
+  border: 1px solid color-mix(in oklab, var(--border) 88%, transparent);
+}
+
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.fade-up {
+  animation: fade-up 0.45s ease both;
+}
+

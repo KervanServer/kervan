@@ -6,14 +6,18 @@ LDFLAGS := -s -w \
   -X github.com/kervanserver/kervan/internal/build.Commit=$(COMMIT) \
   -X github.com/kervanserver/kervan/internal/build.Date=$(DATE)
 
-.PHONY: build test clean
+.PHONY: build webui test clean
 
-build:
+build: webui
 	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/kervan ./cmd/kervan
+
+webui:
+	cd webui && npm ci && npm run build
+	rm -rf internal/webui/dist
+	cp -r webui/dist internal/webui/dist
 
 test:
 	go test ./...
 
 clean:
 	rm -rf bin
-

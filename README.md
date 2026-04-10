@@ -29,8 +29,9 @@ marks aspirational items from the spec as *planned*.
   audit file (`data/audit.jsonl` by default).
 - **Config system** — YAML file + environment overlay + defaults + validation,
   with a `reload` hook wired for future hot-reload.
-- **Embedded WebUI** — minimal HTML/JS/CSS dashboard served from an embedded
-  `dist/` (pre-React placeholder for the Spec §8 React frontend).
+- **Embedded WebUI** — React 19 + Tailwind CSS 4.1 + shadcn/ui + lucide-react
+  admin panel with dark/light theme and responsive layout, embedded from
+  `internal/webui/dist`.
 - **REST API** — auth, users, sessions, files, transfers, audit, server status
   and metrics behind JWT-style bearer tokens.
 - **Zero external runtime deps** — only `golang.org/x/crypto` (SSH/Argon2id) and
@@ -103,6 +104,9 @@ go run ./cmd/kervan admin reset-password --username admin --password 'NewStrongP
 ```bash
 # Run the full test suite
 go test ./...
+
+# Build the React WebUI and copy it to internal/webui/dist
+./scripts/generate-webui.sh
 
 # Build a static binary
 go build -o kervan ./cmd/kervan
@@ -184,9 +188,9 @@ All protocols share a common VFS layer ([internal/vfs](internal/vfs)):
 ## Session & Transfer Tracking
 
 - `internal/session` tracks live sessions (protocol, client IP, bytes in/out,
-  last activity) and exposes them via `/api/sessions`.
+  last activity) and exposes them via `/api/v1/sessions`.
 - `internal/transfer` records in-flight and recent transfers with bytes and
-  duration; surfaced via `/api/transfers` and `/metrics`.
+  duration; surfaced via `/api/v1/transfers` and `/metrics`.
 - `/metrics` returns a Prometheus-style text exposition covering active
   sessions, transfer counters and server uptime.
 
@@ -197,7 +201,7 @@ All protocols share a common VFS layer ([internal/vfs](internal/vfs)):
 - Structured events (login, upload, download, delete, rename, mkdir, session
   open/close) are written as JSON lines to `data/audit.jsonl` by default.
 - Output path is configurable via `audit.outputs[].path` in `kervan.yaml`.
-- Events are also queryable over the REST API at `/api/audit`.
+- Events are also queryable over the REST API at `/api/v1/audit/events`.
 - *Planned outputs:* syslog (RFC 5424 / CEF), batched webhooks, CobaltDB-backed
   queryable store, HMAC-chained immutable mode (Spec §6).
 
@@ -207,38 +211,43 @@ All protocols share a common VFS layer ([internal/vfs](internal/vfs)):
 
 The management API is served from the same process as the WebUI (default
 `:8080`). All non-login endpoints require a bearer token obtained from
-`POST /api/login`.
+`POST /api/v1/auth/login`.
 
 | Method | Path                     | Description                                   |
 |--------|--------------------------|-----------------------------------------------|
 | `GET`  | `/health`                | Unauthenticated liveness + subsystem checks   |
 | `GET`  | `/metrics`               | Prometheus-style text metrics                 |
-| `POST` | `/api/login`             | Exchange username + password for a token      |
-| `GET`  | `/api/server/status`     | Server status snapshot                        |
-| `GET`  | `/api/users`             | List users (admin)                            |
-| `POST` | `/api/users`             | Create user (admin)                           |
-| `DELETE` | `/api/users?id=…`      | Delete user (admin)                           |
-| `GET`  | `/api/sessions`          | Active session list                           |
-| `GET`  | `/api/files/list`        | List a directory in a user's VFS              |
-| `POST` | `/api/files/mkdir`       | Create a directory                            |
-| `POST` | `/api/files/upload`      | Upload a file                                 |
-| `GET`  | `/api/files/download`    | Stream a file download                        |
-| `POST` | `/api/files/delete`      | Remove a file or directory                    |
-| `GET`  | `/api/transfers`         | Transfer registry (active + recent)           |
-| `GET`  | `/api/audit`             | Paginated audit events                        |
+| `POST` | `/api/v1/auth/login`         | Exchange username + password for a token  |
+| `GET`  | `/api/v1/server/status`      | Server status snapshot                    |
+| `GET`  | `/api/v1/users`              | List users (admin)                        |
+| `POST` | `/api/v1/users`              | Create user (admin)                       |
+| `DELETE` | `/api/v1/users?id=…`       | Delete user (admin)                       |
+| `GET`  | `/api/v1/sessions`           | Active session list                       |
+| `GET`  | `/api/v1/files/{user}/ls`    | List directory contents                   |
+| `GET`  | `/api/v1/files/{user}/stat`  | File or directory metadata                |
+| `POST` | `/api/v1/files/{user}/mkdir` | Create directory                          |
+| `POST` | `/api/v1/files/{user}/upload`| Upload file content                       |
+| `GET`  | `/api/v1/files/{user}/download` | Stream file download                   |
+| `DELETE` | `/api/v1/files/{user}/rm`  | Remove file or directory                  |
+| `GET`  | `/api/v1/transfers`          | Transfer registry (active + recent)      |
+| `GET`  | `/api/v1/audit/events`       | Paginated audit events                    |
 
-The full `/api/v1/...` surface from Spec §8.4 (groups, API keys, bulk
-import/export, WebSocket event stream, share links, server config editing, hot
-reload endpoint) is planned but not yet wired.
+The full `/api/v1/...` surface from Spec §8.4 still has planned gaps (groups,
+API keys, bulk import/export, WebSocket event stream, share links, server
+config editing, hot reload endpoint).
 
 ---
 
 ## WebUI
 
-The binary currently embeds a minimal HTML/CSS/JS dashboard
-([internal/webui/dist](internal/webui/dist)) that calls the REST API — useful
-for smoke testing auth, user management and the file browser. The React 19
-frontend described in Spec §8 will replace it.
+The binary embeds a React 19 WebUI from [webui](webui) at runtime through
+`embed.FS`:
+
+- Tailwind CSS 4.1 design system with shadcn/ui component patterns
+- lucide-react icon set
+- Dark/light theme switch via `next-themes`
+- Responsive navigation and page layouts for desktop/mobile
+- API-integrated pages: dashboard, users, sessions, files, transfers, audit
 
 ---
 

@@ -97,17 +97,34 @@ func (s *Server) Start(ctx context.Context) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/metrics", s.handleMetrics)
+	mux.HandleFunc("/api/v1/health", s.handleHealth)
+	mux.HandleFunc("/api/v1/metrics", s.handleMetrics)
+
 	mux.HandleFunc("/api/login", s.handleLogin)
+	mux.HandleFunc("/api/v1/auth/login", s.handleLogin)
+
 	mux.HandleFunc("/api/server/status", s.withAuth(s.handleServerStatus))
+	mux.HandleFunc("/api/v1/server/status", s.withAuth(s.handleServerStatus))
+
 	mux.HandleFunc("/api/users", s.withAuth(s.handleUsers))
+	mux.HandleFunc("/api/v1/users", s.withAuth(s.handleUsers))
+
 	mux.HandleFunc("/api/sessions", s.withAuth(s.handleSessions))
+	mux.HandleFunc("/api/v1/sessions", s.withAuth(s.handleSessions))
+
 	mux.HandleFunc("/api/files/list", s.withAuth(s.handleFilesList))
 	mux.HandleFunc("/api/files/mkdir", s.withAuth(s.handleFilesMkdir))
 	mux.HandleFunc("/api/files/delete", s.withAuth(s.handleFilesDelete))
 	mux.HandleFunc("/api/files/upload", s.withAuth(s.handleFilesUpload))
 	mux.HandleFunc("/api/files/download", s.withAuth(s.handleFilesDownload))
+	mux.HandleFunc("/api/v1/files/", s.withAuth(s.handleFilesV1))
+
 	mux.HandleFunc("/api/audit", s.withAuth(s.handleAudit))
+	mux.HandleFunc("/api/v1/audit/events", s.withAuth(s.handleAudit))
+
 	mux.HandleFunc("/api/transfers", s.withAuth(s.handleTransfers))
+	mux.HandleFunc("/api/v1/transfers", s.withAuth(s.handleTransfers))
+
 	if s.uiHandler != nil {
 		mux.Handle("/", s.uiHandler)
 	}
@@ -468,6 +485,85 @@ func (s *Server) handleFilesDownload(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.Copy(w, f)
 }
 
+func (s *Server) handleFilesV1(w http.ResponseWriter, r *http.Request) {
+	parts := strings.Split(strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/files/"), "/"), "/")
+	if len(parts) != 2 {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+		return
+	}
+
+	targetUser := normalizeTargetUser(parts[0], currentUser(r))
+	if targetUser == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "target user is required"})
+		return
+	}
+
+	allowed, err := s.canAccessTargetUser(currentUser(r), targetUser)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if !allowed {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
+		return
+	}
+
+	requestWithTarget := withTargetUser(r, targetUser)
+	action := parts[1]
+	switch action {
+	case "ls":
+		s.handleFilesList(w, requestWithTarget)
+	case "mkdir":
+		if requestWithTarget.Method != http.MethodPost {
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+			return
+		}
+		if isBodyEmpty(requestWithTarget) {
+			rewriteBodyWithPath(requestWithTarget, requestWithTarget.URL.Query().Get("path"))
+		}
+		s.handleFilesMkdir(w, requestWithTarget)
+	case "rm":
+		s.handleFilesDelete(w, requestWithTarget)
+	case "upload":
+		s.handleFilesUpload(w, requestWithTarget)
+	case "download":
+		s.handleFilesDownload(w, requestWithTarget)
+	case "stat":
+		s.handleFilesStat(w, requestWithTarget)
+	default:
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "not found"})
+	}
+}
+
+func (s *Server) handleFilesStat(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	user := currentUser(r)
+	fsys, err := s.userFS(user)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	p := normalizeAPIPath(r.URL.Query().Get("path"))
+	info, err := fsys.Stat(p)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"path":      p,
+		"name":      info.Name(),
+		"size":      info.Size(),
+		"mode":      info.Mode(),
+		"is_dir":    info.IsDir(),
+		"mod_time":  info.ModTime().UTC(),
+		"timestamp": time.Now().UTC(),
+	})
+}
+
 func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -505,7 +601,7 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 
 	lines := strings.Split(string(raw), "\n")
 	allEvents := make([]map[string]any, 0, len(lines))
-	for i := len(lines) - 1; i >= 0 && len(events) < limit; i-- {
+	for i := len(lines) - 1; i >= 0; i-- {
 		line := strings.TrimSpace(lines[i])
 		if line == "" {
 			continue
@@ -627,10 +723,10 @@ func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 func (s *Server) withMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if len(s.cfg.CORSOrigins) > 0 {
-			w.Header().Set("Access-Control-Allow-Origin", strings.Join(s.cfg.CORSOrigins, ","))
+			w.Header().Set("Access-Control-Allow-Origin", s.cfg.CORSOrigins[0])
 		}
 		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
 			return
@@ -703,4 +799,173 @@ func parseInt(raw string, fallback int) int {
 
 func formatFloat(v float64) string {
 	return strconv.FormatFloat(v, 'f', -1, 64)
+}
+
+func filterTransfers(
+	in []*transfer.Transfer,
+	username, protocol, status, direction, query string,
+) []*transfer.Transfer {
+	if len(in) == 0 {
+		return in
+	}
+	out := make([]*transfer.Transfer, 0, len(in))
+	for _, tr := range in {
+		if tr == nil {
+			continue
+		}
+		if username != "" && !strings.EqualFold(tr.Username, username) {
+			continue
+		}
+		if protocol != "" && !strings.EqualFold(tr.Protocol, protocol) {
+			continue
+		}
+		if status != "" && !strings.EqualFold(string(tr.Status), status) {
+			continue
+		}
+		if direction != "" && !strings.EqualFold(string(tr.Direction), direction) {
+			continue
+		}
+		if query != "" {
+			haystack := strings.ToLower(tr.Path + " " + tr.Username + " " + tr.Protocol)
+			if !strings.Contains(haystack, query) {
+				continue
+			}
+		}
+		out = append(out, tr)
+	}
+	return out
+}
+
+func paginateTransfers(in []*transfer.Transfer, page, size int) ([]*transfer.Transfer, int) {
+	total := len(in)
+	if total == 0 {
+		return []*transfer.Transfer{}, 0
+	}
+	start := (page - 1) * size
+	if start >= total {
+		return []*transfer.Transfer{}, total
+	}
+	end := start + size
+	if end > total {
+		end = total
+	}
+	return in[start:end], total
+}
+
+func filterAuditEvents(
+	events []map[string]any,
+	username, protocol, eventType, status, query string,
+) []map[string]any {
+	if len(events) == 0 {
+		return events
+	}
+	out := make([]map[string]any, 0, len(events))
+	for _, evt := range events {
+		u := strField(evt, "username")
+		p := strField(evt, "protocol")
+		t := strField(evt, "type")
+		s := strField(evt, "status")
+		msg := strField(evt, "message")
+		pathVal := strField(evt, "path")
+
+		if username != "" && !strings.EqualFold(u, username) {
+			continue
+		}
+		if protocol != "" && !strings.EqualFold(p, protocol) {
+			continue
+		}
+		if eventType != "" && !strings.EqualFold(t, eventType) {
+			continue
+		}
+		if status != "" && !strings.EqualFold(s, status) {
+			continue
+		}
+		if query != "" {
+			hay := strings.ToLower(strings.Join([]string{u, p, t, s, msg, pathVal}, " "))
+			if !strings.Contains(hay, query) {
+				continue
+			}
+		}
+		out = append(out, evt)
+	}
+	return out
+}
+
+func paginateAudit(in []map[string]any, page, size int) ([]map[string]any, int) {
+	total := len(in)
+	if total == 0 {
+		return []map[string]any{}, 0
+	}
+	start := (page - 1) * size
+	if start >= total {
+		return []map[string]any{}, total
+	}
+	end := start + size
+	if end > total {
+		end = total
+	}
+	return in[start:end], total
+}
+
+func strField(m map[string]any, key string) string {
+	v, ok := m[key]
+	if !ok || v == nil {
+		return ""
+	}
+	switch t := v.(type) {
+	case string:
+		return t
+	default:
+		return strings.TrimSpace(strings.ReplaceAll(strings.ReplaceAll(strings.TrimSpace(itoaAny(t)), "\n", " "), "\r", " "))
+	}
+}
+
+func itoaAny(v any) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return ""
+	}
+	return string(b)
+}
+
+func normalizeTargetUser(raw, current string) string {
+	name := strings.TrimSpace(raw)
+	if name == "" || strings.EqualFold(name, "me") || strings.EqualFold(name, "self") {
+		return current
+	}
+	return name
+}
+
+func withTargetUser(r *http.Request, username string) *http.Request {
+	clone := r.Clone(r.Context())
+	clone.Header.Set("X-Auth-User", username)
+	return clone
+}
+
+func isBodyEmpty(r *http.Request) bool {
+	return r.Body == nil || r.ContentLength == 0
+}
+
+func rewriteBodyWithPath(r *http.Request, p string) {
+	payload, _ := json.Marshal(map[string]string{"path": p})
+	r.Body = io.NopCloser(strings.NewReader(string(payload)))
+	r.ContentLength = int64(len(payload))
+	r.Header.Set("Content-Type", "application/json")
+}
+
+func (s *Server) canAccessTargetUser(actorUsername, targetUsername string) (bool, error) {
+	if actorUsername == "" || targetUsername == "" {
+		return false, nil
+	}
+	if strings.EqualFold(actorUsername, targetUsername) {
+		return true, nil
+	}
+	actor, err := s.users.GetByUsername(actorUsername)
+	if err != nil {
+		return false, err
+	}
+	if actor == nil {
+		return false, nil
+	}
+	return actor.Type == auth.UserTypeAdmin, nil
 }

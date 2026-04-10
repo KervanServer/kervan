@@ -1,0 +1,7 @@
+bin/
+*.db
+*.log
+kervan.yaml
+
+webui/node_modules/
+webui/dist/
