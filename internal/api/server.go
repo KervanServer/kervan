@@ -54,6 +54,7 @@ type Server struct {
 	apiKeys      *apiKeyRepository
 	shareLinks   *shareLinkRepository
 	fsBuilder    UserFSBuilder
+	store        *store.Store
 	auditLogPath string
 	secret       []byte
 	transfers    *transfer.Manager
@@ -108,6 +109,7 @@ func NewServer(
 		apiKeys:      newAPIKeyRepository(keyStore),
 		shareLinks:   newShareLinkRepository(keyStore),
 		fsBuilder:    fsBuilder,
+		store:        keyStore,
 		auditLogPath: auditLogPath,
 		secret:       secret,
 		transfers:    transfers,
@@ -203,35 +205,7 @@ func (s *Server) Stop(ctx context.Context) error {
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
-	checks := map[string]any{
-		"auth_engine":     s.auth != nil,
-		"user_repository": s.users != nil,
-		"session_manager": s.sessions != nil,
-		"fs_builder":      s.fsBuilder != nil,
-		"audit_log_path":  s.auditLogPath != "",
-	}
-	ok := true
-	for _, v := range checks {
-		if b, isBool := v.(bool); isBool && !b {
-			ok = false
-		}
-	}
-	status := "ok"
-	if !ok {
-		status = "degraded"
-	}
-	resp := map[string]any{
-		"status": status,
-		"time":   time.Now().UTC(),
-		"checks": checks,
-	}
-	if s.status != nil {
-		resp["server"] = s.status()
-	}
-	if s.transfers != nil {
-		resp["transfers"] = s.transfers.Stats()
-	}
-	writeJSON(w, http.StatusOK, resp)
+	writeJSON(w, http.StatusOK, s.buildHealthResponse())
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
@@ -1131,35 +1105,7 @@ func (s *Server) handleTransfers(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4")
-
-	stats := map[string]float64{}
-	if s.transfers != nil {
-		t := s.transfers.Stats()
-		stats["kervan_transfers_active"] = float64(t.ActiveTransfers)
-		stats["kervan_transfers_total"] = float64(t.TotalTransfers)
-		stats["kervan_transfers_completed_total"] = float64(t.Completed)
-		stats["kervan_transfers_failed_total"] = float64(t.Failed)
-		stats["kervan_transfer_upload_bytes_total"] = float64(t.UploadBytes)
-		stats["kervan_transfer_download_bytes_total"] = float64(t.DownloadBytes)
-	}
-	if s.sessions != nil {
-		stats["kervan_sessions_active"] = float64(len(s.sessions.List()))
-	}
-	if s.users != nil {
-		users, err := s.users.List()
-		if err == nil {
-			stats["kervan_users_total"] = float64(len(users))
-		}
-	}
-
-	keys := make([]string, 0, len(stats))
-	for k := range stats {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		_, _ = io.WriteString(w, k+" "+formatFloat(stats[k])+"\n")
-	}
+	s.writeMetrics(w)
 }
 
 func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {

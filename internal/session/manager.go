@@ -19,10 +19,14 @@ type Session struct {
 type Manager struct {
 	mu       sync.RWMutex
 	sessions map[string]*Session
+	totals   map[string]int64
 }
 
 func NewManager() *Manager {
-	return &Manager{sessions: make(map[string]*Session)}
+	return &Manager{
+		sessions: make(map[string]*Session),
+		totals:   make(map[string]int64),
+	}
 }
 
 func (m *Manager) Start(username, protocol, remoteAddr string) *Session {
@@ -37,6 +41,7 @@ func (m *Manager) Start(username, protocol, remoteAddr string) *Session {
 	}
 	m.mu.Lock()
 	m.sessions[s.ID] = s
+	m.totals[protocol]++
 	m.mu.Unlock()
 	return s
 }
@@ -64,4 +69,23 @@ func (m *Manager) List() []*Session {
 		out = append(out, &dup)
 	}
 	return out
+}
+
+func (m *Manager) ProtocolStats() (map[string]int, map[string]int64) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	active := make(map[string]int)
+	for _, s := range m.sessions {
+		if s == nil {
+			continue
+		}
+		active[s.Protocol]++
+	}
+
+	total := make(map[string]int64, len(m.totals))
+	for protocol, count := range m.totals {
+		total[protocol] = count
+	}
+	return active, total
 }

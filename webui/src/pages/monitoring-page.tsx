@@ -10,12 +10,17 @@ type Props = { token: string }
 const watchedMetrics = [
   "kervan_sessions_active",
   "kervan_users_total",
+  "kervan_users_admin_total",
+  "kervan_users_disabled_total",
+  "kervan_auth_locked_accounts",
   "kervan_transfers_active",
   "kervan_transfers_total",
   "kervan_transfers_completed_total",
   "kervan_transfers_failed_total",
   "kervan_transfer_upload_bytes_total",
   "kervan_transfer_download_bytes_total",
+  "kervan_goroutines",
+  "kervan_memory_bytes",
 ]
 
 export function MonitoringPage({ token }: Props) {
@@ -75,8 +80,13 @@ export function MonitoringPage({ token }: Props) {
             <MetricCard label="Active Sessions" value={formatNumber(metrics.kervan_sessions_active)} />
             <MetricCard label="Active Transfers" value={formatNumber(metrics.kervan_transfers_active)} />
             <MetricCard label="Total Users" value={formatNumber(metrics.kervan_users_total)} />
+            <MetricCard label="Admin Users" value={formatNumber(metrics.kervan_users_admin_total)} />
+            <MetricCard label="Disabled Users" value={formatNumber(metrics.kervan_users_disabled_total)} />
+            <MetricCard label="Locked Accounts" value={formatNumber(metrics.kervan_auth_locked_accounts)} />
+            <MetricCard label="Goroutines" value={formatNumber(metrics.kervan_goroutines)} />
             <MetricCard label="Uploaded" value={formatBytes(metrics.kervan_transfer_upload_bytes_total)} />
             <MetricCard label="Downloaded" value={formatBytes(metrics.kervan_transfer_download_bytes_total)} />
+            <MetricCard label="Heap Memory" value={formatBytes(metrics.kervan_memory_bytes)} />
             <MetricCard label="Transfers (Total)" value={formatNumber(metrics.kervan_transfers_total)} />
             <MetricCard label="Transfers (Failed)" value={formatNumber(metrics.kervan_transfers_failed_total)} />
           </div>

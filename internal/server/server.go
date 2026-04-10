@@ -170,18 +170,34 @@ func New(cfg *config.Config, configPath string, logger *slog.Logger) (*App, erro
 		repo,
 		app.sessions,
 		func() map[string]any {
+			storageBackend, storageRoot := resolveStorageStatus(cfg)
 			xstats := app.transfers.Stats()
 			return map[string]any{
-				"name":             cfg.Server.Name,
-				"version":          build.Version,
-				"started_at":       app.start,
-				"uptime_seconds":   int64(time.Since(app.start).Seconds()),
-				"active_sessions":  len(app.sessions.List()),
-				"active_transfers": xstats.ActiveTransfers,
-				"upload_bytes":     xstats.UploadBytes,
-				"download_bytes":   xstats.DownloadBytes,
-				"ftp_enabled":      cfg.FTP.Enabled,
-				"sftp_enabled":     cfg.SFTP.Enabled,
+				"name":                  cfg.Server.Name,
+				"version":               build.Version,
+				"started_at":            app.start,
+				"uptime_seconds":        int64(time.Since(app.start).Seconds()),
+				"active_sessions":       len(app.sessions.List()),
+				"active_transfers":      xstats.ActiveTransfers,
+				"upload_bytes":          xstats.UploadBytes,
+				"download_bytes":        xstats.DownloadBytes,
+				"ftp_enabled":           cfg.FTP.Enabled,
+				"ftp_port":              cfg.FTP.Port,
+				"ftps_enabled":          cfg.FTPS.Enabled,
+				"ftps_mode":             cfg.FTPS.Mode,
+				"ftps_explicit_enabled": cfg.FTPS.Enabled && (cfg.FTPS.Mode == "explicit" || cfg.FTPS.Mode == "both"),
+				"ftps_implicit_enabled": cfg.FTPS.Enabled && (cfg.FTPS.Mode == "implicit" || cfg.FTPS.Mode == "both"),
+				"ftps_implicit_port":    cfg.FTPS.ImplicitPort,
+				"sftp_enabled":          cfg.SFTP.Enabled,
+				"sftp_port":             cfg.SFTP.Port,
+				"scp_enabled":           cfg.SCP.Enabled,
+				"webui_enabled":         cfg.WebUI.Enabled,
+				"webui_port":            cfg.WebUI.Port,
+				"data_dir":              cfg.Server.DataDir,
+				"store_path":            filepath.Join(cfg.Server.DataDir, "kervan-store.json"),
+				"storage_backend":       storageBackend,
+				"storage_root":          storageRoot,
+				"audit_log_path":        sinkPath,
 			}
 		},
 		func() map[string]any {
@@ -616,4 +632,31 @@ func writeConfigFile(path string, cfg *config.Config) error {
 		return err
 	}
 	return os.WriteFile(path, raw, 0o600)
+}
+
+func resolveStorageStatus(cfg *config.Config) (string, string) {
+	if cfg == nil {
+		return "", ""
+	}
+	backendName := cfg.Storage.DefaultBackend
+	if backendName == "" {
+		backendName = "local"
+	}
+	backendCfg := cfg.Storage.Backends[backendName]
+	backendType := backendCfg.Type
+	if backendType == "" {
+		backendType = "local"
+	}
+	if backendType != "local" {
+		return backendType, ""
+	}
+	root := backendCfg.Options["root"]
+	if strings.TrimSpace(root) == "" {
+		root = filepath.Join(cfg.Server.DataDir, "files")
+	}
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return backendType, root
+	}
+	return backendType, absRoot
 }
