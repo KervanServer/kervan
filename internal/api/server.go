@@ -137,6 +137,10 @@ func (s *Server) Start(ctx context.Context) error {
 
 	mux.HandleFunc("/api/users", s.withAuth(s.handleUsers))
 	mux.HandleFunc("/api/v1/users", s.withAuth(s.handleUsers))
+	mux.HandleFunc("/api/users/import", s.withAuth(s.handleUsersImport))
+	mux.HandleFunc("/api/v1/users/import", s.withAuth(s.handleUsersImport))
+	mux.HandleFunc("/api/users/export", s.withAuth(s.handleUsersExport))
+	mux.HandleFunc("/api/v1/users/export", s.withAuth(s.handleUsersExport))
 	mux.HandleFunc("/api/apikeys", s.withAuth(s.handleAPIKeys))
 	mux.HandleFunc("/api/v1/apikeys", s.withAuth(s.handleAPIKeys))
 

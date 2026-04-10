@@ -4,6 +4,7 @@ import type {
   ApiShareLink,
   ApiKey,
   ApiTransfer,
+  ApiUserImportReport,
   ApiUser,
   AuditEvent,
   LoginResponse,
@@ -19,7 +20,9 @@ const asMessage = (value: unknown): string => {
 
 async function request<T>(url: string, token: string | null, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers)
-  if (!headers.has("Content-Type") && init?.body) {
+  const body = init?.body
+  const isFormData = typeof FormData !== "undefined" && body instanceof FormData
+  if (!headers.has("Content-Type") && body && !isFormData) {
     headers.set("Content-Type", "application/json")
   }
   if (token) {
@@ -42,6 +45,37 @@ async function request<T>(url: string, token: string | null, init?: RequestInit)
   }
 
   return payload as T
+}
+
+async function requestBlob(
+  url: string,
+  token: string | null,
+  init?: RequestInit,
+): Promise<{ blob: Blob; filename: string | null }> {
+  const headers = new Headers(init?.headers)
+  if (token) {
+    headers.set("Authorization", `Bearer ${token}`)
+  }
+
+  const res = await fetch(url, { ...init, headers })
+  if (res.status === 401) {
+    throw new Error("Session expired")
+  }
+  if (!res.ok) {
+    const contentType = res.headers.get("content-type") || ""
+    if (contentType.includes("application/json")) {
+      const payload = (await res.json()) as { error?: unknown }
+      throw new Error(asMessage(payload.error))
+    }
+    throw new Error(await res.text())
+  }
+
+  const disposition = res.headers.get("content-disposition") || ""
+  const match = disposition.match(/filename="([^"]+)"/i)
+  return {
+    blob: await res.blob(),
+    filename: match?.[1] ?? null,
+  }
 }
 
 export const api = {
@@ -84,6 +118,19 @@ export const api = {
 
   users(token: string): Promise<{ users: ApiUser[] }> {
     return request<{ users: ApiUser[] }>("/api/v1/users", token)
+  },
+
+  importUsers(token: string, file: File): Promise<ApiUserImportReport> {
+    const formData = new FormData()
+    formData.set("file", file)
+    return request<ApiUserImportReport>("/api/v1/users/import", token, {
+      method: "POST",
+      body: formData,
+    })
+  },
+
+  exportUsers(token: string, format: "json" | "csv"): Promise<{ blob: Blob; filename: string | null }> {
+    return requestBlob(`/api/v1/users/export?format=${encodeURIComponent(format)}`, token)
   },
 
   apiKeys(token: string): Promise<{ keys: ApiKey[] }> {

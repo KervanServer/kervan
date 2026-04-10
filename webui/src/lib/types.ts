@@ -20,6 +20,21 @@ export type ApiUser = {
   updated_at: string
 }
 
+export type ApiUserImportError = {
+  row: number
+  username?: string
+  error: string
+}
+
+export type ApiUserImportReport = {
+  format: string
+  total: number
+  created: number
+  skipped: number
+  usernames?: string[]
+  errors?: ApiUserImportError[]
+}
+
 export type ApiSession = {
   id: string
   username: string
