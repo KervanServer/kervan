@@ -3,7 +3,10 @@ package auth
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
+
+	"golang.org/x/crypto/ssh"
 )
 
 var (
@@ -66,6 +69,35 @@ func (e *Engine) Authenticate(_ context.Context, username, password string) (*Us
 	return user, nil
 }
 
+func (e *Engine) AuthenticatePublicKey(_ context.Context, username string, key ssh.PublicKey) (*User, error) {
+	user, err := e.repo.GetByUsername(username)
+	if err != nil {
+		return nil, err
+	}
+	if user == nil {
+		return nil, ErrInvalidCredentials
+	}
+	if !user.Enabled {
+		return nil, ErrUserDisabled
+	}
+
+	now := time.Now().UTC()
+	if user.LockedUntil != nil && user.LockedUntil.After(now) {
+		return nil, ErrUserLocked
+	}
+
+	normalized := normalizeAuthorizedKey(ssh.MarshalAuthorizedKey(key))
+	for _, authorized := range user.AuthorizedKeys {
+		if normalizeAuthorizedKey([]byte(authorized)) == normalized {
+			user.FailedLogins = 0
+			user.LockedUntil = nil
+			_ = e.repo.UpdateLastLogin(user.ID)
+			return user, nil
+		}
+	}
+	return nil, ErrInvalidCredentials
+}
+
 func (e *Engine) CreateUser(username, password, homeDir string, admin bool) (*User, error) {
 	hash, err := HashPassword(password, e.hashAlgo)
 	if err != nil {
@@ -104,4 +136,8 @@ func (e *Engine) ResetPassword(username, password string) error {
 	u.FailedLogins = 0
 	u.LockedUntil = nil
 	return e.repo.Update(u)
+}
+
+func normalizeAuthorizedKey(raw []byte) string {
+	return strings.TrimSpace(string(raw))
 }

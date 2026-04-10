@@ -92,6 +92,20 @@ func (s *Server) Start(ctx context.Context) error {
 				},
 			}, nil
 		},
+		PublicKeyCallback: func(meta ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
+			user, authErr := s.auth.AuthenticatePublicKey(ctx, meta.User(), key)
+			if authErr != nil {
+				s.emitAudit(audit.EventAuthFailure, meta.User(), "sftp", "", meta.RemoteAddr().String(), "failed", authErr.Error())
+				return nil, errors.New("invalid public key")
+			}
+			s.emitAudit(audit.EventAuthSuccess, user.Username, "sftp", "", meta.RemoteAddr().String(), "ok", "public key login success")
+			return &ssh.Permissions{
+				Extensions: map[string]string{
+					"username": user.Username,
+					"user_id":  user.ID,
+				},
+			}, nil
+		},
 	}
 	sshCfg.AddHostKey(signer)
 

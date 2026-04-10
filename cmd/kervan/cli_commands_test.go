@@ -2,6 +2,8 @@ package main
 
 import (
 	"bytes"
+	"crypto/rand"
+	"crypto/rsa"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,6 +18,7 @@ import (
 
 	"github.com/kervanserver/kervan/internal/auth"
 	"github.com/kervanserver/kervan/internal/config"
+	"golang.org/x/crypto/ssh"
 	"gopkg.in/yaml.v3"
 )
 
@@ -479,6 +482,103 @@ func TestRunMigrateProFTPDCommand(t *testing.T) {
 	}
 }
 
+func TestRunMigrateSSHKeysCommand(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "data")
+	configPath := writeTestConfig(t, func(cfg *config.Config) {
+		cfg.Server.DataDir = dataDir
+	})
+
+	if err := runUserCreateCommand(io.Discard, []string{
+		"--config", configPath,
+		"--username", "alice",
+		"--password", "StrongPass123!",
+		"--home-dir", "/existing",
+	}); err != nil {
+		t.Fatalf("create existing alice: %v", err)
+	}
+
+	baseDir := filepath.Join(t.TempDir(), "homes")
+	aliceSSHDir := filepath.Join(baseDir, "alice", ".ssh")
+	bobSSHDir := filepath.Join(baseDir, "bob", ".ssh")
+	if err := os.MkdirAll(aliceSSHDir, 0o700); err != nil {
+		t.Fatalf("mkdir alice ssh dir: %v", err)
+	}
+	if err := os.MkdirAll(bobSSHDir, 0o700); err != nil {
+		t.Fatalf("mkdir bob ssh dir: %v", err)
+	}
+
+	aliceKey1 := generateAuthorizedKey(t)
+	aliceKey2 := generateAuthorizedKey(t)
+	bobKey := generateAuthorizedKey(t)
+	if err := os.WriteFile(filepath.Join(aliceSSHDir, "authorized_keys"), []byte(strings.Join([]string{
+		aliceKey1,
+		aliceKey2,
+	}, "\n")), 0o600); err != nil {
+		t.Fatalf("write alice authorized_keys: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(bobSSHDir, "authorized_keys"), []byte(strings.Join([]string{
+		"# comment",
+		bobKey,
+		"invalid key line",
+	}, "\n")), 0o600); err != nil {
+		t.Fatalf("write bob authorized_keys: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	if err := runMigrateSSHKeysCommand(&stdout, []string{
+		"--config", configPath,
+		"--authorized-keys-dir", filepath.Join(baseDir, "*", ".ssh"),
+		"--json",
+	}); err != nil {
+		t.Fatalf("runMigrateSSHKeysCommand: %v", err)
+	}
+
+	var report migrationReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("decode ssh keys report: %v", err)
+	}
+	if report.Total != 2 || report.Migrated != 2 || report.Skipped != 0 {
+		t.Fatalf("unexpected ssh keys report: %#v", report)
+	}
+	if report.KeyCounts["alice"] != 2 || report.KeyCounts["bob"] != 1 {
+		t.Fatalf("unexpected key counts: %#v", report.KeyCounts)
+	}
+
+	ctx, err := openCLIContext(configPath)
+	if err != nil {
+		t.Fatalf("openCLIContext: %v", err)
+	}
+	defer ctx.close()
+
+	alice, err := ctx.repo.GetByUsername("alice")
+	if err != nil {
+		t.Fatalf("get alice: %v", err)
+	}
+	if alice == nil {
+		t.Fatal("expected alice to exist")
+	}
+	if alice.HomeDir != "/existing" {
+		t.Fatalf("expected existing alice home dir to be preserved, got %q", alice.HomeDir)
+	}
+	if len(alice.AuthorizedKeys) != 2 {
+		t.Fatalf("expected 2 alice authorized keys, got %#v", alice.AuthorizedKeys)
+	}
+
+	bob, err := ctx.repo.GetByUsername("bob")
+	if err != nil {
+		t.Fatalf("get bob: %v", err)
+	}
+	if bob == nil {
+		t.Fatal("expected bob to be created")
+	}
+	if len(bob.AuthorizedKeys) != 1 {
+		t.Fatalf("expected 1 bob authorized key, got %#v", bob.AuthorizedKeys)
+	}
+	if bob.HomeDir != filepath.Join(baseDir, "bob") {
+		t.Fatalf("expected bob home dir to be inferred, got %q", bob.HomeDir)
+	}
+}
+
 func writeTestConfig(t *testing.T, mutate func(*config.Config)) string {
 	t.Helper()
 	cfg := config.DefaultConfig()
@@ -503,4 +603,17 @@ func mustAtoi(t *testing.T, raw string) int {
 		t.Fatalf("parse port %q: %v", raw, err)
 	}
 	return value
+}
+
+func generateAuthorizedKey(t *testing.T) string {
+	t.Helper()
+	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate private key: %v", err)
+	}
+	publicKey, err := ssh.NewPublicKey(&privateKey.PublicKey)
+	if err != nil {
+		t.Fatalf("new public key: %v", err)
+	}
+	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(publicKey)))
 }

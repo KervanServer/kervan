@@ -10,21 +10,22 @@ const (
 )
 
 type User struct {
-	ID            string          `json:"id" yaml:"id"`
-	Username      string          `json:"username" yaml:"username"`
-	PasswordHash  string          `json:"password_hash" yaml:"password_hash"`
-	Email         string          `json:"email,omitempty" yaml:"email,omitempty"`
-	Type          UserType        `json:"type" yaml:"type"`
-	HomeDir       string          `json:"home_dir" yaml:"home_dir"`
-	Permissions   UserPermissions `json:"permissions" yaml:"permissions"`
-	Enabled       bool            `json:"enabled" yaml:"enabled"`
-	CreatedAt     time.Time       `json:"created_at" yaml:"created_at"`
-	UpdatedAt     time.Time       `json:"updated_at" yaml:"updated_at"`
-	LastLoginAt   *time.Time      `json:"last_login_at,omitempty" yaml:"last_login_at,omitempty"`
-	FailedLogins  int             `json:"failed_logins" yaml:"failed_logins"`
-	LockedUntil   *time.Time      `json:"locked_until,omitempty" yaml:"locked_until,omitempty"`
-	PrimaryGroup  string          `json:"primary_group,omitempty" yaml:"primary_group,omitempty"`
-	SecondaryGrps []string        `json:"secondary_groups,omitempty" yaml:"secondary_groups,omitempty"`
+	ID             string          `json:"id" yaml:"id"`
+	Username       string          `json:"username" yaml:"username"`
+	PasswordHash   string          `json:"password_hash" yaml:"password_hash"`
+	AuthorizedKeys []string        `json:"authorized_keys,omitempty" yaml:"authorized_keys,omitempty"`
+	Email          string          `json:"email,omitempty" yaml:"email,omitempty"`
+	Type           UserType        `json:"type" yaml:"type"`
+	HomeDir        string          `json:"home_dir" yaml:"home_dir"`
+	Permissions    UserPermissions `json:"permissions" yaml:"permissions"`
+	Enabled        bool            `json:"enabled" yaml:"enabled"`
+	CreatedAt      time.Time       `json:"created_at" yaml:"created_at"`
+	UpdatedAt      time.Time       `json:"updated_at" yaml:"updated_at"`
+	LastLoginAt    *time.Time      `json:"last_login_at,omitempty" yaml:"last_login_at,omitempty"`
+	FailedLogins   int             `json:"failed_logins" yaml:"failed_logins"`
+	LockedUntil    *time.Time      `json:"locked_until,omitempty" yaml:"locked_until,omitempty"`
+	PrimaryGroup   string          `json:"primary_group,omitempty" yaml:"primary_group,omitempty"`
+	SecondaryGrps  []string        `json:"secondary_groups,omitempty" yaml:"secondary_groups,omitempty"`
 }
 
 type UserPermissions struct {

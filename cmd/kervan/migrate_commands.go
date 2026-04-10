@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/kervanserver/kervan/internal/auth"
+	"golang.org/x/crypto/ssh"
 )
 
 func cmdMigrate(args []string) {
@@ -30,6 +31,8 @@ func runMigrateCommand(stdout io.Writer, args []string) error {
 		return runMigrateVSFTPDCommand(stdout, args[1:])
 	case "proftpd":
 		return runMigrateProFTPDCommand(stdout, args[1:])
+	case "ssh-keys":
+		return runMigrateSSHKeysCommand(stdout, args[1:])
 	default:
 		return fmt.Errorf("unknown migrate command: %s", args[0])
 	}
@@ -107,14 +110,15 @@ type migrationError struct {
 }
 
 type migrationReport struct {
-	Source   string           `json:"source"`
-	Kind     string           `json:"kind"`
-	Total    int              `json:"total"`
-	Migrated int              `json:"migrated"`
-	Skipped  int              `json:"skipped"`
-	Users    []string         `json:"users,omitempty"`
-	Errors   []migrationError `json:"errors,omitempty"`
-	Warnings []string         `json:"warnings,omitempty"`
+	Source    string           `json:"source"`
+	Kind      string           `json:"kind"`
+	Total     int              `json:"total"`
+	Migrated  int              `json:"migrated"`
+	Skipped   int              `json:"skipped"`
+	Users     []string         `json:"users,omitempty"`
+	KeyCounts map[string]int   `json:"key_counts,omitempty"`
+	Errors    []migrationError `json:"errors,omitempty"`
+	Warnings  []string         `json:"warnings,omitempty"`
 }
 
 func parseVSFTPDUserDB(filePath string) ([]vsftpdUserEntry, error) {
@@ -386,4 +390,218 @@ func resolveProFTPDPath(baseDir, raw string) string {
 		return trimmed
 	}
 	return filepath.Join(baseDir, trimmed)
+}
+
+func runMigrateSSHKeysCommand(stdout io.Writer, args []string) error {
+	fs := flag.NewFlagSet("migrate ssh-keys", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	configPath := fs.String("config", defaultConfigPath, "Path to Kervan config file")
+	authorizedKeysPattern := fs.String("authorized-keys-dir", "", "Glob to .ssh directories or authorized_keys files")
+	jsonOut := fs.Bool("json", false, "Output JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*authorizedKeysPattern) == "" {
+		return errors.New("--authorized-keys-dir is required")
+	}
+
+	matches, err := filepath.Glob(*authorizedKeysPattern)
+	if err != nil {
+		return err
+	}
+	if len(matches) == 0 {
+		return errors.New("no authorized_keys paths matched")
+	}
+
+	ctx, err := openCLIContext(*configPath)
+	if err != nil {
+		return err
+	}
+	defer ctx.close()
+
+	report := migrationReport{
+		Source:    *authorizedKeysPattern,
+		Kind:      "ssh-keys",
+		KeyCounts: map[string]int{},
+	}
+	seenUsers := map[string]struct{}{}
+
+	for _, match := range matches {
+		targetFile, username, homeDir, resolveErr := resolveAuthorizedKeysTarget(match)
+		if resolveErr != nil {
+			report.Skipped++
+			report.Errors = append(report.Errors, migrationError{
+				Username: username,
+				Error:    resolveErr.Error(),
+			})
+			continue
+		}
+		keys, warnings, parseErr := parseAuthorizedKeysFile(targetFile)
+		report.Warnings = append(report.Warnings, warnings...)
+		if parseErr != nil {
+			report.Skipped++
+			report.Errors = append(report.Errors, migrationError{
+				Username: username,
+				Error:    parseErr.Error(),
+			})
+			continue
+		}
+		report.Total++
+		if len(keys) == 0 {
+			report.Skipped++
+			report.Warnings = append(report.Warnings, fmt.Sprintf("no valid public keys found for %s", username))
+			continue
+		}
+		user, importedCount, updateErr := createOrUpdateAuthorizedKeyUser(ctx, username, homeDir, keys)
+		if updateErr != nil {
+			report.Skipped++
+			report.Errors = append(report.Errors, migrationError{
+				Username: username,
+				Error:    updateErr.Error(),
+			})
+			continue
+		}
+		report.KeyCounts[user.Username] += importedCount
+		if _, exists := seenUsers[user.Username]; !exists {
+			seenUsers[user.Username] = struct{}{}
+			report.Users = append(report.Users, user.Username)
+		}
+		report.Migrated++
+	}
+
+	if *jsonOut {
+		return json.NewEncoder(stdout).Encode(report)
+	}
+
+	_, _ = fmt.Fprintf(stdout, "Migrated SSH authorized_keys from %s\n", *authorizedKeysPattern)
+	_, _ = fmt.Fprintf(stdout, "Accounts processed: %d\n", report.Migrated)
+	_, _ = fmt.Fprintf(stdout, "Skipped: %d\n", report.Skipped)
+	if len(report.KeyCounts) > 0 {
+		_, _ = fmt.Fprintln(stdout, "Imported keys:")
+		for _, username := range report.Users {
+			_, _ = fmt.Fprintf(stdout, "  %s: %d\n", username, report.KeyCounts[username])
+		}
+	}
+	if len(report.Warnings) > 0 {
+		_, _ = fmt.Fprintln(stdout, "Warnings:")
+		for _, warning := range report.Warnings {
+			_, _ = fmt.Fprintf(stdout, "  %s\n", warning)
+		}
+	}
+	if len(report.Errors) > 0 {
+		_, _ = fmt.Fprintln(stdout, "Errors:")
+		for _, item := range report.Errors {
+			_, _ = fmt.Fprintf(stdout, "  %s: %s\n", item.Username, item.Error)
+		}
+	}
+	return nil
+}
+
+func resolveAuthorizedKeysTarget(match string) (targetFile, username, homeDir string, err error) {
+	info, err := os.Stat(match)
+	if err != nil {
+		return "", "", "", err
+	}
+	if info.IsDir() {
+		targetFile = filepath.Join(match, "authorized_keys")
+	} else {
+		targetFile = match
+	}
+	if filepath.Base(targetFile) != "authorized_keys" {
+		return "", "", "", fmt.Errorf("path %q does not resolve to an authorized_keys file", match)
+	}
+
+	sshDir := filepath.Dir(targetFile)
+	usernameDir := filepath.Dir(sshDir)
+	username = filepath.Base(usernameDir)
+	if username == "." || username == string(filepath.Separator) || username == "" {
+		return "", "", "", fmt.Errorf("unable to infer username from %q", match)
+	}
+	return targetFile, username, usernameDir, nil
+}
+
+func parseAuthorizedKeysFile(filePath string) ([]string, []string, error) {
+	raw, err := os.ReadFile(filePath)
+	if err != nil {
+		return nil, nil, err
+	}
+	keys := make([]string, 0, 4)
+	warnings := make([]string, 0)
+	remaining := raw
+	for len(remaining) > 0 {
+		pubKey, _, _, rest, parseErr := ssh.ParseAuthorizedKey(remaining)
+		if parseErr != nil {
+			line, next := splitAuthorizedKeyChunk(remaining)
+			remaining = next
+			trimmed := strings.TrimSpace(string(line))
+			if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+				continue
+			}
+			warnings = append(warnings, fmt.Sprintf("skipped invalid authorized_keys line in %s", filePath))
+			continue
+		}
+		keys = append(keys, strings.TrimSpace(string(ssh.MarshalAuthorizedKey(pubKey))))
+		remaining = rest
+	}
+	return uniqueStrings(keys), warnings, nil
+}
+
+func splitAuthorizedKeyChunk(raw []byte) ([]byte, []byte) {
+	for idx, b := range raw {
+		if b == '\n' {
+			return raw[:idx], raw[idx+1:]
+		}
+	}
+	return raw, nil
+}
+
+func createOrUpdateAuthorizedKeyUser(ctx *cliContext, username, homeDir string, keys []string) (*auth.User, int, error) {
+	user, err := ctx.repo.GetByUsername(username)
+	if err != nil {
+		return nil, 0, err
+	}
+	if user == nil {
+		user = &auth.User{
+			Username:       username,
+			AuthorizedKeys: uniqueStrings(keys),
+			HomeDir:        homeDir,
+			Enabled:        true,
+			Type:           auth.UserTypeVirtual,
+			Permissions:    auth.DefaultUserPermissions(),
+		}
+		if err := ctx.repo.Create(user); err != nil {
+			return nil, 0, err
+		}
+		return user, len(user.AuthorizedKeys), nil
+	}
+
+	before := len(user.AuthorizedKeys)
+	user.AuthorizedKeys = uniqueStrings(append(user.AuthorizedKeys, keys...))
+	if strings.TrimSpace(user.HomeDir) == "" || user.HomeDir == "/" {
+		user.HomeDir = homeDir
+	}
+	if err := ctx.repo.Update(user); err != nil {
+		return nil, 0, err
+	}
+	return user, len(user.AuthorizedKeys) - before, nil
+}
+
+func uniqueStrings(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, item := range in {
+		trimmed := strings.TrimSpace(item)
+		if trimmed == "" {
+			continue
+		}
+		if _, exists := seen[trimmed]; exists {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		out = append(out, trimmed)
+	}
+	return out
 }
