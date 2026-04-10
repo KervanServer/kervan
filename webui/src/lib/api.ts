@@ -170,6 +170,10 @@ export const api = {
     return request<{ sessions: ApiSession[] }>("/api/v1/sessions", token)
   },
 
+  session(token: string, id: string): Promise<ApiSession> {
+    return request<ApiSession>(`/api/v1/sessions/${encodeURIComponent(id)}`, token)
+  },
+
   killSession(token: string, id: string): Promise<void> {
     return request<void>(`/api/v1/sessions/${encodeURIComponent(id)}`, token, { method: "DELETE" })
   },

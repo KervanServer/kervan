@@ -56,6 +56,15 @@ func DefaultConfig() *Config {
 			DefaultProvider:   "local",
 			PasswordHash:      "argon2id",
 			MinPasswordLength: 8,
+			LDAP: LDAPConfig{
+				UsernameAttribute: "uid",
+				EmailAttribute:    "mail",
+				GroupAttribute:    "memberOf",
+				UserFilter:        "(&(objectClass=person)(uid=%s))",
+				DefaultHomeDir:    "/",
+				CacheTTL:          5 * time.Minute,
+				PoolSize:          4,
+			},
 		},
 		Storage: StorageConfig{
 			DefaultBackend: "local",

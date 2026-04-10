@@ -490,8 +490,16 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	viewer := currentUser(r)
+	protocol := strings.TrimSpace(r.URL.Query().Get("protocol"))
+	remoteIP := strings.TrimSpace(r.URL.Query().Get("ip"))
+	query := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
 	writeJSON(w, http.StatusOK, map[string]any{
-		"sessions": filterSessionsByUsername(s.sessions.List(), s.viewerScopedUsername(viewer, "")),
+		"sessions": filterSessions(
+			filterSessionsByUsername(s.sessions.List(), s.viewerScopedUsername(viewer, r.URL.Query().Get("username"))),
+			protocol,
+			remoteIP,
+			query,
+		),
 	})
 }
 
@@ -1655,6 +1663,37 @@ func filterSessionsByUsername(in []*session.Session, username string) []*session
 		}
 		if !strings.EqualFold(item.Username, username) {
 			continue
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func filterSessions(in []*session.Session, protocol, remoteIP, query string) []*session.Session {
+	if len(in) == 0 {
+		return in
+	}
+	out := make([]*session.Session, 0, len(in))
+	for _, item := range in {
+		if item == nil {
+			continue
+		}
+		if protocol != "" && !strings.EqualFold(item.Protocol, protocol) {
+			continue
+		}
+		if remoteIP != "" && !strings.Contains(strings.ToLower(item.RemoteAddr), strings.ToLower(remoteIP)) {
+			continue
+		}
+		if query != "" {
+			haystack := strings.ToLower(strings.Join([]string{
+				item.ID,
+				item.Username,
+				item.Protocol,
+				item.RemoteAddr,
+			}, " "))
+			if !strings.Contains(haystack, query) {
+				continue
+			}
 		}
 		out = append(out, item)
 	}

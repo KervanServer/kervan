@@ -44,3 +44,14 @@ func TestWriteDefaultFailsIfExists(t *testing.T) {
 		t.Fatal("expected error when config exists")
 	}
 }
+
+func TestLDAPConfigValidation(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Auth.LDAP.Enabled = true
+	cfg.Auth.LDAP.URL = "http://ldap.example.com"
+	cfg.Auth.LDAP.BaseDN = "dc=example,dc=com"
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected ldap validation error for unsupported scheme")
+	}
+}

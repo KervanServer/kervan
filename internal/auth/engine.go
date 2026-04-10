@@ -15,11 +15,17 @@ var (
 	ErrUserLocked         = errors.New("user temporarily locked")
 )
 
+const (
+	AuthProviderLocal = "local"
+	AuthProviderLDAP  = "ldap"
+)
+
 type Engine struct {
 	repo         *UserRepository
 	hashAlgo     string
 	maxAttempts  int
 	lockDuration time.Duration
+	ldap         *LDAPProvider
 }
 
 func NewEngine(repo *UserRepository, hashAlgo string, maxAttempts int, lockDuration time.Duration) *Engine {
@@ -37,35 +43,47 @@ func NewEngine(repo *UserRepository, hashAlgo string, maxAttempts int, lockDurat
 	}
 }
 
-func (e *Engine) Authenticate(_ context.Context, username, password string) (*User, error) {
+func (e *Engine) Authenticate(ctx context.Context, username, password string) (*User, error) {
+	return e.authenticate(ctx, username, password)
+}
+
+func (e *Engine) authenticate(ctx context.Context, username, password string) (*User, error) {
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return nil, ErrInvalidCredentials
+	}
 	user, err := e.repo.GetByUsername(username)
 	if err != nil {
 		return nil, err
 	}
+
+	if user != nil && !isLDAPUser(user) {
+		return e.authenticateLocalUser(user, password)
+	}
+
+	if e.ldap != nil {
+		return e.authenticateLDAPUser(ctx, user, username, password)
+	}
+
 	if user == nil {
 		return nil, ErrInvalidCredentials
 	}
-	if !user.Enabled {
-		return nil, ErrUserDisabled
-	}
+	return e.authenticateLocalUser(user, password)
+}
 
-	now := time.Now().UTC()
-	if user.LockedUntil != nil && user.LockedUntil.After(now) {
-		return nil, ErrUserLocked
+func (e *Engine) authenticateLocalUser(user *User, password string) (*User, error) {
+	if err := e.ensureLoginAllowed(user); err != nil {
+		return nil, err
 	}
 	if !VerifyPassword(password, user.PasswordHash) {
-		user.FailedLogins++
-		if user.FailedLogins >= e.maxAttempts {
-			until := now.Add(e.lockDuration)
-			user.LockedUntil = &until
-		}
-		_ = e.repo.Update(user)
+		_ = e.registerFailedLogin(user)
 		return nil, ErrInvalidCredentials
 	}
 
-	user.FailedLogins = 0
-	user.LockedUntil = nil
 	_ = e.repo.UpdateLastLogin(user.ID)
+	if refreshed, err := e.repo.GetByID(user.ID); err == nil && refreshed != nil {
+		return refreshed, nil
+	}
 	return user, nil
 }
 
@@ -98,6 +116,10 @@ func (e *Engine) AuthenticatePublicKey(_ context.Context, username string, key s
 	return nil, ErrInvalidCredentials
 }
 
+func (e *Engine) SetLDAPProvider(provider *LDAPProvider) {
+	e.ldap = provider
+}
+
 func (e *Engine) CreateUser(username, password, homeDir string, admin bool) (*User, error) {
 	hash, err := HashPassword(password, e.hashAlgo)
 	if err != nil {
@@ -106,6 +128,7 @@ func (e *Engine) CreateUser(username, password, homeDir string, admin bool) (*Us
 	u := &User{
 		Username:     username,
 		PasswordHash: hash,
+		AuthProvider: AuthProviderLocal,
 		HomeDir:      homeDir,
 		Enabled:      true,
 		Permissions:  DefaultUserPermissions(),
@@ -140,4 +163,111 @@ func (e *Engine) ResetPassword(username, password string) error {
 
 func normalizeAuthorizedKey(raw []byte) string {
 	return strings.TrimSpace(string(raw))
+}
+
+func (e *Engine) authenticateLDAPUser(ctx context.Context, shadow *User, username, password string) (*User, error) {
+	if shadow != nil {
+		if err := e.ensureLoginAllowed(shadow); err != nil {
+			return nil, err
+		}
+	}
+	if e.ldap == nil {
+		return nil, ErrInvalidCredentials
+	}
+
+	identity, err := e.ldap.Authenticate(ctx, username, password)
+	if err != nil {
+		_ = e.registerFailedLogin(shadow)
+		return nil, err
+	}
+	return e.syncLDAPUser(identity, shadow)
+}
+
+func (e *Engine) syncLDAPUser(identity *LDAPIdentity, shadow *User) (*User, error) {
+	now := time.Now().UTC()
+	if shadow == nil {
+		shadow = &User{
+			Username:     identity.Username,
+			AuthProvider: AuthProviderLDAP,
+			Email:        identity.Email,
+			Type:         identity.Type,
+			HomeDir:      identity.HomeDir,
+			Enabled:      true,
+			Permissions:  identity.Permissions,
+			PrimaryGroup: firstGroup(identity.Groups),
+			SecondaryGrps: func() []string {
+				if len(identity.Groups) <= 1 {
+					return nil
+				}
+				out := make([]string, 0, len(identity.Groups)-1)
+				out = append(out, identity.Groups[1:]...)
+				return out
+			}(),
+			LastLoginAt: &now,
+		}
+		if err := e.repo.Create(shadow); err != nil {
+			return nil, err
+		}
+		return e.repo.GetByUsername(identity.Username)
+	}
+
+	shadow.AuthProvider = AuthProviderLDAP
+	shadow.Email = identity.Email
+	shadow.Type = identity.Type
+	if strings.TrimSpace(shadow.HomeDir) == "" {
+		shadow.HomeDir = identity.HomeDir
+	}
+	shadow.PrimaryGroup = firstGroup(identity.Groups)
+	if len(identity.Groups) > 1 {
+		shadow.SecondaryGrps = append(shadow.SecondaryGrps[:0], identity.Groups[1:]...)
+	} else {
+		shadow.SecondaryGrps = nil
+	}
+	shadow.LastLoginAt = &now
+	shadow.FailedLogins = 0
+	shadow.LockedUntil = nil
+	if err := e.repo.Update(shadow); err != nil {
+		return nil, err
+	}
+	return shadow, nil
+}
+
+func (e *Engine) ensureLoginAllowed(user *User) error {
+	if user == nil {
+		return nil
+	}
+	if !user.Enabled {
+		return ErrUserDisabled
+	}
+	now := time.Now().UTC()
+	if user.LockedUntil != nil && user.LockedUntil.After(now) {
+		return ErrUserLocked
+	}
+	return nil
+}
+
+func (e *Engine) registerFailedLogin(user *User) error {
+	if user == nil {
+		return nil
+	}
+	user.FailedLogins++
+	if user.FailedLogins >= e.maxAttempts {
+		until := time.Now().UTC().Add(e.lockDuration)
+		user.LockedUntil = &until
+	}
+	return e.repo.Update(user)
+}
+
+func isLDAPUser(user *User) bool {
+	if user == nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(user.AuthProvider), AuthProviderLDAP)
+}
+
+func firstGroup(groups []string) string {
+	if len(groups) == 0 {
+		return ""
+	}
+	return groups[0]
 }

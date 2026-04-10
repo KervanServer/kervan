@@ -89,11 +89,20 @@ type AuthConfig struct {
 }
 
 type LDAPConfig struct {
-	Enabled      bool   `yaml:"enabled"`
-	URL          string `yaml:"url"`
-	BindDN       string `yaml:"bind_dn"`
-	BindPassword string `yaml:"bind_password"`
-	BaseDN       string `yaml:"base_dn"`
+	Enabled           bool              `yaml:"enabled"`
+	URL               string            `yaml:"url"`
+	BindDN            string            `yaml:"bind_dn"`
+	BindPassword      string            `yaml:"bind_password"`
+	BaseDN            string            `yaml:"base_dn"`
+	UserFilter        string            `yaml:"user_filter"`
+	UsernameAttribute string            `yaml:"username_attribute"`
+	EmailAttribute    string            `yaml:"email_attribute"`
+	GroupAttribute    string            `yaml:"group_attribute"`
+	GroupMapping      map[string]string `yaml:"group_mapping"`
+	DefaultHomeDir    string            `yaml:"default_home_dir"`
+	CacheTTL          time.Duration     `yaml:"cache_ttl"`
+	PoolSize          int               `yaml:"connection_pool_size"`
+	TLSSkipVerify     bool              `yaml:"tls_skip_verify"`
 }
 
 type StorageConfig struct {

@@ -70,6 +70,9 @@ func New(cfg *config.Config, configPath string, logger *slog.Logger) (*App, erro
 		cfg.Security.BruteForce.MaxAttempts,
 		cfg.Security.BruteForce.LockoutDuration,
 	)
+	if cfg.Auth.LDAP.Enabled {
+		engine.SetLDAPProvider(auth.NewLDAPProvider(cfg.Auth.LDAP))
+	}
 
 	sinkPath := filepath.Join(cfg.Server.DataDir, "audit.jsonl")
 	if len(cfg.Audit.Outputs) > 0 && cfg.Audit.Outputs[0].Path != "" {

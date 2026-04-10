@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"net"
+	"net/url"
 	"strconv"
 	"strings"
 )
@@ -46,8 +47,26 @@ func (c *Config) Validate() error {
 	if c.Auth.PasswordHash != "argon2id" && c.Auth.PasswordHash != "bcrypt" {
 		errs = append(errs, "auth.password_hash must be argon2id|bcrypt")
 	}
+	if c.Auth.DefaultProvider != "" && c.Auth.DefaultProvider != "local" && c.Auth.DefaultProvider != "ldap" {
+		errs = append(errs, "auth.default_provider must be local|ldap")
+	}
 	if c.Auth.MinPasswordLength < 4 {
 		errs = append(errs, "auth.min_password_length must be >= 4")
+	}
+	if c.Auth.LDAP.Enabled {
+		if strings.TrimSpace(c.Auth.LDAP.URL) == "" {
+			errs = append(errs, "auth.ldap.url is required when auth.ldap.enabled=true")
+		} else if parsed, err := url.Parse(c.Auth.LDAP.URL); err != nil || parsed.Host == "" {
+			errs = append(errs, "auth.ldap.url must be a valid ldap:// or ldaps:// URL")
+		} else if parsed.Scheme != "ldap" && parsed.Scheme != "ldaps" {
+			errs = append(errs, "auth.ldap.url scheme must be ldap or ldaps")
+		}
+		if strings.TrimSpace(c.Auth.LDAP.BaseDN) == "" {
+			errs = append(errs, "auth.ldap.base_dn is required when auth.ldap.enabled=true")
+		}
+		if c.Auth.LDAP.PoolSize < 0 {
+			errs = append(errs, "auth.ldap.connection_pool_size must be >= 0")
+		}
 	}
 
 	for _, ip := range c.Security.AllowedIPs {

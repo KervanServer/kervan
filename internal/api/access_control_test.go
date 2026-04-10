@@ -38,6 +38,54 @@ func TestHandleSessionsScopesNonAdminToOwnSessions(t *testing.T) {
 	}
 }
 
+func TestHandleSessionsAppliesFilters(t *testing.T) {
+	srv := newAccessControlServer(t)
+	srv.sessions.Start("alice", "ftp", "10.1.1.1:1000")
+	srv.sessions.Start("alice", "sftp", "10.1.1.2:1000")
+	srv.sessions.Start("bob", "ftp", "192.168.1.5:2000")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions?protocol=ftp&ip=10.1.1&q=alice", nil)
+	req.Header.Set("X-Auth-User", "admin")
+	rec := httptest.NewRecorder()
+
+	srv.handleSessions(rec, req)
+
+	var payload struct {
+		Sessions []session.Session `json:"sessions"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(payload.Sessions) != 1 {
+		t.Fatalf("expected one filtered session, got %#v", payload.Sessions)
+	}
+	if payload.Sessions[0].Username != "alice" || payload.Sessions[0].Protocol != "ftp" {
+		t.Fatalf("unexpected filtered session: %#v", payload.Sessions[0])
+	}
+}
+
+func TestHandleSessionsIgnoresUsernameOverrideForNonAdmin(t *testing.T) {
+	srv := newAccessControlServer(t)
+	srv.sessions.Start("alice", "ftp", "10.0.0.1:1000")
+	srv.sessions.Start("bob", "sftp", "10.0.0.2:1000")
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/sessions?username=bob", nil)
+	req.Header.Set("X-Auth-User", "alice")
+	rec := httptest.NewRecorder()
+
+	srv.handleSessions(rec, req)
+
+	var payload struct {
+		Sessions []session.Session `json:"sessions"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(payload.Sessions) != 1 || payload.Sessions[0].Username != "alice" {
+		t.Fatalf("expected scoped alice sessions, got %#v", payload.Sessions)
+	}
+}
+
 func TestHandleSessionByIDDeniesOtherUsers(t *testing.T) {
 	srv := newAccessControlServer(t)
 	aliceSession := srv.sessions.Start("alice", "ftp", "10.0.0.1:1000")

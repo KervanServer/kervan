@@ -13,6 +13,7 @@ type User struct {
 	ID             string          `json:"id" yaml:"id"`
 	Username       string          `json:"username" yaml:"username"`
 	PasswordHash   string          `json:"password_hash" yaml:"password_hash"`
+	AuthProvider   string          `json:"auth_provider,omitempty" yaml:"auth_provider,omitempty"`
 	AuthorizedKeys []string        `json:"authorized_keys,omitempty" yaml:"authorized_keys,omitempty"`
 	Email          string          `json:"email,omitempty" yaml:"email,omitempty"`
 	Type           UserType        `json:"type" yaml:"type"`

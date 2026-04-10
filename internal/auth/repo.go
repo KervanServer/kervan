@@ -3,6 +3,7 @@ package auth
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/kervanserver/kervan/internal/store"
@@ -31,6 +32,9 @@ func (r *UserRepository) Create(user *User) error {
 	}
 	if user.Type == "" {
 		user.Type = UserTypeVirtual
+	}
+	if strings.TrimSpace(user.AuthProvider) == "" {
+		user.AuthProvider = AuthProviderLocal
 	}
 	if !user.Enabled {
 		user.Enabled = true
