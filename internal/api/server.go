@@ -22,6 +22,7 @@ import (
 	"github.com/kervanserver/kervan/internal/session"
 	"github.com/kervanserver/kervan/internal/transfer"
 	"github.com/kervanserver/kervan/internal/vfs"
+	"github.com/kervanserver/kervan/internal/webui"
 )
 
 type Config struct {
@@ -45,6 +46,7 @@ type Server struct {
 	auditLogPath string
 	secret       []byte
 	transfers    *transfer.Manager
+	uiHandler    http.Handler
 
 	httpServer *http.Server
 	mu         sync.Mutex
@@ -72,6 +74,10 @@ func NewServer(
 	if _, err := rand.Read(secret); err != nil {
 		return nil, err
 	}
+	uiHandler, err := webui.NewHandler()
+	if err != nil {
+		return nil, err
+	}
 	return &Server{
 		cfg:          cfg,
 		logger:       logger,
@@ -83,6 +89,7 @@ func NewServer(
 		auditLogPath: auditLogPath,
 		secret:       secret,
 		transfers:    transfers,
+		uiHandler:    uiHandler,
 	}, nil
 }
 
@@ -101,6 +108,9 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/api/files/download", s.withAuth(s.handleFilesDownload))
 	mux.HandleFunc("/api/audit", s.withAuth(s.handleAudit))
 	mux.HandleFunc("/api/transfers", s.withAuth(s.handleTransfers))
+	if s.uiHandler != nil {
+		mux.Handle("/", s.uiHandler)
+	}
 
 	handler := s.withMiddleware(mux)
 	s.httpServer = &http.Server{
@@ -483,9 +493,18 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 	if limit > 1000 {
 		limit = 1000
 	}
+	page := parseInt(r.URL.Query().Get("page"), 1)
+	if page < 1 {
+		page = 1
+	}
+	username := strings.TrimSpace(r.URL.Query().Get("username"))
+	protocol := strings.TrimSpace(r.URL.Query().Get("protocol"))
+	eventType := strings.TrimSpace(r.URL.Query().Get("type"))
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	query := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
 
 	lines := strings.Split(string(raw), "\n")
-	events := make([]map[string]any, 0, limit)
+	allEvents := make([]map[string]any, 0, len(lines))
 	for i := len(lines) - 1; i >= 0 && len(events) < limit; i-- {
 		line := strings.TrimSpace(lines[i])
 		if line == "" {
@@ -495,9 +514,18 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 		if err := json.Unmarshal([]byte(line), &evt); err != nil {
 			continue
 		}
-		events = append(events, evt)
+		allEvents = append(allEvents, evt)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"events": events})
+	filtered := filterAuditEvents(allEvents, username, protocol, eventType, status, query)
+	eventsPage, total := paginateAudit(filtered, page, limit)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"events": eventsPage,
+		"pagination": map[string]any{
+			"page":      page,
+			"page_size": limit,
+			"total":     total,
+		},
+	})
 }
 
 func (s *Server) handleTransfers(w http.ResponseWriter, r *http.Request) {
@@ -520,10 +548,29 @@ func (s *Server) handleTransfers(w http.ResponseWriter, r *http.Request) {
 	if limit > 500 {
 		limit = 500
 	}
+	page := parseInt(r.URL.Query().Get("page"), 1)
+	if page < 1 {
+		page = 1
+	}
+	username := strings.TrimSpace(r.URL.Query().Get("username"))
+	protocol := strings.TrimSpace(r.URL.Query().Get("protocol"))
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	direction := strings.TrimSpace(r.URL.Query().Get("direction"))
+	query := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
+
+	active := filterTransfers(s.transfers.Active(), username, protocol, status, direction, query)
+	recentAll := filterTransfers(s.transfers.Recent(5000), username, protocol, status, direction, query)
+	recentPage, total := paginateTransfers(recentAll, page, limit)
+
 	writeJSON(w, http.StatusOK, map[string]any{
-		"active": s.transfers.Active(),
-		"recent": s.transfers.Recent(limit),
+		"active": active,
+		"recent": recentPage,
 		"stats":  s.transfers.Stats(),
+		"pagination": map[string]any{
+			"page":      page,
+			"page_size": limit,
+			"total":     total,
+		},
 	})
 }
 

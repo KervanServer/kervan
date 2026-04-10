@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Kervan Dashboard</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="app">
+      <header class="top">
+        <h1>Kervan Dashboard</h1>
+        <p>Unified transfer server control panel</p>
+      </header>
+
+      <section class="card">
+        <h2>Login</h2>
+        <form id="loginForm" class="row">
+          <input id="username" placeholder="Username" value="admin" />
+          <input id="password" placeholder="Password" type="password" value="admin123!" />
+          <button type="submit">Sign In</button>
+        </form>
+        <p id="loginStatus" class="muted">Not authenticated</p>
+      </section>
+
+      <section class="grid">
+        <article class="card">
+          <h2>Health</h2>
+          <pre id="healthOut">-</pre>
+        </article>
+        <article class="card">
+          <h2>Users</h2>
+          <pre id="usersOut">-</pre>
+        </article>
+        <article class="card">
+          <h2>Transfers</h2>
+          <pre id="transfersOut">-</pre>
+        </article>
+        <article class="card">
+          <h2>Audit</h2>
+          <pre id="auditOut">-</pre>
+        </article>
+      </section>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>
+
