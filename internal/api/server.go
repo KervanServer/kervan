@@ -34,6 +34,8 @@ type Config struct {
 
 type StatusProvider func() map[string]any
 type UserFSBuilder func(username string) (vfs.FileSystem, error)
+type ServerConfigProvider func() map[string]any
+type ReloadProvider func() (map[string]any, error)
 
 type Server struct {
 	cfg          Config
@@ -42,6 +44,8 @@ type Server struct {
 	users        *auth.UserRepository
 	sessions     *session.Manager
 	status       StatusProvider
+	config       ServerConfigProvider
+	reload       ReloadProvider
 	fsBuilder    UserFSBuilder
 	auditLogPath string
 	secret       []byte
@@ -60,6 +64,8 @@ func NewServer(
 	userRepo *auth.UserRepository,
 	sessions *session.Manager,
 	status StatusProvider,
+	configProvider ServerConfigProvider,
+	reloadProvider ReloadProvider,
 	fsBuilder UserFSBuilder,
 	auditLogPath string,
 	transfers *transfer.Manager,
@@ -85,6 +91,8 @@ func NewServer(
 		users:        userRepo,
 		sessions:     sessions,
 		status:       status,
+		config:       configProvider,
+		reload:       reloadProvider,
 		fsBuilder:    fsBuilder,
 		auditLogPath: auditLogPath,
 		secret:       secret,
@@ -105,6 +113,8 @@ func (s *Server) Start(ctx context.Context) error {
 
 	mux.HandleFunc("/api/server/status", s.withAuth(s.handleServerStatus))
 	mux.HandleFunc("/api/v1/server/status", s.withAuth(s.handleServerStatus))
+	mux.HandleFunc("/api/v1/server/config", s.withAuth(s.handleServerConfig))
+	mux.HandleFunc("/api/v1/server/reload", s.withAuth(s.handleServerReload))
 
 	mux.HandleFunc("/api/users", s.withAuth(s.handleUsers))
 	mux.HandleFunc("/api/v1/users", s.withAuth(s.handleUsers))
@@ -243,6 +253,49 @@ func (s *Server) handleServerStatus(w http.ResponseWriter, _ *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handleServerConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if !s.isAdminUser(currentUser(r)) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "admin access required"})
+		return
+	}
+	if s.config == nil {
+		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "server config provider is not available"})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"config": s.config(),
+	})
+}
+
+func (s *Server) handleServerReload(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if !s.isAdminUser(currentUser(r)) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "admin access required"})
+		return
+	}
+	if s.reload == nil {
+		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "reload handler is not available"})
+		return
+	}
+	result, err := s.reload()
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if result == nil {
+		result = map[string]any{}
+	}
+	result["requested_at"] = time.Now().UTC()
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
@@ -968,4 +1021,15 @@ func (s *Server) canAccessTargetUser(actorUsername, targetUsername string) (bool
 		return false, nil
 	}
 	return actor.Type == auth.UserTypeAdmin, nil
+}
+
+func (s *Server) isAdminUser(username string) bool {
+	if strings.TrimSpace(username) == "" {
+		return false
+	}
+	user, err := s.users.GetByUsername(username)
+	if err != nil || user == nil {
+		return false
+	}
+	return user.Type == auth.UserTypeAdmin
 }

@@ -219,6 +219,8 @@ The management API is served from the same process as the WebUI (default
 | `GET`  | `/metrics`               | Prometheus-style text metrics                 |
 | `POST` | `/api/v1/auth/login`         | Exchange username + password for a token  |
 | `GET`  | `/api/v1/server/status`      | Server status snapshot                    |
+| `GET`  | `/api/v1/server/config`      | Redacted runtime config (admin)           |
+| `POST` | `/api/v1/server/reload`      | Validate/reload config file (admin)       |
 | `GET`  | `/api/v1/users`              | List users (admin)                        |
 | `POST` | `/api/v1/users`              | Create user (admin)                       |
 | `DELETE` | `/api/v1/users?id=…`       | Delete user (admin)                       |
@@ -234,7 +236,8 @@ The management API is served from the same process as the WebUI (default
 
 The full `/api/v1/...` surface from Spec §8.4 still has planned gaps (groups,
 API keys, bulk import/export, WebSocket event stream, share links, server
-config editing, hot reload endpoint).
+config editing). Current reload endpoint validates and reloads config from disk,
+but runtime apply still requires restart for most subsystems.
 
 ---
 

@@ -9,6 +9,7 @@ import { SessionsPage } from "@/pages/sessions-page"
 import { FilesPage } from "@/pages/files-page"
 import { TransfersPage } from "@/pages/transfers-page"
 import { AuditPage } from "@/pages/audit-page"
+import { ConfigurationPage } from "@/pages/configuration-page"
 import { api } from "@/lib/api"
 import type { AuthUser } from "@/lib/types"
 
@@ -50,6 +51,7 @@ export function App() {
           <Route path="/files" element={<FilesPage token={auth.token} />} />
           <Route path="/transfers" element={<TransfersPage token={auth.token} />} />
           <Route path="/audit" element={<AuditPage token={auth.token} />} />
+          <Route path="/configuration" element={<ConfigurationPage token={auth.token} />} />
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </main>

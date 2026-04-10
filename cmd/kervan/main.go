@@ -59,7 +59,7 @@ func cmdRun(args []string) {
 	}
 	logger := ilog.New(cfg.Server.LogLevel, cfg.Server.LogFormat, openLogFile(cfg.Server.LogFile))
 
-	app, err := server.New(cfg, logger)
+	app, err := server.New(cfg, *configPath, logger)
 	if err != nil {
 		exitf("create app: %v", err)
 	}

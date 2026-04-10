@@ -54,6 +54,14 @@ export const api = {
     return request<ServerStatus>("/api/v1/server/status", token)
   },
 
+  serverConfig(token: string): Promise<{ config: Record<string, unknown> }> {
+    return request<{ config: Record<string, unknown> }>("/api/v1/server/config", token)
+  },
+
+  reloadServer(token: string): Promise<Record<string, unknown>> {
+    return request<Record<string, unknown>>("/api/v1/server/reload", token, { method: "POST" })
+  },
+
   users(token: string): Promise<{ users: ApiUser[] }> {
     return request<{ users: ApiUser[] }>("/api/v1/users", token)
   },

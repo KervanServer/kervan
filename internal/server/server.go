@@ -3,11 +3,13 @@ package server
 import (
 	"context"
 	"crypto/tls"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -46,7 +48,7 @@ type App struct {
 	start  time.Time
 }
 
-func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
+func New(cfg *config.Config, configPath string, logger *slog.Logger) (*App, error) {
 	if cfg == nil {
 		return nil, errors.New("config is nil")
 	}
@@ -179,6 +181,28 @@ func New(cfg *config.Config, logger *slog.Logger) (*App, error) {
 				"ftp_enabled":      cfg.FTP.Enabled,
 				"sftp_enabled":     cfg.SFTP.Enabled,
 			}
+		},
+		func() map[string]any {
+			return redactConfig(cfg)
+		},
+		func() (map[string]any, error) {
+			if configPath == "" {
+				return map[string]any{
+					"validated":        false,
+					"requires_restart": true,
+					"message":          "Config path is not available.",
+				}, nil
+			}
+			nextCfg, err := config.Load(configPath)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{
+				"validated":        true,
+				"requires_restart": true,
+				"message":          "Configuration file is valid. Restart is required to apply runtime changes.",
+				"config":           redactConfig(nextCfg),
+			}, nil
 		},
 		func(username string) (vfs.FileSystem, error) {
 			user, err := app.authRepo.GetByUsername(username)
@@ -343,4 +367,56 @@ func (a *App) buildUserFS(user *auth.User) (vfs.FileSystem, error) {
 		DeniedExts:  user.Permissions.DeniedExt,
 	}
 	return vfs.NewUserVFS(mounts, perms, nil), nil
+}
+
+func redactConfig(cfg *config.Config) map[string]any {
+	if cfg == nil {
+		return map[string]any{}
+	}
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		return map[string]any{}
+	}
+	var out map[string]any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return map[string]any{}
+	}
+	redactMap(out)
+	return out
+}
+
+func redactMap(m map[string]any) {
+	for k, v := range m {
+		if shouldRedact(k) {
+			m[k] = "***REDACTED***"
+			continue
+		}
+		switch typed := v.(type) {
+		case map[string]any:
+			redactMap(typed)
+		case []any:
+			for _, item := range typed {
+				if nested, ok := item.(map[string]any); ok {
+					redactMap(nested)
+				}
+			}
+		}
+	}
+}
+
+func shouldRedact(key string) bool {
+	lower := strings.ToLower(strings.TrimSpace(key))
+	if lower == "" {
+		return false
+	}
+	if strings.Contains(lower, "password") {
+		return true
+	}
+	if strings.Contains(lower, "secret") || strings.Contains(lower, "token") {
+		return true
+	}
+	if strings.Contains(lower, "private_key") || strings.Contains(lower, "access_key") {
+		return true
+	}
+	return false
 }
