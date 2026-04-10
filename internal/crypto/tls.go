@@ -14,11 +14,11 @@ func BuildServerTLSConfig(minVersion, maxVersion, certFile, keyFile string) (*tl
 	if err != nil {
 		return nil, err
 	}
-	min, err := parseTLSVersion(minVersion)
+	min, err := ParseTLSVersion(minVersion)
 	if err != nil {
 		return nil, err
 	}
-	max, err := parseTLSVersion(maxVersion)
+	max, err := ParseTLSVersion(maxVersion)
 	if err != nil {
 		return nil, err
 	}
@@ -26,14 +26,26 @@ func BuildServerTLSConfig(minVersion, maxVersion, certFile, keyFile string) (*tl
 		return nil, fmt.Errorf("min tls version cannot be higher than max tls version")
 	}
 
+	return BuildServerTLSConfigFromSource(min, max, func(*tls.ClientHelloInfo) (*tls.Certificate, error) {
+		return &cert, nil
+	}, []tls.Certificate{cert})
+}
+
+func BuildServerTLSConfigFromSource(
+	minVersion uint16,
+	maxVersion uint16,
+	getCertificate func(*tls.ClientHelloInfo) (*tls.Certificate, error),
+	certificates []tls.Certificate,
+) (*tls.Config, error) {
 	return &tls.Config{
-		MinVersion:   min,
-		MaxVersion:   max,
-		Certificates: []tls.Certificate{cert},
+		MinVersion:     minVersion,
+		MaxVersion:     maxVersion,
+		GetCertificate: getCertificate,
+		Certificates:   certificates,
 	}, nil
 }
 
-func parseTLSVersion(v string) (uint16, error) {
+func ParseTLSVersion(v string) (uint16, error) {
 	switch strings.TrimSpace(strings.ToLower(v)) {
 	case "", "1.2", "tls1.2":
 		return tls.VersionTLS12, nil
@@ -42,4 +54,8 @@ func parseTLSVersion(v string) (uint16, error) {
 	default:
 		return 0, fmt.Errorf("unsupported tls version: %s", v)
 	}
+}
+
+func parseTLSVersion(v string) (uint16, error) {
+	return ParseTLSVersion(v)
 }

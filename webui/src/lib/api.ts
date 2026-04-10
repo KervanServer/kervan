@@ -9,7 +9,19 @@ import type {
   AuditEvent,
   LoginResponse,
   ServerStatus,
+  TOTPSetupResponse,
+  TOTPStatus,
 } from "@/lib/types"
+
+export class RequestError extends Error {
+  code?: string
+
+  constructor(message: string, code?: string) {
+    super(message)
+    this.name = "RequestError"
+    this.code = code
+  }
+}
 
 const asMessage = (value: unknown): string => {
   if (typeof value === "string") {
@@ -39,9 +51,10 @@ async function request<T>(url: string, token: string | null, init?: RequestInit)
   const payload = isJSON ? await res.json() : await res.text()
   if (!res.ok) {
     if (isJSON && payload && typeof payload === "object" && "error" in payload) {
-      throw new Error(asMessage((payload as { error: unknown }).error))
+      const typed = payload as { error: unknown; code?: unknown }
+      throw new RequestError(asMessage(typed.error), typeof typed.code === "string" ? typed.code : undefined)
     }
-    throw new Error(typeof payload === "string" ? payload : "Request failed")
+    throw new RequestError(typeof payload === "string" ? payload : "Request failed")
   }
 
   return payload as T
@@ -79,10 +92,41 @@ async function requestBlob(
 }
 
 export const api = {
-  login(username: string, password: string): Promise<LoginResponse> {
-    return request<LoginResponse>("/api/v1/auth/login", null, {
+  async login(username: string, password: string, otp?: string): Promise<LoginResponse> {
+    const res = await fetch("/api/v1/auth/login", {
       method: "POST",
-      body: JSON.stringify({ username, password }),
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password, otp }),
+    })
+    const payload = (await res.json()) as LoginResponse & { error?: unknown; code?: unknown }
+    if (!res.ok) {
+      throw new RequestError(
+        asMessage(payload.error),
+        typeof payload.code === "string" ? payload.code : undefined,
+      )
+    }
+    return payload
+  },
+
+  totpStatus(token: string): Promise<TOTPStatus> {
+    return request<TOTPStatus>("/api/v1/auth/totp", token)
+  },
+
+  totpSetup(token: string): Promise<TOTPSetupResponse> {
+    return request<TOTPSetupResponse>("/api/v1/auth/totp/setup", token, { method: "POST" })
+  },
+
+  totpEnable(token: string, code: string): Promise<TOTPStatus> {
+    return request<TOTPStatus>("/api/v1/auth/totp/enable", token, {
+      method: "POST",
+      body: JSON.stringify({ code }),
+    })
+  },
+
+  totpDisable(token: string, code?: string): Promise<{ disabled: boolean }> {
+    return request<{ disabled: boolean }>("/api/v1/auth/totp", token, {
+      method: "DELETE",
+      body: JSON.stringify({ code }),
     })
   },
 

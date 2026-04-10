@@ -101,6 +101,7 @@ func (s *Server) buildHealthResponse() map[string]any {
 		"filesystem":      subsystemCheck(s.fsBuilder != nil, "user_vfs"),
 		"audit":           s.auditCheck(),
 		"storage":         storageCheck(snapshot),
+		"tls_certificate": tlsCertificateCheck(snapshot),
 	}
 
 	ftpEnabled, _ := boolFromAny(snapshot["ftp_enabled"])
@@ -132,6 +133,7 @@ func (s *Server) buildHealthResponse() map[string]any {
 	copySnapshotField(resp, snapshot, "version")
 	copySnapshotField(resp, snapshot, "started_at")
 	copySnapshotField(resp, snapshot, "uptime_seconds")
+	copySnapshotField(resp, snapshot, "tls_certificate")
 	if s.transfers != nil {
 		resp["transfers"] = s.transfers.Stats()
 	}
@@ -372,6 +374,27 @@ func storageCheck(snapshot map[string]any) map[string]any {
 		out["message"] = "backend-specific health probe is not implemented"
 		return out
 	}
+}
+
+func tlsCertificateCheck(snapshot map[string]any) map[string]any {
+	raw, ok := snapshot["tls_certificate"].(map[string]any)
+	if !ok || raw == nil {
+		return map[string]any{"status": "disabled"}
+	}
+	out := cloneMap(raw)
+	switch stringFromAny(raw["status"]) {
+	case "up":
+		out["status"] = "up"
+	case "expiring", "pending":
+		out["status"] = "degraded"
+	case "expired", "down":
+		out["status"] = "down"
+	case "disabled":
+		out["status"] = "disabled"
+	default:
+		out["status"] = "degraded"
+	}
+	return out
 }
 
 func (s *Server) storeCheck(snapshot map[string]any) map[string]any {

@@ -14,6 +14,7 @@ var (
 	ErrForbiddenPathChar  = errors.New("path contains forbidden characters")
 	ErrPathTooDeep        = errors.New("path exceeds maximum depth")
 	ErrForbiddenExtension = errors.New("extension is not allowed")
+	ErrFileTooLarge       = errors.New("file exceeds maximum allowed size")
 )
 
 type FileSystem interface {
@@ -66,6 +67,7 @@ type UserPermissions struct {
 	CreateDir   bool
 	ListDir     bool
 	Chmod       bool
+	MaxFileSize int64
 	AllowedExts []string
 	DeniedExts  []string
 }

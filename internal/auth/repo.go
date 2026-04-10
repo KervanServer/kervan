@@ -65,6 +65,7 @@ func permissionsEmpty(p UserPermissions) bool {
 		!p.CreateDir &&
 		!p.ListDir &&
 		!p.Chmod &&
+		p.MaxFileSize == 0 &&
 		len(p.AllowedExt) == 0 &&
 		len(p.DeniedExt) == 0
 }

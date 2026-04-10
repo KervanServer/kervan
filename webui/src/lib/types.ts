@@ -9,6 +9,19 @@ export type LoginResponse = {
   user: AuthUser
 }
 
+export type TOTPStatus = {
+  enabled: boolean
+  pending: boolean
+}
+
+export type TOTPSetupResponse = TOTPStatus & {
+  secret: string
+  otpauth_url: string
+  username: string
+  issuer: string
+  generated_at: string
+}
+
 export type ServerStatus = Record<string, unknown>
 
 export type ApiUser = {

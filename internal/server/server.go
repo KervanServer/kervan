@@ -7,13 +7,17 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/kervanserver/kervan/internal/acme"
 	"github.com/kervanserver/kervan/internal/api"
 	"github.com/kervanserver/kervan/internal/audit"
 	"github.com/kervanserver/kervan/internal/auth"
@@ -22,9 +26,11 @@ import (
 	icrypto "github.com/kervanserver/kervan/internal/crypto"
 	"github.com/kervanserver/kervan/internal/protocol/ftp"
 	"github.com/kervanserver/kervan/internal/protocol/sftp"
+	"github.com/kervanserver/kervan/internal/quota"
 	"github.com/kervanserver/kervan/internal/session"
 	"github.com/kervanserver/kervan/internal/storage/local"
 	"github.com/kervanserver/kervan/internal/storage/memory"
+	"github.com/kervanserver/kervan/internal/storage/s3"
 	"github.com/kervanserver/kervan/internal/store"
 	"github.com/kervanserver/kervan/internal/transfer"
 	"github.com/kervanserver/kervan/internal/vfs"
@@ -44,6 +50,8 @@ type App struct {
 	ftpServer  *ftp.Server
 	sftpServer *sftp.Server
 	apiServer  *api.Server
+	acmeMgr    *acme.Manager
+	acmeHTTP   *http.Server
 
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
@@ -94,6 +102,7 @@ func New(cfg *config.Config, configPath string, logger *slog.Logger) (*App, erro
 		audit:     auditEngine,
 		sessions:  session.NewManager(),
 		transfers: transfer.NewManager(2000),
+		acmeMgr:   nil,
 		start:     time.Now().UTC(),
 	}
 	if err := app.ensureAdmin(); err != nil {
@@ -101,8 +110,36 @@ func New(cfg *config.Config, configPath string, logger *slog.Logger) (*App, erro
 		return nil, err
 	}
 
-	var ftpTLSConfig *tls.Config
-	if cfg.FTPS.Enabled {
+	var sharedTLSConfig *tls.Config
+	var acmeManager *acme.Manager
+	if cfg.FTPS.AutoCert.Enabled {
+		manager, mgrErr := acme.New(acme.Config{
+			CacheDir: cfg.FTPS.AutoCert.ACMEDir,
+			Email:    cfg.FTPS.AutoCert.ACMEEmail,
+			Domains:  cfg.FTPS.AutoCert.Domains,
+		})
+		if mgrErr != nil {
+			_ = app.Close()
+			return nil, fmt.Errorf("build acme manager: %w", mgrErr)
+		}
+		acmeManager = manager
+		app.acmeMgr = acmeManager
+		minVersion, parseErr := icrypto.ParseTLSVersion(cfg.FTPS.MinTLSVersion)
+		if parseErr != nil {
+			_ = app.Close()
+			return nil, fmt.Errorf("parse min tls version: %w", parseErr)
+		}
+		maxVersion, parseErr := icrypto.ParseTLSVersion(cfg.FTPS.MaxTLSVersion)
+		if parseErr != nil {
+			_ = app.Close()
+			return nil, fmt.Errorf("parse max tls version: %w", parseErr)
+		}
+		if minVersion > maxVersion {
+			_ = app.Close()
+			return nil, fmt.Errorf("min tls version cannot be higher than max tls version")
+		}
+		sharedTLSConfig = acmeManager.TLSConfig(minVersion, maxVersion)
+	} else if strings.TrimSpace(cfg.FTPS.CertFile) != "" || strings.TrimSpace(cfg.FTPS.KeyFile) != "" {
 		tlsCfg, tlsErr := icrypto.BuildServerTLSConfig(
 			cfg.FTPS.MinTLSVersion,
 			cfg.FTPS.MaxTLSVersion,
@@ -113,7 +150,7 @@ func New(cfg *config.Config, configPath string, logger *slog.Logger) (*App, erro
 			_ = app.Close()
 			return nil, fmt.Errorf("build ftps tls config: %w", tlsErr)
 		}
-		ftpTLSConfig = tlsCfg
+		sharedTLSConfig = tlsCfg
 	}
 
 	app.ftpServer = ftp.NewServer(
@@ -127,7 +164,7 @@ func New(cfg *config.Config, configPath string, logger *slog.Logger) (*App, erro
 			TransferTimeout:  cfg.FTP.TransferTimeout,
 			FTPSMode:         cfg.FTPS.Mode,
 			FTPSImplicitPort: cfg.FTPS.ImplicitPort,
-			TLSConfig:        ftpTLSConfig,
+			TLSConfig:        sharedTLSConfig,
 		},
 		logger,
 		engine,
@@ -167,6 +204,9 @@ func New(cfg *config.Config, configPath string, logger *slog.Logger) (*App, erro
 			Port:           cfg.WebUI.Port,
 			SessionTimeout: cfg.WebUI.SessionTimeout,
 			CORSOrigins:    cfg.WebUI.CORSOrigins,
+			TOTPEnabled:    cfg.WebUI.TOTPEnabled,
+			TLS:            cfg.WebUI.TLS,
+			TLSConfig:      sharedTLSConfig,
 		},
 		logger,
 		engine,
@@ -175,6 +215,13 @@ func New(cfg *config.Config, configPath string, logger *slog.Logger) (*App, erro
 		func() map[string]any {
 			storageBackend, storageRoot := resolveStorageStatus(cfg)
 			xstats := app.transfers.Stats()
+			tlsCertificate := icrypto.ResolveCertificateInfo(
+				cfg.FTPS.CertFile,
+				cfg.FTPS.AutoCert.Enabled,
+				cfg.FTPS.AutoCert.ACMEDir,
+				cfg.FTPS.AutoCert.Domains,
+				time.Now().UTC(),
+			)
 			return map[string]any{
 				"name":                  cfg.Server.Name,
 				"version":               build.Version,
@@ -201,6 +248,7 @@ func New(cfg *config.Config, configPath string, logger *slog.Logger) (*App, erro
 				"storage_backend":       storageBackend,
 				"storage_root":          storageRoot,
 				"audit_log_path":        sinkPath,
+				"tls_certificate":       tlsCertificate,
 			}
 		},
 		func() map[string]any {
@@ -304,14 +352,40 @@ func (a *App) Start(ctx context.Context) error {
 			return fmt.Errorf("start ftp: %w", err)
 		}
 	}
+	if a.cfg.FTPS.AutoCert.Enabled {
+		acmeMux := http.NewServeMux()
+		acmeMux.Handle("/", http.NotFoundHandler())
+		if a.acmeMgr == nil {
+			_ = a.ftpServer.Stop()
+			return fmt.Errorf("start acme manager: not initialized")
+		}
+		a.acmeHTTP = &http.Server{
+			Addr:    net.JoinHostPort(a.cfg.Server.ListenAddress, "80"),
+			Handler: a.acmeMgr.HTTPHandler(acmeMux),
+		}
+		go func() {
+			if err := a.acmeHTTP.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) && a.logger != nil {
+				a.logger.Error("acme http challenge server failed", "error", err)
+			}
+		}()
+		if a.logger != nil {
+			a.logger.Info("ACME HTTP challenge server started", "addr", a.acmeHTTP.Addr)
+		}
+	}
 	if a.cfg.SFTP.Enabled {
 		if err := a.sftpServer.Start(runCtx); err != nil {
+			if a.acmeHTTP != nil {
+				_ = a.acmeHTTP.Shutdown(context.Background())
+			}
 			_ = a.ftpServer.Stop()
 			return fmt.Errorf("start sftp: %w", err)
 		}
 	}
 	if a.cfg.WebUI.Enabled {
 		if err := a.apiServer.Start(runCtx); err != nil {
+			if a.acmeHTTP != nil {
+				_ = a.acmeHTTP.Shutdown(context.Background())
+			}
 			_ = a.sftpServer.Stop()
 			_ = a.ftpServer.Stop()
 			return fmt.Errorf("start api: %w", err)
@@ -342,6 +416,9 @@ func (a *App) Close() error {
 		}
 		if a.apiServer != nil {
 			_ = a.apiServer.Stop(context.Background())
+		}
+		if a.acmeHTTP != nil {
+			_ = a.acmeHTTP.Shutdown(context.Background())
 		}
 		if a.audit != nil {
 			a.audit.Close()
@@ -397,10 +474,33 @@ func (a *App) buildUserFS(user *auth.User) (vfs.FileSystem, error) {
 	if backendType == "" {
 		backendType = "local"
 	}
+	var rootFS vfs.FileSystem
 
 	switch backendType {
 	case "memory":
-		mounts.Mount("/", memory.New(), false)
+		rootFS = memory.New()
+	case "s3":
+		prefix := strings.TrimSpace(backendCfg.Options["prefix"])
+		if user.HomeDir != "" && user.HomeDir != "/" {
+			homeDir := strings.Trim(user.HomeDir, "/")
+			if homeDir != "" {
+				prefix = joinStoragePath(prefix, homeDir)
+			}
+		}
+		s3Backend, err := s3.New(s3.Options{
+			Endpoint:     backendCfg.Options["endpoint"],
+			Region:       backendCfg.Options["region"],
+			Bucket:       backendCfg.Options["bucket"],
+			Prefix:       prefix,
+			AccessKey:    backendCfg.Options["access_key"],
+			SecretKey:    backendCfg.Options["secret_key"],
+			UsePathStyle: parseBoolOption(backendCfg.Options["force_path_style"]),
+			DisableSSL:   parseBoolOption(backendCfg.Options["disable_ssl"]),
+		})
+		if err != nil {
+			return nil, err
+		}
+		rootFS = s3Backend
 	default:
 		root := backendCfg.Options["root"]
 		if root == "" {
@@ -422,7 +522,17 @@ func (a *App) buildUserFS(user *auth.User) (vfs.FileSystem, error) {
 		if err != nil {
 			return nil, err
 		}
-		mounts.Mount("/", localBackend, false)
+		rootFS = localBackend
+	}
+	mounts.Mount("/", rootFS, false)
+
+	var quotaTracker vfs.QuotaTracker
+	if a.cfg.Quota.Enabled && user != nil && user.Type != auth.UserTypeAdmin && rootFS != nil {
+		tracker, err := quota.NewTracker(rootFS, a.cfg.Quota.DefaultMaxStorage)
+		if err != nil {
+			return nil, err
+		}
+		quotaTracker = tracker
 	}
 
 	perms := &vfs.UserPermissions{
@@ -433,10 +543,11 @@ func (a *App) buildUserFS(user *auth.User) (vfs.FileSystem, error) {
 		CreateDir:   user.Permissions.CreateDir,
 		ListDir:     user.Permissions.ListDir,
 		Chmod:       user.Permissions.Chmod,
+		MaxFileSize: user.Permissions.MaxFileSize,
 		AllowedExts: user.Permissions.AllowedExt,
 		DeniedExts:  user.Permissions.DeniedExt,
 	}
-	return vfs.NewUserVFS(mounts, perms, nil), nil
+	return vfs.NewUserVFS(mounts, perms, quotaTracker), nil
 }
 
 func redactConfig(cfg *config.Config) map[string]any {
@@ -651,6 +762,17 @@ func resolveStorageStatus(cfg *config.Config) (string, string) {
 		backendType = "local"
 	}
 	if backendType != "local" {
+		if backendType == "s3" {
+			bucket := strings.TrimSpace(backendCfg.Options["bucket"])
+			prefix := strings.Trim(strings.TrimSpace(backendCfg.Options["prefix"]), "/")
+			if bucket == "" {
+				return backendType, ""
+			}
+			if prefix == "" {
+				return backendType, "s3://" + bucket
+			}
+			return backendType, "s3://" + bucket + "/" + prefix
+		}
 		return backendType, ""
 	}
 	root := backendCfg.Options["root"]
@@ -662,4 +784,27 @@ func resolveStorageStatus(cfg *config.Config) (string, string) {
 		return backendType, root
 	}
 	return backendType, absRoot
+}
+
+func parseBoolOption(raw string) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func joinStoragePath(parts ...string) string {
+	var clean []string
+	for _, part := range parts {
+		part = strings.Trim(part, "/")
+		if part != "" {
+			clean = append(clean, part)
+		}
+	}
+	if len(clean) == 0 {
+		return ""
+	}
+	return path.Join(clean...)
 }

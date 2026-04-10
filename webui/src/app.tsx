@@ -12,7 +12,7 @@ import { AuditPage } from "@/pages/audit-page"
 import { ConfigurationPage } from "@/pages/configuration-page"
 import { MonitoringPage } from "@/pages/monitoring-page"
 import { ApiKeysPage } from "@/pages/apikeys-page"
-import { api } from "@/lib/api"
+import { api, RequestError } from "@/lib/api"
 import type { AuthUser } from "@/lib/types"
 
 type AuthState = {
@@ -24,14 +24,21 @@ export function App() {
   const [auth, setAuth] = useState<AuthState | null>(null)
   const [authError, setAuthError] = useState<string | null>(null)
   const [authLoading, setAuthLoading] = useState(false)
+  const [requiresOTP, setRequiresOTP] = useState(false)
 
-  const login = async (username: string, password: string) => {
+  const login = async (username: string, password: string, otp?: string) => {
     setAuthLoading(true)
     try {
-      const result = await api.login(username, password)
+      const result = await api.login(username, password, otp)
       setAuth(result)
       setAuthError(null)
+      setRequiresOTP(false)
     } catch (err) {
+      if (err instanceof RequestError && err.code === "totp_required") {
+        setRequiresOTP(true)
+      } else {
+        setRequiresOTP(false)
+      }
       setAuthError(err instanceof Error ? err.message : "Login failed")
     } finally {
       setAuthLoading(false)
@@ -39,12 +46,19 @@ export function App() {
   }
 
   if (!auth) {
-    return <LoginForm onSubmit={login} loading={authLoading} error={authError} />
+    return <LoginForm onSubmit={login} loading={authLoading} error={authError} requiresOTP={requiresOTP} />
   }
 
   return (
     <div className="min-h-screen pb-6">
-      <AppShell currentUser={auth.user.username} onLogout={() => setAuth(null)} />
+      <AppShell
+        currentUser={auth.user.username}
+        onLogout={() => {
+          setAuth(null)
+          setRequiresOTP(false)
+          setAuthError(null)
+        }}
+      />
       <main className="mx-auto mt-4 w-full max-w-[1320px] px-3 md:px-5">
         <Routes>
           <Route path="/" element={<DashboardPage token={auth.token} />} />

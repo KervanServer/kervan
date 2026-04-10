@@ -31,6 +31,10 @@ func DefaultConfig() *Config {
 			MinTLSVersion: "1.2",
 			MaxTLSVersion: "1.3",
 			ClientAuth:    "none",
+			AutoCert: AutoCertConfig{
+				Enabled: false,
+				ACMEDir: "./data/acme",
+			},
 		},
 		SFTP: SFTPConfig{
 			Enabled:           true,

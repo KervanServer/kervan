@@ -42,15 +42,23 @@ type FTPConfig struct {
 }
 
 type FTPSConfig struct {
-	Enabled       bool   `yaml:"enabled"`
-	Mode          string `yaml:"mode"`
-	ImplicitPort  int    `yaml:"implicit_port"`
-	MinTLSVersion string `yaml:"min_tls_version"`
-	MaxTLSVersion string `yaml:"max_tls_version"`
-	CertFile      string `yaml:"cert_file"`
-	KeyFile       string `yaml:"key_file"`
-	ClientAuth    string `yaml:"client_auth"`
-	ClientCAFile  string `yaml:"client_ca_file"`
+	Enabled       bool           `yaml:"enabled"`
+	Mode          string         `yaml:"mode"`
+	ImplicitPort  int            `yaml:"implicit_port"`
+	MinTLSVersion string         `yaml:"min_tls_version"`
+	MaxTLSVersion string         `yaml:"max_tls_version"`
+	CertFile      string         `yaml:"cert_file"`
+	KeyFile       string         `yaml:"key_file"`
+	ClientAuth    string         `yaml:"client_auth"`
+	ClientCAFile  string         `yaml:"client_ca_file"`
+	AutoCert      AutoCertConfig `yaml:"auto_cert"`
+}
+
+type AutoCertConfig struct {
+	Enabled   bool     `yaml:"enabled"`
+	Domains   []string `yaml:"domains"`
+	ACMEEmail string   `yaml:"acme_email"`
+	ACMEDir   string   `yaml:"acme_dir"`
 }
 
 type SFTPConfig struct {

@@ -37,12 +37,24 @@ func (c *Config) Validate() error {
 		if mode != "explicit" && mode != "implicit" && mode != "both" {
 			errs = append(errs, "ftps.mode must be explicit|implicit|both")
 		}
-		if c.FTPS.CertFile == "" || c.FTPS.KeyFile == "" {
-			errs = append(errs, "ftps.cert_file and ftps.key_file are required when ftps.enabled=true")
+		autoCertEnabled := c.FTPS.AutoCert.Enabled
+		if !autoCertEnabled && (c.FTPS.CertFile == "" || c.FTPS.KeyFile == "") {
+			errs = append(errs, "ftps.cert_file and ftps.key_file are required when ftps.enabled=true unless ftps.auto_cert.enabled=true")
 		}
 		if c.FTPS.ImplicitPort < 1 || c.FTPS.ImplicitPort > 65535 {
 			errs = append(errs, "ftps.implicit_port must be 1-65535")
 		}
+		if autoCertEnabled {
+			if len(c.FTPS.AutoCert.Domains) == 0 {
+				errs = append(errs, "ftps.auto_cert.domains is required when ftps.auto_cert.enabled=true")
+			}
+			if strings.TrimSpace(c.FTPS.AutoCert.ACMEDir) == "" {
+				errs = append(errs, "ftps.auto_cert.acme_dir is required when ftps.auto_cert.enabled=true")
+			}
+		}
+	}
+	if c.WebUI.TLS && !c.FTPS.AutoCert.Enabled && (strings.TrimSpace(c.FTPS.CertFile) == "" || strings.TrimSpace(c.FTPS.KeyFile) == "") {
+		errs = append(errs, "webui.tls requires ftps cert_file/key_file or ftps.auto_cert.enabled=true")
 	}
 	if c.Auth.PasswordHash != "argon2id" && c.Auth.PasswordHash != "bcrypt" {
 		errs = append(errs, "auth.password_hash must be argon2id|bcrypt")
@@ -69,6 +81,34 @@ func (c *Config) Validate() error {
 		}
 	}
 
+	defaultBackend := strings.TrimSpace(c.Storage.DefaultBackend)
+	if defaultBackend == "" {
+		defaultBackend = "local"
+	}
+	if defaultBackend != "local" {
+		if _, ok := c.Storage.Backends[defaultBackend]; !ok {
+			errs = append(errs, "storage.default_backend must reference a configured backend")
+		}
+	}
+	for name, backend := range c.Storage.Backends {
+		backendType := strings.ToLower(strings.TrimSpace(backend.Type))
+		if backendType == "" {
+			backendType = name
+		}
+		switch backendType {
+		case "local", "memory":
+		case "s3":
+			if strings.TrimSpace(backend.Options["endpoint"]) == "" {
+				errs = append(errs, "storage.backends."+name+".options.endpoint is required for s3")
+			}
+			if strings.TrimSpace(backend.Options["bucket"]) == "" {
+				errs = append(errs, "storage.backends."+name+".options.bucket is required for s3")
+			}
+		default:
+			errs = append(errs, "storage.backends."+name+".type must be local|memory|s3")
+		}
+	}
+
 	for _, ip := range c.Security.AllowedIPs {
 		if !validIPOrCIDR(ip) {
 			errs = append(errs, "security.allowed_ips contains invalid entry: "+ip)
@@ -77,6 +117,15 @@ func (c *Config) Validate() error {
 	for _, ip := range c.Security.DeniedIPs {
 		if !validIPOrCIDR(ip) {
 			errs = append(errs, "security.denied_ips contains invalid entry: "+ip)
+		}
+	}
+	if c.MCP.Enabled {
+		transport := strings.ToLower(strings.TrimSpace(c.MCP.Transport))
+		if transport == "" {
+			transport = "stdio"
+		}
+		if transport != "stdio" {
+			errs = append(errs, "mcp.transport must be stdio")
 		}
 	}
 

@@ -1,6 +1,7 @@
 package vfs
 
 import (
+	"errors"
 	"io/fs"
 	"os"
 	"path"
@@ -9,7 +10,8 @@ import (
 )
 
 type QuotaTracker interface {
-	OnWrite(n int64) error
+	OnGrow(n int64) error
+	OnShrink(n int64)
 }
 
 type UserVFS struct {
@@ -68,7 +70,25 @@ func (u *UserVFS) Open(name string, flags int, perm os.FileMode) (File, error) {
 		return nil, err
 	}
 	if isWrite && u.quota != nil {
-		return &quotaFile{File: f, quota: u.quota}, nil
+		initialSize := int64(0)
+		if info, statErr := f.Stat(); statErr == nil && info != nil {
+			initialSize = info.Size()
+		}
+		if flags&os.O_TRUNC != 0 && initialSize > 0 {
+			u.quota.OnShrink(initialSize)
+			initialSize = 0
+		}
+		initialOffset := int64(0)
+		if flags&os.O_APPEND != 0 {
+			initialOffset = initialSize
+		}
+		return &quotaFile{
+			File:        f,
+			quota:       u.quota,
+			size:        initialSize,
+			offset:      initialOffset,
+			maxFileSize: u.permissions.MaxFileSize,
+		}, nil
 	}
 	return f, nil
 }
@@ -121,7 +141,17 @@ func (u *UserVFS) Remove(name string) error {
 	if ro {
 		return os.ErrPermission
 	}
-	return backend.Remove(rel)
+	reclaimBytes := int64(0)
+	if u.quota != nil {
+		reclaimBytes, _ = measureUsageForQuota(backend, rel)
+	}
+	if err := backend.Remove(rel); err != nil {
+		return err
+	}
+	if u.quota != nil && reclaimBytes > 0 {
+		u.quota.OnShrink(reclaimBytes)
+	}
+	return nil
 }
 
 func (u *UserVFS) RemoveAll(name string) error {
@@ -135,7 +165,17 @@ func (u *UserVFS) RemoveAll(name string) error {
 	if ro {
 		return os.ErrPermission
 	}
-	return backend.RemoveAll(rel)
+	reclaimBytes := int64(0)
+	if u.quota != nil {
+		reclaimBytes, _ = measureUsageForQuota(backend, rel)
+	}
+	if err := backend.RemoveAll(rel); err != nil {
+		return err
+	}
+	if u.quota != nil && reclaimBytes > 0 {
+		u.quota.OnShrink(reclaimBytes)
+	}
+	return nil
 }
 
 func (u *UserVFS) Mkdir(name string, perm os.FileMode) error {
@@ -261,17 +301,123 @@ func (u *UserVFS) lookup(p string) (FileSystem, string, bool, error) {
 
 type quotaFile struct {
 	File
-	quota QuotaTracker
+	quota       QuotaTracker
+	size        int64
+	offset      int64
+	maxFileSize int64
 }
 
 func (q *quotaFile) Write(p []byte) (int, error) {
-	n, err := q.File.Write(p)
-	if n > 0 {
-		if quotaErr := q.quota.OnWrite(int64(n)); quotaErr != nil {
-			return n, quotaErr
+	if q.maxFileSize > 0 && q.offset+int64(len(p)) > q.maxFileSize {
+		return 0, ErrFileTooLarge
+	}
+	growth := projectedGrowth(q.size, q.offset, int64(len(p)))
+	if growth > 0 {
+		if quotaErr := q.quota.OnGrow(growth); quotaErr != nil {
+			return 0, quotaErr
 		}
 	}
+	previousSize := q.size
+	previousOffset := q.offset
+	n, err := q.File.Write(p)
+	actualEnd := previousOffset + int64(n)
+	if actualEnd > q.size {
+		q.size = actualEnd
+	}
+	q.offset = actualEnd
+	actualGrowth := q.size - previousSize
+	if growth > actualGrowth {
+		q.quota.OnShrink(growth - actualGrowth)
+	}
 	return n, err
+}
+
+func (q *quotaFile) Read(p []byte) (int, error) {
+	n, err := q.File.Read(p)
+	q.offset += int64(n)
+	return n, err
+}
+
+func (q *quotaFile) ReadAt(p []byte, off int64) (int, error) {
+	return q.File.ReadAt(p, off)
+}
+
+func (q *quotaFile) WriteAt(p []byte, off int64) (int, error) {
+	current := q.offset
+	q.offset = off
+	n, err := q.Write(p)
+	q.offset = current
+	return n, err
+}
+
+func (q *quotaFile) Seek(offset int64, whence int) (int64, error) {
+	next, err := q.File.Seek(offset, whence)
+	if err == nil {
+		q.offset = next
+	}
+	return next, err
+}
+
+func (q *quotaFile) Truncate(size int64) error {
+	if q.maxFileSize > 0 && size > q.maxFileSize {
+		return ErrFileTooLarge
+	}
+	growth := int64(0)
+	if size > q.size {
+		growth = size - q.size
+		if err := q.quota.OnGrow(growth); err != nil {
+			return err
+		}
+	}
+	if err := q.File.Truncate(size); err != nil {
+		if growth > 0 {
+			q.quota.OnShrink(growth)
+		}
+		return err
+	}
+	if size < q.size {
+		q.quota.OnShrink(q.size - size)
+	}
+	q.size = size
+	if q.offset > size {
+		q.offset = size
+	}
+	return nil
+}
+
+func projectedGrowth(currentSize, offset, writeLen int64) int64 {
+	end := offset + writeLen
+	if end <= currentSize {
+		return 0
+	}
+	return end - currentSize
+}
+
+func measureUsageForQuota(fsys FileSystem, name string) (int64, error) {
+	info, err := fsys.Stat(name)
+	if err != nil {
+		return 0, err
+	}
+	if !info.IsDir() {
+		return info.Size(), nil
+	}
+	entries, err := fsys.ReadDir(name)
+	if err != nil {
+		return 0, err
+	}
+	var total int64
+	for _, entry := range entries {
+		if entry == nil {
+			continue
+		}
+		childPath := path.Join(name, entry.Name())
+		size, err := measureUsageForQuota(fsys, childPath)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return total, err
+		}
+		total += size
+	}
+	return total, nil
 }
 
 func checkExtension(name string, perms *UserPermissions) error {

@@ -46,6 +46,9 @@ func main() {
 		case "migrate":
 			cmdMigrate(os.Args[2:])
 			return
+		case "mcp":
+			cmdMCP(os.Args[2:])
+			return
 		case "status":
 			cmdStatus(os.Args[2:])
 			return

@@ -1,7 +1,14 @@
 package api
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -97,6 +104,8 @@ func TestHandleHealthBuildsStructuredSubsystemChecks(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(auditPath), 0o755); err != nil {
 		t.Fatalf("create audit dir: %v", err)
 	}
+	certPath := filepath.Join(tempDir, "cert.pem")
+	writeMonitoringTestCertificate(t, certPath, time.Now().UTC().Add(40*24*time.Hour))
 
 	srv := &Server{
 		auth:  engine,
@@ -125,6 +134,14 @@ func TestHandleHealthBuildsStructuredSubsystemChecks(t *testing.T) {
 				"storage_backend":    "local",
 				"storage_root":       storageRoot,
 				"store_path":         filepath.Join(tempDir, "kervan-store.json"),
+				"tls_certificate": map[string]any{
+					"source":             "file",
+					"status":             "up",
+					"path":               certPath,
+					"issuer":             "CN=Kervan Test CA",
+					"dns_names":          []string{"ftp.example.com"},
+					"expires_in_seconds": int64(40 * 24 * 3600),
+				},
 			}
 		},
 	}
@@ -159,6 +176,81 @@ func TestHandleHealthBuildsStructuredSubsystemChecks(t *testing.T) {
 	assertCheckStatus(t, checks, "storage", "up")
 	assertCheckStatus(t, checks, "cobaltdb", "up")
 	assertCheckStatus(t, checks, "audit", "up")
+	assertCheckStatus(t, checks, "tls_certificate", "up")
+}
+
+func TestHandleHealthMarksExpiringTLSCertificateDegraded(t *testing.T) {
+	st := openTestStore(t)
+	repo := auth.NewUserRepository(st)
+	engine := auth.NewEngine(repo, "argon2id", 5, 15*time.Minute)
+
+	srv := &Server{
+		auth:  engine,
+		users: repo,
+		store: st,
+		fsBuilder: func(string) (vfs.FileSystem, error) {
+			return nil, nil
+		},
+		auditLogPath: filepath.Join(t.TempDir(), "audit.jsonl"),
+		status: func() map[string]any {
+			return map[string]any{
+				"tls_certificate": map[string]any{
+					"status":             "expiring",
+					"expires_in_seconds": int64(12 * 24 * 3600),
+				},
+			}
+		},
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	srv.handleHealth(rec, req)
+
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode health payload: %v", err)
+	}
+	if got := payload["status"]; got != "degraded" {
+		t.Fatalf("expected degraded status, got %v", got)
+	}
+}
+
+func writeMonitoringTestCertificate(t *testing.T, path string, notAfter time.Time) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey(): %v", err)
+	}
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(2),
+		Subject: pkix.Name{
+			CommonName: "ftp.example.com",
+		},
+		Issuer: pkix.Name{
+			CommonName: "Kervan Test CA",
+		},
+		NotBefore:             time.Now().UTC().Add(-1 * time.Hour),
+		NotAfter:              notAfter,
+		DNSNames:              []string{"ftp.example.com"},
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("CreateCertificate(): %v", err)
+	}
+	rawKey, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatalf("MarshalECPrivateKey(): %v", err)
+	}
+	pemData := append(
+		pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: rawKey}),
+		pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})...,
+	)
+	if err := os.WriteFile(path, pemData, 0o600); err != nil {
+		t.Fatalf("WriteFile(): %v", err)
+	}
 }
 
 func openTestStore(t *testing.T) *store.Store {

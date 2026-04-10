@@ -14,6 +14,8 @@ type User struct {
 	Username       string          `json:"username" yaml:"username"`
 	PasswordHash   string          `json:"password_hash" yaml:"password_hash"`
 	AuthProvider   string          `json:"auth_provider,omitempty" yaml:"auth_provider,omitempty"`
+	TOTPSecret     string          `json:"totp_secret,omitempty" yaml:"totp_secret,omitempty"`
+	TOTPEnabled    bool            `json:"totp_enabled,omitempty" yaml:"totp_enabled,omitempty"`
 	AuthorizedKeys []string        `json:"authorized_keys,omitempty" yaml:"authorized_keys,omitempty"`
 	Email          string          `json:"email,omitempty" yaml:"email,omitempty"`
 	Type           UserType        `json:"type" yaml:"type"`
@@ -30,15 +32,16 @@ type User struct {
 }
 
 type UserPermissions struct {
-	Upload     bool     `json:"upload" yaml:"upload"`
-	Download   bool     `json:"download" yaml:"download"`
-	Delete     bool     `json:"delete" yaml:"delete"`
-	Rename     bool     `json:"rename" yaml:"rename"`
-	CreateDir  bool     `json:"create_dir" yaml:"create_dir"`
-	ListDir    bool     `json:"list_dir" yaml:"list_dir"`
-	Chmod      bool     `json:"chmod" yaml:"chmod"`
-	AllowedExt []string `json:"allowed_ext,omitempty" yaml:"allowed_ext,omitempty"`
-	DeniedExt  []string `json:"denied_ext,omitempty" yaml:"denied_ext,omitempty"`
+	Upload      bool     `json:"upload" yaml:"upload"`
+	Download    bool     `json:"download" yaml:"download"`
+	Delete      bool     `json:"delete" yaml:"delete"`
+	Rename      bool     `json:"rename" yaml:"rename"`
+	CreateDir   bool     `json:"create_dir" yaml:"create_dir"`
+	ListDir     bool     `json:"list_dir" yaml:"list_dir"`
+	Chmod       bool     `json:"chmod" yaml:"chmod"`
+	MaxFileSize int64    `json:"max_file_size,omitempty" yaml:"max_file_size,omitempty"`
+	AllowedExt  []string `json:"allowed_ext,omitempty" yaml:"allowed_ext,omitempty"`
+	DeniedExt   []string `json:"denied_ext,omitempty" yaml:"denied_ext,omitempty"`
 }
 
 func DefaultUserPermissions() UserPermissions {

@@ -65,6 +65,8 @@ export function MonitoringPage({ token }: Props) {
     [metrics],
   )
 
+  const tlsCertificate = (status?.tls_certificate ?? null) as Record<string, unknown> | null
+
   return (
     <section className="space-y-4">
       <Card>
@@ -91,6 +93,28 @@ export function MonitoringPage({ token }: Props) {
             <MetricCard label="Transfers (Failed)" value={formatNumber(metrics.kervan_transfers_failed_total)} />
           </div>
 
+          {tlsCertificate ? (
+            <div className="rounded-xl border border-[var(--border)] bg-[var(--card)] p-4">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <p className="text-sm font-semibold">TLS Certificate</p>
+                  <p className="text-xs text-[var(--muted-foreground)]">
+                    Source: {stringValue(tlsCertificate.source, "unknown")} / Status: {stringValue(tlsCertificate.status, "unknown")}
+                  </p>
+                </div>
+                <p className="text-sm">
+                  Expires: {formatDateTime(tlsCertificate.not_after)} ({formatDuration(Number(tlsCertificate.expires_in_seconds ?? 0))})
+                </p>
+              </div>
+              <div className="mt-3 grid gap-3 md:grid-cols-2">
+                <InfoBlock label="Issuer" value={stringValue(tlsCertificate.issuer)} />
+                <InfoBlock label="Subject" value={stringValue(tlsCertificate.subject)} />
+                <InfoBlock label="SANs" value={arrayValue(tlsCertificate.dns_names).join(", ")} />
+                <InfoBlock label="Serial" value={stringValue(tlsCertificate.serial_number)} />
+              </div>
+            </div>
+          ) : null}
+
           <div className="rounded-xl border border-[var(--border)]">
             <Table>
               <TableHeader>
@@ -116,6 +140,15 @@ export function MonitoringPage({ token }: Props) {
         </CardContent>
       </Card>
     </section>
+  )
+}
+
+function InfoBlock({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-xl border border-[var(--border)] bg-[var(--muted)]/30 p-3">
+      <p className="text-xs text-[var(--muted-foreground)]">{label}</p>
+      <p className="mt-1 break-words text-sm">{value || "n/a"}</p>
+    </div>
   )
 }
 
@@ -167,4 +200,39 @@ function formatBytes(value: unknown): string {
     idx++
   }
   return `${current.toFixed(current >= 10 || idx === 0 ? 0 : 1)} ${units[idx]}`
+}
+
+function stringValue(value: unknown, fallback = "n/a"): string {
+  return typeof value === "string" && value.trim() !== "" ? value : fallback
+}
+
+function arrayValue(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim() !== "") : []
+}
+
+function formatDateTime(value: unknown): string {
+  if (typeof value !== "string" || value.trim() === "") {
+    return "n/a"
+  }
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString()
+}
+
+function formatDuration(seconds: number): string {
+  if (!Number.isFinite(seconds)) {
+    return "n/a"
+  }
+  if (seconds <= 0) {
+    return "expired"
+  }
+  const days = Math.floor(seconds / 86400)
+  if (days > 0) {
+    return `${days}d left`
+  }
+  const hours = Math.floor(seconds / 3600)
+  if (hours > 0) {
+    return `${hours}h left`
+  }
+  const minutes = Math.floor(seconds / 60)
+  return `${Math.max(minutes, 0)}m left`
 }

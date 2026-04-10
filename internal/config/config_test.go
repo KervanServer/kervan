@@ -55,3 +55,28 @@ func TestLDAPConfigValidation(t *testing.T) {
 		t.Fatal("expected ldap validation error for unsupported scheme")
 	}
 }
+
+func TestAutoCertValidation(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.FTPS.Enabled = true
+	cfg.FTPS.AutoCert.Enabled = true
+	cfg.FTPS.CertFile = ""
+	cfg.FTPS.KeyFile = ""
+	cfg.FTPS.AutoCert.Domains = nil
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected auto-cert validation error for missing domains")
+	}
+}
+
+func TestWebUITLSValidation(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.WebUI.TLS = true
+	cfg.FTPS.CertFile = ""
+	cfg.FTPS.KeyFile = ""
+	cfg.FTPS.AutoCert.Enabled = false
+
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("expected webui tls validation error without cert source")
+	}
+}

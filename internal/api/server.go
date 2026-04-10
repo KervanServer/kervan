@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/csv"
 	"encoding/json"
 	"errors"
@@ -33,6 +34,9 @@ type Config struct {
 	Port           int
 	SessionTimeout time.Duration
 	CORSOrigins    []string
+	TOTPEnabled    bool
+	TLS            bool
+	TLSConfig      *tls.Config
 }
 
 type StatusProvider func() map[string]any
@@ -128,6 +132,9 @@ func (s *Server) Start(ctx context.Context) error {
 
 	mux.HandleFunc("/api/login", s.handleLogin)
 	mux.HandleFunc("/api/v1/auth/login", s.handleLogin)
+	mux.HandleFunc("/api/v1/auth/totp", s.withAuth(s.handleTOTP))
+	mux.HandleFunc("/api/v1/auth/totp/setup", s.withAuth(s.handleTOTPSetup))
+	mux.HandleFunc("/api/v1/auth/totp/enable", s.withAuth(s.handleTOTPEnable))
 	mux.HandleFunc("/api/ws", s.handleWebSocket)
 	mux.HandleFunc("/api/v1/ws", s.handleWebSocket)
 
@@ -177,8 +184,9 @@ func (s *Server) Start(ctx context.Context) error {
 
 	handler := s.withMiddleware(mux)
 	s.httpServer = &http.Server{
-		Addr:    net.JoinHostPort(s.cfg.BindAddress, itoa(s.cfg.Port)),
-		Handler: handler,
+		Addr:      net.JoinHostPort(s.cfg.BindAddress, itoa(s.cfg.Port)),
+		Handler:   handler,
+		TLSConfig: s.cfg.TLSConfig,
 	}
 
 	go func() {
@@ -190,7 +198,17 @@ func (s *Server) Start(ctx context.Context) error {
 		if s.logger != nil {
 			s.logger.Info("API server started", "addr", s.httpServer.Addr)
 		}
-		if err := s.httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) && s.logger != nil {
+		var err error
+		if s.cfg.TLS {
+			if s.httpServer.TLSConfig == nil {
+				err = errors.New("webui tls is enabled but no tls config is configured")
+			} else {
+				err = s.httpServer.ListenAndServeTLS("", "")
+			}
+		} else {
+			err = s.httpServer.ListenAndServe()
+		}
+		if err != nil && !errors.Is(err, http.ErrServerClosed) && s.logger != nil {
 			s.logger.Error("api server failed", "error", err)
 		}
 	}()
@@ -226,6 +244,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Username string `json:"username"`
 		Password string `json:"password"`
+		OTP      string `json:"otp"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
@@ -235,6 +254,15 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid credentials"})
 		return
+	}
+	if s.cfg.TOTPEnabled && user.TOTPEnabled {
+		if !auth.ValidateTOTP(user.TOTPSecret, req.OTP, time.Now().UTC(), 1) {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{
+				"error": "two-factor code required",
+				"code":  "totp_required",
+			})
+			return
+		}
 	}
 	token, err := signToken(s.secret, user.Username, s.cfg.SessionTimeout)
 	if err != nil {
@@ -248,6 +276,143 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			"username": user.Username,
 			"type":     user.Type,
 		},
+	})
+}
+
+func (s *Server) handleTOTP(w http.ResponseWriter, r *http.Request) {
+	if !s.cfg.TOTPEnabled {
+		if r.Method == http.MethodGet {
+			writeJSON(w, http.StatusOK, map[string]any{"enabled": false, "pending": false})
+			return
+		}
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "two-factor auth is disabled"})
+		return
+	}
+	user, err := s.users.GetByUsername(currentUser(r))
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if user == nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "user not found"})
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, map[string]any{
+			"enabled": user.TOTPEnabled,
+			"pending": !user.TOTPEnabled && strings.TrimSpace(user.TOTPSecret) != "",
+		})
+	case http.MethodDelete:
+		if user.TOTPEnabled {
+			var req struct {
+				Code string `json:"code"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+				return
+			}
+			if !auth.ValidateTOTP(user.TOTPSecret, req.Code, time.Now().UTC(), 1) {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid two-factor code"})
+				return
+			}
+		}
+		user.TOTPEnabled = false
+		user.TOTPSecret = ""
+		if err := s.users.Update(user); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"disabled": true})
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+	}
+}
+
+func (s *Server) handleTOTPSetup(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if !s.cfg.TOTPEnabled {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "two-factor auth is disabled"})
+		return
+	}
+	user, err := s.users.GetByUsername(currentUser(r))
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if user == nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "user not found"})
+		return
+	}
+
+	secret, err := auth.GenerateTOTPSecret()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to generate secret"})
+		return
+	}
+	user.TOTPSecret = secret
+	user.TOTPEnabled = false
+	if err := s.users.Update(user); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"enabled":      false,
+		"pending":      true,
+		"secret":       secret,
+		"otpauth_url":  auth.TOTPProvisioningURL("Kervan", user.Username, secret),
+		"username":     user.Username,
+		"issuer":       "Kervan",
+		"generated_at": time.Now().UTC(),
+	})
+}
+
+func (s *Server) handleTOTPEnable(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if !s.cfg.TOTPEnabled {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "two-factor auth is disabled"})
+		return
+	}
+	user, err := s.users.GetByUsername(currentUser(r))
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if user == nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "user not found"})
+		return
+	}
+	if strings.TrimSpace(user.TOTPSecret) == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "two-factor setup has not been prepared"})
+		return
+	}
+
+	var req struct {
+		Code string `json:"code"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+		return
+	}
+	if !auth.ValidateTOTP(user.TOTPSecret, req.Code, time.Now().UTC(), 1) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid two-factor code"})
+		return
+	}
+	user.TOTPEnabled = true
+	if err := s.users.Update(user); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"enabled": true,
+		"pending": false,
 	})
 }
 
