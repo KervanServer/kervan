@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -317,5 +318,6 @@ func mapKeys(set map[string]struct{}) []string {
 	for k := range set {
 		out = append(out, k)
 	}
+	sort.Strings(out)
 	return out
 }

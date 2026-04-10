@@ -57,3 +57,11 @@ export type ApiTransfer = {
 
 export type AuditEvent = Record<string, unknown>
 
+export type ApiKey = {
+  id: string
+  name: string
+  permissions: string
+  prefix: string
+  created_at: string
+  last_used?: string
+}

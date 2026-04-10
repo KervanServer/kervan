@@ -1,4 +1,4 @@
-import { ArrowLeftRight, FolderKanban, House, LogOut, Menu, ScrollText, ServerCog, Settings2, UsersRound } from "lucide-react"
+import { Activity, ArrowLeftRight, FolderKanban, House, KeyRound, LogOut, Menu, ScrollText, ServerCog, Settings2, UsersRound } from "lucide-react"
 import { NavLink } from "react-router-dom"
 import { useState } from "react"
 
@@ -15,6 +15,8 @@ const items: Item[] = [
   { to: "/files", icon: FolderKanban, label: "Files" },
   { to: "/transfers", icon: ArrowLeftRight, label: "Transfers" },
   { to: "/audit", icon: ScrollText, label: "Audit" },
+  { to: "/monitoring", icon: Activity, label: "Monitoring" },
+  { to: "/apikeys", icon: KeyRound, label: "API Keys" },
   { to: "/configuration", icon: Settings2, label: "Configuration" },
 ]
 
@@ -92,4 +94,3 @@ export function AppShell({ currentUser, onLogout }: Props) {
     </div>
   )
 }
-

@@ -20,6 +20,7 @@ import (
 
 	"github.com/kervanserver/kervan/internal/auth"
 	"github.com/kervanserver/kervan/internal/session"
+	"github.com/kervanserver/kervan/internal/store"
 	"github.com/kervanserver/kervan/internal/transfer"
 	"github.com/kervanserver/kervan/internal/vfs"
 	"github.com/kervanserver/kervan/internal/webui"
@@ -37,6 +38,7 @@ type UserFSBuilder func(username string) (vfs.FileSystem, error)
 type ServerConfigProvider func() map[string]any
 type ReloadProvider func() (map[string]any, error)
 type ConfigUpdateProvider func(patch map[string]any) (map[string]any, error)
+type ConfigValidateProvider func(patch map[string]any) (map[string]any, error)
 
 type Server struct {
 	cfg          Config
@@ -48,6 +50,8 @@ type Server struct {
 	config       ServerConfigProvider
 	reload       ReloadProvider
 	configUpdate ConfigUpdateProvider
+	configCheck  ConfigValidateProvider
+	apiKeys      *apiKeyRepository
 	fsBuilder    UserFSBuilder
 	auditLogPath string
 	secret       []byte
@@ -69,6 +73,8 @@ func NewServer(
 	configProvider ServerConfigProvider,
 	reloadProvider ReloadProvider,
 	updateProvider ConfigUpdateProvider,
+	validateProvider ConfigValidateProvider,
+	keyStore *store.Store,
 	fsBuilder UserFSBuilder,
 	auditLogPath string,
 	transfers *transfer.Manager,
@@ -97,6 +103,8 @@ func NewServer(
 		config:       configProvider,
 		reload:       reloadProvider,
 		configUpdate: updateProvider,
+		configCheck:  validateProvider,
+		apiKeys:      newAPIKeyRepository(keyStore),
 		fsBuilder:    fsBuilder,
 		auditLogPath: auditLogPath,
 		secret:       secret,
@@ -120,10 +128,13 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/api/server/status", s.withAuth(s.handleServerStatus))
 	mux.HandleFunc("/api/v1/server/status", s.withAuth(s.handleServerStatus))
 	mux.HandleFunc("/api/v1/server/config", s.withAuth(s.handleServerConfig))
+	mux.HandleFunc("/api/v1/server/config/validate", s.withAuth(s.handleServerConfigValidate))
 	mux.HandleFunc("/api/v1/server/reload", s.withAuth(s.handleServerReload))
 
 	mux.HandleFunc("/api/users", s.withAuth(s.handleUsers))
 	mux.HandleFunc("/api/v1/users", s.withAuth(s.handleUsers))
+	mux.HandleFunc("/api/apikeys", s.withAuth(s.handleAPIKeys))
+	mux.HandleFunc("/api/v1/apikeys", s.withAuth(s.handleAPIKeys))
 
 	mux.HandleFunc("/api/sessions", s.withAuth(s.handleSessions))
 	mux.HandleFunc("/api/v1/sessions", s.withAuth(s.handleSessions))
@@ -131,6 +142,7 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/api/files/list", s.withAuth(s.handleFilesList))
 	mux.HandleFunc("/api/files/mkdir", s.withAuth(s.handleFilesMkdir))
 	mux.HandleFunc("/api/files/delete", s.withAuth(s.handleFilesDelete))
+	mux.HandleFunc("/api/files/rename", s.withAuth(s.handleFilesRename))
 	mux.HandleFunc("/api/files/upload", s.withAuth(s.handleFilesUpload))
 	mux.HandleFunc("/api/files/download", s.withAuth(s.handleFilesDownload))
 	mux.HandleFunc("/api/v1/files/", s.withAuth(s.handleFilesV1))
@@ -325,6 +337,36 @@ func (s *Server) handleServerReload(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, result)
 }
 
+func (s *Server) handleServerConfigValidate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if !s.isAdminUser(currentUser(r)) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "admin access required"})
+		return
+	}
+	if s.configCheck == nil {
+		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "server config validate handler is not available"})
+		return
+	}
+	var patch map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+		return
+	}
+	result, err := s.configCheck(patch)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	if result == nil {
+		result = map[string]any{}
+	}
+	result["validated_at"] = time.Now().UTC()
+	writeJSON(w, http.StatusOK, result)
+}
+
 func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -402,6 +444,82 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"sessions": s.sessions.List()})
+}
+
+func (s *Server) handleAPIKeys(w http.ResponseWriter, r *http.Request) {
+	if s.apiKeys == nil {
+		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "api keys are not configured"})
+		return
+	}
+	authenticated := currentUser(r)
+	user, err := s.users.GetByUsername(authenticated)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if user == nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "user not found"})
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		keys, err := s.apiKeys.ListByUser(user.ID)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		response := make([]map[string]any, 0, len(keys))
+		for _, item := range keys {
+			if item == nil {
+				continue
+			}
+			response = append(response, map[string]any{
+				"id":          item.ID,
+				"name":        item.Name,
+				"permissions": item.Permissions,
+				"prefix":      item.Prefix,
+				"created_at":  item.CreatedAt,
+				"last_used":   item.LastUsedAt,
+			})
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"keys": response})
+	case http.MethodPost:
+		var req struct {
+			Name        string `json:"name"`
+			Permissions string `json:"permissions"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+			return
+		}
+		raw, created, err := s.apiKeys.Create(user.ID, req.Name, req.Permissions)
+		if err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]any{
+			"id":          created.ID,
+			"name":        created.Name,
+			"permissions": created.Permissions,
+			"prefix":      created.Prefix,
+			"created_at":  created.CreatedAt,
+			"key":         raw,
+		})
+	case http.MethodDelete:
+		id := strings.TrimSpace(r.URL.Query().Get("id"))
+		if id == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id is required"})
+			return
+		}
+		if err := s.apiKeys.Delete(user.ID, id); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"deleted": true, "id": id})
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+	}
 }
 
 func (s *Server) handleFilesList(w http.ResponseWriter, r *http.Request) {
@@ -508,6 +626,47 @@ func (s *Server) handleFilesDelete(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
+func (s *Server) handleFilesRename(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	user := currentUser(r)
+	fsys, err := s.userFS(user)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	from := normalizeAPIPath(r.URL.Query().Get("from"))
+	to := normalizeAPIPath(r.URL.Query().Get("to"))
+	if from == "" || to == "" {
+		var req struct {
+			From string `json:"from"`
+			To   string `json:"to"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "from and to are required"})
+			return
+		}
+		from = normalizeAPIPath(req.From)
+		to = normalizeAPIPath(req.To)
+	}
+	if from == "" || to == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "from and to are required"})
+		return
+	}
+	if err := fsys.Rename(from, to); err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"from":       from,
+		"to":         to,
+		"renamed_at": time.Now().UTC(),
+	})
+}
+
 func (s *Server) handleFilesUpload(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -604,6 +763,8 @@ func (s *Server) handleFilesV1(w http.ResponseWriter, r *http.Request) {
 		s.handleFilesMkdir(w, requestWithTarget)
 	case "rm":
 		s.handleFilesDelete(w, requestWithTarget)
+	case "rename":
+		s.handleFilesRename(w, requestWithTarget)
 	case "upload":
 		s.handleFilesUpload(w, requestWithTarget)
 	case "download":

@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -219,7 +220,7 @@ func New(cfg *config.Config, configPath string, logger *slog.Logger) (*App, erro
 			if err != nil {
 				return nil, err
 			}
-			mergedCfg, err := mergeConfigPatch(currentCfg, patch)
+			mergedCfg, changedPaths, err := mergeConfigPatch(currentCfg, patch)
 			if err != nil {
 				return nil, err
 			}
@@ -230,9 +231,30 @@ func New(cfg *config.Config, configPath string, logger *slog.Logger) (*App, erro
 				"updated":          true,
 				"requires_restart": true,
 				"message":          "Configuration updated on disk. Restart is required to apply changes.",
+				"changed_paths":    changedPaths,
 				"config":           redactConfig(mergedCfg),
 			}, nil
 		},
+		func(patch map[string]any) (map[string]any, error) {
+			if configPath == "" {
+				return nil, errors.New("config path is not available")
+			}
+			currentCfg, err := config.Load(configPath)
+			if err != nil {
+				return nil, err
+			}
+			mergedCfg, changedPaths, err := mergeConfigPatch(currentCfg, patch)
+			if err != nil {
+				return nil, err
+			}
+			return map[string]any{
+				"validated":        true,
+				"requires_restart": true,
+				"changed_paths":    changedPaths,
+				"config":           redactConfig(mergedCfg),
+			}, nil
+		},
+		st,
 		func(username string) (vfs.FileSystem, error) {
 			user, err := app.authRepo.GetByUsername(username)
 			if err != nil {
@@ -402,12 +424,8 @@ func redactConfig(cfg *config.Config) map[string]any {
 	if cfg == nil {
 		return map[string]any{}
 	}
-	raw, err := json.Marshal(cfg)
+	out, err := configToMap(cfg)
 	if err != nil {
-		return map[string]any{}
-	}
-	var out map[string]any
-	if err := json.Unmarshal(raw, &out); err != nil {
 		return map[string]any{}
 	}
 	redactMap(out)
@@ -450,56 +468,143 @@ func shouldRedact(key string) bool {
 	return false
 }
 
-func mergeConfigPatch(base *config.Config, patch map[string]any) (*config.Config, error) {
+func mergeConfigPatch(base *config.Config, patch map[string]any) (*config.Config, []string, error) {
 	if base == nil {
-		return nil, errors.New("base config is nil")
+		return nil, nil, errors.New("base config is nil")
 	}
 	if patch == nil {
-		return nil, errors.New("patch is nil")
+		return nil, nil, errors.New("patch is nil")
 	}
 
-	rawBase, err := json.Marshal(base)
+	baseMap, err := configToMap(base)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	var baseMap map[string]any
-	if err := json.Unmarshal(rawBase, &baseMap); err != nil {
-		return nil, err
+	if err := validatePatchMap(baseMap, patch, ""); err != nil {
+		return nil, nil, err
 	}
+	changed := make(map[string]struct{})
+	deepMergeMap(baseMap, patch, "", changed)
 
-	deepMergeMap(baseMap, patch)
-
-	rawMerged, err := json.Marshal(baseMap)
+	merged, err := mapToConfig(baseMap)
 	if err != nil {
-		return nil, err
-	}
-	merged := &config.Config{}
-	if err := json.Unmarshal(rawMerged, merged); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := merged.Validate(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return merged, nil
+	paths := make([]string, 0, len(changed))
+	for p := range changed {
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	return merged, paths, nil
 }
 
-func deepMergeMap(dst, src map[string]any) {
+func deepMergeMap(dst, src map[string]any, prefix string, changed map[string]struct{}) {
 	for k, v := range src {
+		path := joinPath(prefix, k)
 		existing, ok := dst[k]
 		if !ok {
 			dst[k] = v
+			changed[path] = struct{}{}
 			continue
 		}
 
 		srcMap, srcIsMap := v.(map[string]any)
 		dstMap, dstIsMap := existing.(map[string]any)
 		if srcIsMap && dstIsMap {
-			deepMergeMap(dstMap, srcMap)
+			deepMergeMap(dstMap, srcMap, path, changed)
 			dst[k] = dstMap
 			continue
 		}
+		if !isSameJSONValue(existing, v) {
+			changed[path] = struct{}{}
+		}
 		dst[k] = v
 	}
+}
+
+func validatePatchMap(baseMap, patch map[string]any, prefix string) error {
+	for k, v := range patch {
+		path := joinPath(prefix, k)
+		baseVal, ok := baseMap[k]
+		if !ok {
+			return fmt.Errorf("unknown config field: %s", path)
+		}
+		if isSensitivePath(path) {
+			return fmt.Errorf("updating sensitive field is not allowed: %s", path)
+		}
+		if str, ok := v.(string); ok && str == "***REDACTED***" {
+			return fmt.Errorf("redacted values are not allowed in patches: %s", path)
+		}
+
+		patchMap, patchIsMap := v.(map[string]any)
+		baseNested, baseIsMap := baseVal.(map[string]any)
+		if baseIsMap && !patchIsMap {
+			return fmt.Errorf("field must be an object: %s", path)
+		}
+		if patchIsMap {
+			if !baseIsMap {
+				return fmt.Errorf("field is not an object: %s", path)
+			}
+			if err := validatePatchMap(baseNested, patchMap, path); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func joinPath(prefix, key string) string {
+	if strings.TrimSpace(prefix) == "" {
+		return key
+	}
+	return prefix + "." + key
+}
+
+func isSensitivePath(path string) bool {
+	lower := strings.ToLower(path)
+	if strings.Contains(lower, "password") || strings.Contains(lower, "secret") || strings.Contains(lower, "token") {
+		return true
+	}
+	return strings.Contains(lower, "private_key")
+}
+
+func isSameJSONValue(a, b any) bool {
+	left, errA := json.Marshal(a)
+	right, errB := json.Marshal(b)
+	if errA != nil || errB != nil {
+		return false
+	}
+	return string(left) == string(right)
+}
+
+func configToMap(cfg *config.Config) (map[string]any, error) {
+	raw, err := yaml.Marshal(cfg)
+	if err != nil {
+		return nil, err
+	}
+	var out map[string]any
+	if err := yaml.Unmarshal(raw, &out); err != nil {
+		return nil, err
+	}
+	if out == nil {
+		out = map[string]any{}
+	}
+	return out, nil
+}
+
+func mapToConfig(input map[string]any) (*config.Config, error) {
+	raw, err := yaml.Marshal(input)
+	if err != nil {
+		return nil, err
+	}
+	out := &config.Config{}
+	if err := yaml.Unmarshal(raw, out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func writeConfigFile(path string, cfg *config.Config) error {

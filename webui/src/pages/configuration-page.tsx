@@ -8,17 +8,21 @@ import { api } from "@/lib/api"
 type Props = { token: string }
 
 export function ConfigurationPage({ token }: Props) {
+  const [baseConfig, setBaseConfig] = useState<Record<string, unknown>>({})
   const [configDraft, setConfigDraft] = useState("{}")
   const [reloadResult, setReloadResult] = useState<Record<string, unknown> | null>(null)
   const [saveResult, setSaveResult] = useState<Record<string, unknown> | null>(null)
+  const [validateResult, setValidateResult] = useState<Record<string, unknown> | null>(null)
   const [loading, setLoading] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [validating, setValidating] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   const loadConfig = async () => {
     setLoading(true)
     try {
       const response = await api.serverConfig(token)
+      setBaseConfig(response.config)
       setConfigDraft(JSON.stringify(response.config, null, 2))
       setError(null)
     } catch (err) {
@@ -38,6 +42,7 @@ export function ConfigurationPage({ token }: Props) {
       const response = await api.reloadServer(token)
       setReloadResult(response)
       setSaveResult(null)
+      setValidateResult(null)
       setError(null)
       await loadConfig()
     } catch (err) {
@@ -49,15 +54,44 @@ export function ConfigurationPage({ token }: Props) {
     setSaving(true)
     try {
       const parsed = JSON.parse(configDraft) as Record<string, unknown>
-      const response = await api.updateServerConfig(token, parsed)
+      const patch = buildPatch(baseConfig, parsed)
+      if (Object.keys(patch).length === 0) {
+        setSaveResult({ updated: false, message: "No changes detected." })
+        setError(null)
+        return
+      }
+      const response = await api.updateServerConfig(token, patch)
       setSaveResult(response)
       setReloadResult(null)
+      setValidateResult(null)
       setError(null)
       await loadConfig()
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to update configuration")
     } finally {
       setSaving(false)
+    }
+  }
+
+  const validatePatch = async () => {
+    setValidating(true)
+    try {
+      const parsed = JSON.parse(configDraft) as Record<string, unknown>
+      const patch = buildPatch(baseConfig, parsed)
+      if (Object.keys(patch).length === 0) {
+        setValidateResult({ validated: true, changed_paths: [], message: "No changes detected." })
+        setError(null)
+        return
+      }
+      const response = await api.validateServerConfig(token, patch)
+      setValidateResult(response)
+      setReloadResult(null)
+      setSaveResult(null)
+      setError(null)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to validate configuration patch")
+    } finally {
+      setValidating(false)
     }
   }
 
@@ -74,6 +108,9 @@ export function ConfigurationPage({ token }: Props) {
           <div className="flex gap-2">
             <Button variant="outline" onClick={() => void loadConfig()} disabled={loading}>
               Refresh
+            </Button>
+            <Button variant="outline" onClick={() => void validatePatch()} disabled={validating}>
+              {validating ? "Validating..." : "Validate Patch"}
             </Button>
             <Button variant="secondary" onClick={() => void save()} disabled={saving}>
               {saving ? "Saving..." : "Save Config"}
@@ -106,6 +143,19 @@ export function ConfigurationPage({ token }: Props) {
         </Card>
       ) : null}
 
+      {validateResult ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Validation Result</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <pre className="max-h-[30vh] overflow-auto rounded-xl bg-[var(--muted)] p-3 text-xs">
+              {JSON.stringify(validateResult, null, 2)}
+            </pre>
+          </CardContent>
+        </Card>
+      ) : null}
+
       {reloadResult ? (
         <Card>
           <CardHeader>
@@ -120,4 +170,37 @@ export function ConfigurationPage({ token }: Props) {
       ) : null}
     </section>
   )
+}
+
+function buildPatch(base: Record<string, unknown>, edited: Record<string, unknown>): Record<string, unknown> {
+  const patch: Record<string, unknown> = {}
+  for (const key of Object.keys(edited)) {
+    const before = base[key]
+    const after = edited[key]
+
+    if (isObject(before) && isObject(after)) {
+      const nested = buildPatch(before, after)
+      if (Object.keys(nested).length > 0) {
+        patch[key] = nested
+      }
+      continue
+    }
+
+    if (!isEqualJSON(before, after)) {
+      patch[key] = after
+    }
+  }
+  return patch
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+}
+
+function isEqualJSON(a: unknown, b: unknown): boolean {
+  try {
+    return JSON.stringify(a) === JSON.stringify(b)
+  } catch {
+    return false
+  }
 }

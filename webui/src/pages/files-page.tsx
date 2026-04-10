@@ -1,5 +1,5 @@
 ﻿import { useEffect, useMemo, useState } from "react"
-import { FolderPlus, Upload } from "lucide-react"
+import { FolderPlus, Pencil, Upload } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -75,6 +75,26 @@ export function FilesPage({ token }: Props) {
     }
   }
 
+  const rename = async (entry: ApiFileEntry) => {
+    const nextName = window.prompt("New name", entry.name)
+    if (nextName === null) {
+      return
+    }
+    const trimmed = nextName.trim()
+    if (!trimmed || trimmed === entry.name) {
+      return
+    }
+    const slash = entry.path.lastIndexOf("/")
+    const parent = slash > 0 ? entry.path.slice(0, slash) : "/"
+    const target = `${parent}/${trimmed}`.replace(/\/+/g, "/")
+    try {
+      await api.rename(token, entry.path, target)
+      await load(path)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to rename entry")
+    }
+  }
+
   const navigate = async (index: number) => {
     if (index < 0) {
       await load("/")
@@ -147,9 +167,15 @@ export function FilesPage({ token }: Props) {
                   <TableCell>{entry.is_dir ? "Directory" : "File"}</TableCell>
                   <TableCell>{entry.size}</TableCell>
                   <TableCell className="text-right">
-                    <Button variant="destructive" size="sm" onClick={() => void remove(entry)}>
-                      Delete
-                    </Button>
+                    <div className="flex justify-end gap-2">
+                      <Button variant="outline" size="sm" onClick={() => void rename(entry)}>
+                        <Pencil className="mr-2 h-3.5 w-3.5" />
+                        Rename
+                      </Button>
+                      <Button variant="destructive" size="sm" onClick={() => void remove(entry)}>
+                        Delete
+                      </Button>
+                    </div>
                   </TableCell>
                 </TableRow>
               ))}

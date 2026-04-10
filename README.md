@@ -221,14 +221,19 @@ The management API is served from the same process as the WebUI (default
 | `GET`  | `/api/v1/server/status`      | Server status snapshot                    |
 | `GET`  | `/api/v1/server/config`      | Redacted runtime config (admin)           |
 | `PUT`  | `/api/v1/server/config`      | Update config with JSON patch (admin)     |
+| `POST` | `/api/v1/server/config/validate` | Validate config patch without write (admin) |
 | `POST` | `/api/v1/server/reload`      | Validate/reload config file (admin)       |
 | `GET`  | `/api/v1/users`              | List users (admin)                        |
 | `POST` | `/api/v1/users`              | Create user (admin)                       |
 | `DELETE` | `/api/v1/users?id=…`       | Delete user (admin)                       |
+| `GET`  | `/api/v1/apikeys`            | List API keys (current user)              |
+| `POST` | `/api/v1/apikeys`            | Create API key (shown once)               |
+| `DELETE` | `/api/v1/apikeys?id=…`     | Revoke API key                            |
 | `GET`  | `/api/v1/sessions`           | Active session list                       |
 | `GET`  | `/api/v1/files/{user}/ls`    | List directory contents                   |
 | `GET`  | `/api/v1/files/{user}/stat`  | File or directory metadata                |
 | `POST` | `/api/v1/files/{user}/mkdir` | Create directory                          |
+| `POST` | `/api/v1/files/{user}/rename`| Rename or move file/directory            |
 | `POST` | `/api/v1/files/{user}/upload`| Upload file content                       |
 | `GET`  | `/api/v1/files/{user}/download` | Stream file download                   |
 | `DELETE` | `/api/v1/files/{user}/rm`  | Remove file or directory                  |
@@ -237,7 +242,7 @@ The management API is served from the same process as the WebUI (default
 | `GET`  | `/api/v1/ws?token=...&types=server,sessions,transfers,audit` | WebSocket live snapshots |
 
 The full `/api/v1/...` surface from Spec §8.4 still has planned gaps (groups,
-API keys, bulk import/export, share links, advanced server config editing).
+bulk import/export, share links, advanced server config editing).
 Current reload endpoint validates and reloads config from disk, but runtime
 apply still requires restart for most subsystems.
 
@@ -252,7 +257,7 @@ The binary embeds a React 19 WebUI from [webui](webui) at runtime through
 - lucide-react icon set
 - Dark/light theme switch via `next-themes`
 - Responsive navigation and page layouts for desktop/mobile
-- API-integrated pages: dashboard, users, sessions, files, transfers, audit
+- API-integrated pages: dashboard, users, sessions, files, transfers, audit, monitoring, API keys
 
 ---
 

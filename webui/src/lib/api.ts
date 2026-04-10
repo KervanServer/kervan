@@ -1,6 +1,7 @@
 import type {
   ApiFileEntry,
   ApiSession,
+  ApiKey,
   ApiTransfer,
   ApiUser,
   AuditEvent,
@@ -54,6 +55,10 @@ export const api = {
     return request<ServerStatus>("/api/v1/server/status", token)
   },
 
+  metricsRaw(token: string): Promise<string> {
+    return request<string>("/api/v1/metrics", token)
+  },
+
   serverConfig(token: string): Promise<{ config: Record<string, unknown> }> {
     return request<{ config: Record<string, unknown> }>("/api/v1/server/config", token)
   },
@@ -65,12 +70,34 @@ export const api = {
     })
   },
 
+  validateServerConfig(token: string, patch: Record<string, unknown>): Promise<Record<string, unknown>> {
+    return request<Record<string, unknown>>("/api/v1/server/config/validate", token, {
+      method: "POST",
+      body: JSON.stringify(patch),
+    })
+  },
+
   reloadServer(token: string): Promise<Record<string, unknown>> {
     return request<Record<string, unknown>>("/api/v1/server/reload", token, { method: "POST" })
   },
 
   users(token: string): Promise<{ users: ApiUser[] }> {
     return request<{ users: ApiUser[] }>("/api/v1/users", token)
+  },
+
+  apiKeys(token: string): Promise<{ keys: ApiKey[] }> {
+    return request<{ keys: ApiKey[] }>("/api/v1/apikeys", token)
+  },
+
+  createApiKey(token: string, payload: { name: string; permissions: string }): Promise<{ key: string; id: string }> {
+    return request<{ key: string; id: string }>("/api/v1/apikeys", token, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    })
+  },
+
+  deleteApiKey(token: string, id: string): Promise<void> {
+    return request<void>(`/api/v1/apikeys?id=${encodeURIComponent(id)}`, token, { method: "DELETE" })
   },
 
   createUser(token: string, payload: { username: string; password: string; home_dir: string; admin: boolean }): Promise<void> {
@@ -104,6 +131,14 @@ export const api = {
       `/api/v1/files/me/rm?path=${encodeURIComponent(targetPath)}&recursive=${recursive ? "true" : "false"}`,
       token,
       { method: "DELETE" },
+    )
+  },
+
+  rename(token: string, fromPath: string, toPath: string): Promise<void> {
+    return request<void>(
+      `/api/v1/files/me/rename?from=${encodeURIComponent(fromPath)}&to=${encodeURIComponent(toPath)}`,
+      token,
+      { method: "POST" },
     )
   },
 
