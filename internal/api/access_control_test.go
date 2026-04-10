@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -155,6 +156,39 @@ func TestHandleAuditScopesNonAdminToOwnEvents(t *testing.T) {
 	}
 	if len(payload.Events) != 1 || payload.Events[0]["username"] != "alice" {
 		t.Fatalf("expected only alice audit events, got %#v", payload.Events)
+	}
+}
+
+func TestHandleAuditExportScopesNonAdminToOwnEvents(t *testing.T) {
+	srv := newAccessControlServer(t)
+	events := []map[string]any{
+		{"timestamp": "2026-04-10T10:00:00Z", "username": "alice", "type": "upload", "path": "/alice.txt"},
+		{"timestamp": "2026-04-10T11:00:00Z", "username": "bob", "type": "download", "path": "/bob.txt"},
+	}
+	raw := ""
+	for _, event := range events {
+		line, err := json.Marshal(event)
+		if err != nil {
+			t.Fatalf("marshal event: %v", err)
+		}
+		raw += string(line) + "\n"
+	}
+	if err := os.WriteFile(srv.auditLogPath, []byte(raw), 0o600); err != nil {
+		t.Fatalf("write audit log: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/audit/export?format=csv&username=bob", nil)
+	req.Header.Set("X-Auth-User", "alice")
+	rec := httptest.NewRecorder()
+
+	srv.handleAuditExport(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "alice") || strings.Contains(body, "bob") {
+		t.Fatalf("expected export to be scoped to alice, got %q", body)
 	}
 }
 

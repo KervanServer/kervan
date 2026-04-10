@@ -3,8 +3,10 @@ package api
 import (
 	"context"
 	"crypto/rand"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"log/slog"
@@ -163,6 +165,8 @@ func (s *Server) Start(ctx context.Context) error {
 
 	mux.HandleFunc("/api/audit", s.withAuth(s.handleAudit))
 	mux.HandleFunc("/api/v1/audit/events", s.withAuth(s.handleAudit))
+	mux.HandleFunc("/api/audit/export", s.withAuth(s.handleAuditExport))
+	mux.HandleFunc("/api/v1/audit/export", s.withAuth(s.handleAuditExport))
 
 	mux.HandleFunc("/api/transfers", s.withAuth(s.handleTransfers))
 	mux.HandleFunc("/api/v1/transfers", s.withAuth(s.handleTransfers))
@@ -1108,12 +1112,8 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"events": []any{}})
 		return
 	}
-	raw, err := os.ReadFile(s.auditLogPath)
+	allEvents, err := s.readAllAuditEvents()
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			writeJSON(w, http.StatusOK, map[string]any{"events": []any{}})
-			return
-		}
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
@@ -1135,19 +1135,6 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 	status := strings.TrimSpace(r.URL.Query().Get("status"))
 	query := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
 
-	lines := strings.Split(string(raw), "\n")
-	allEvents := make([]map[string]any, 0, len(lines))
-	for i := len(lines) - 1; i >= 0; i-- {
-		line := strings.TrimSpace(lines[i])
-		if line == "" {
-			continue
-		}
-		var evt map[string]any
-		if err := json.Unmarshal([]byte(line), &evt); err != nil {
-			continue
-		}
-		allEvents = append(allEvents, evt)
-	}
 	filtered := filterAuditEvents(allEvents, username, protocol, eventType, status, query)
 	eventsPage, total := paginateAudit(filtered, page, limit)
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -1158,6 +1145,55 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 			"total":     total,
 		},
 	})
+}
+
+func (s *Server) handleAuditExport(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	if s.auditLogPath == "" {
+		writeJSON(w, http.StatusOK, []map[string]any{})
+		return
+	}
+
+	format := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("format")))
+	if format == "" {
+		format = "json"
+	}
+	if format != "json" && format != "csv" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unsupported format"})
+		return
+	}
+
+	allEvents, err := s.readAllAuditEvents()
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	viewer := currentUser(r)
+	username := s.viewerScopedUsername(viewer, r.URL.Query().Get("username"))
+	protocol := strings.TrimSpace(r.URL.Query().Get("protocol"))
+	eventType := strings.TrimSpace(r.URL.Query().Get("type"))
+	status := strings.TrimSpace(r.URL.Query().Get("status"))
+	query := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
+	filtered := filterAuditEvents(allEvents, username, protocol, eventType, status, query)
+
+	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="audit-export.%s"`, format))
+	switch format {
+	case "json":
+		w.Header().Set("Content-Type", "application/json")
+		encoder := json.NewEncoder(w)
+		encoder.SetIndent("", "  ")
+		_ = encoder.Encode(filtered)
+	case "csv":
+		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+		if err := writeAuditCSV(w, filtered); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+	}
 }
 
 func (s *Server) handleTransfers(w http.ResponseWriter, r *http.Request) {
@@ -1489,6 +1525,58 @@ func (s *Server) readRecentAuditEvents(limit int) []map[string]any {
 		events = append(events, evt)
 	}
 	return events
+}
+
+func (s *Server) readAllAuditEvents() ([]map[string]any, error) {
+	if s.auditLogPath == "" {
+		return []map[string]any{}, nil
+	}
+	raw, err := os.ReadFile(s.auditLogPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return []map[string]any{}, nil
+		}
+		return nil, err
+	}
+	lines := strings.Split(string(raw), "\n")
+	events := make([]map[string]any, 0, len(lines))
+	for i := len(lines) - 1; i >= 0; i-- {
+		line := strings.TrimSpace(lines[i])
+		if line == "" {
+			continue
+		}
+		var evt map[string]any
+		if err := json.Unmarshal([]byte(line), &evt); err != nil {
+			continue
+		}
+		events = append(events, evt)
+	}
+	return events, nil
+}
+
+func writeAuditCSV(w io.Writer, events []map[string]any) error {
+	writer := csv.NewWriter(w)
+	header := []string{"timestamp", "type", "username", "protocol", "status", "path", "ip", "message"}
+	if err := writer.Write(header); err != nil {
+		return err
+	}
+	for _, event := range events {
+		row := []string{
+			strField(event, "timestamp"),
+			strField(event, "type"),
+			strField(event, "username"),
+			strField(event, "protocol"),
+			strField(event, "status"),
+			strField(event, "path"),
+			strField(event, "ip"),
+			strField(event, "message"),
+		}
+		if err := writer.Write(row); err != nil {
+			return err
+		}
+	}
+	writer.Flush()
+	return writer.Error()
 }
 
 func normalizeTargetUser(raw, current string) string {

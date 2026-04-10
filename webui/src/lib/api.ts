@@ -238,4 +238,8 @@ export const api = {
       token,
     )
   },
+
+  exportAudit(token: string, format: "json" | "csv"): Promise<{ blob: Blob; filename: string | null }> {
+    return requestBlob(`/api/v1/audit/export?format=${encodeURIComponent(format)}`, token)
+  },
 }
