@@ -108,6 +108,13 @@ export const api = {
     })
   },
 
+  updateUser(token: string, payload: { id: string; enabled?: boolean; home_dir?: string; admin?: boolean }): Promise<void> {
+    return request<void>("/api/v1/users", token, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    })
+  },
+
   deleteUser(token: string, id: string): Promise<void> {
     return request<void>(`/api/v1/users?id=${encodeURIComponent(id)}`, token, { method: "DELETE" })
   },

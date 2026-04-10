@@ -1,5 +1,5 @@
 ﻿import { useEffect, useState } from "react"
-import { Trash2, UserPlus } from "lucide-react"
+import { Shield, Trash2, UserPlus } from "lucide-react"
 
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -61,6 +61,15 @@ export function UsersPage({ token }: Props) {
     }
   }
 
+  const onToggleEnabled = async (user: ApiUser) => {
+    try {
+      await api.updateUser(token, { id: user.id, enabled: !user.enabled })
+      await load()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to update user")
+    }
+  }
+
   return (
     <section className="grid gap-4 xl:grid-cols-[1fr_350px]">
       <Card>
@@ -75,6 +84,7 @@ export function UsersPage({ token }: Props) {
               <TableRow>
                 <TableHead>Username</TableHead>
                 <TableHead>Type</TableHead>
+                <TableHead>Status</TableHead>
                 <TableHead>Home</TableHead>
                 <TableHead className="text-right">Action</TableHead>
               </TableRow>
@@ -83,13 +93,24 @@ export function UsersPage({ token }: Props) {
               {users.map((user) => (
                 <TableRow key={user.id}>
                   <TableCell>{user.username}</TableCell>
-                  <TableCell>{user.type}</TableCell>
+                  <TableCell>
+                    <span className="inline-flex items-center gap-1">
+                      {user.type === "admin" ? <Shield className="h-3.5 w-3.5" /> : null}
+                      {user.type}
+                    </span>
+                  </TableCell>
+                  <TableCell>{user.enabled ? "Enabled" : "Disabled"}</TableCell>
                   <TableCell className="max-w-[200px] truncate">{user.home_dir || "/"}</TableCell>
                   <TableCell className="text-right">
-                    <Button size="sm" variant="destructive" onClick={() => void onDelete(user.id)}>
-                      <Trash2 className="mr-2 h-4 w-4" />
-                      Delete
-                    </Button>
+                    <div className="flex justify-end gap-2">
+                      <Button size="sm" variant="outline" onClick={() => void onToggleEnabled(user)}>
+                        {user.enabled ? "Disable" : "Enable"}
+                      </Button>
+                      <Button size="sm" variant="destructive" onClick={() => void onDelete(user.id)}>
+                        <Trash2 className="mr-2 h-4 w-4" />
+                        Delete
+                      </Button>
+                    </div>
                   </TableCell>
                 </TableRow>
               ))}

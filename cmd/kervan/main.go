@@ -37,6 +37,15 @@ func main() {
 		case "admin":
 			cmdAdmin(os.Args[2:])
 			return
+		case "user":
+			cmdUser(os.Args[2:])
+			return
+		case "check":
+			cmdCheck(os.Args[2:])
+			return
+		case "status":
+			cmdStatus(os.Args[2:])
+			return
 		}
 	}
 	cmdRun(os.Args[1:])

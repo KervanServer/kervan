@@ -92,6 +92,14 @@ go run ./cmd/kervan keygen --type rsa     --output ./data/host_keys
 # Admin user management
 go run ./cmd/kervan admin create         --username admin --password 'StrongPass123!'
 go run ./cmd/kervan admin reset-password --username admin --password 'NewStrongPass123!'
+# Validate config and inspect a running instance
+go run ./cmd/kervan check  --config ./kervan.yaml
+go run ./cmd/kervan status --config ./kervan.yaml
+
+# User management
+go run ./cmd/kervan user list   --config ./kervan.yaml
+go run ./cmd/kervan user create --config ./kervan.yaml --username alice --password 'StrongPass123!' --home-dir /uploads
+go run ./cmd/kervan user delete --config ./kervan.yaml --username alice
 ```
 
 > *Planned CLI (per Spec §17):* `user list/create/delete/import/export`,

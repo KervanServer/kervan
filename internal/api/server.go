@@ -348,6 +348,10 @@ func (s *Server) handleServerConfigValidate(w http.ResponseWriter, r *http.Reque
 }
 
 func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
+	if !s.isAdminUser(currentUser(r)) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "admin access required"})
+		return
+	}
 	switch r.Method {
 	case http.MethodGet:
 		users, err := s.users.List()
@@ -401,6 +405,54 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 			"id":       user.ID,
 			"username": user.Username,
 			"type":     user.Type,
+		})
+	case http.MethodPut:
+		var req struct {
+			ID      string `json:"id"`
+			HomeDir string `json:"home_dir"`
+			Enabled *bool  `json:"enabled"`
+			Admin   *bool  `json:"admin"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
+			return
+		}
+		if strings.TrimSpace(req.ID) == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id is required"})
+			return
+		}
+		user, err := s.users.GetByID(strings.TrimSpace(req.ID))
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		if user == nil {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "user not found"})
+			return
+		}
+		if strings.TrimSpace(req.HomeDir) != "" {
+			user.HomeDir = req.HomeDir
+		}
+		if req.Enabled != nil {
+			user.Enabled = *req.Enabled
+		}
+		if req.Admin != nil {
+			if *req.Admin {
+				user.Type = auth.UserTypeAdmin
+			} else {
+				user.Type = auth.UserTypeVirtual
+			}
+		}
+		if err := s.users.Update(user); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"id":       user.ID,
+			"username": user.Username,
+			"type":     user.Type,
+			"enabled":  user.Enabled,
+			"home_dir": user.HomeDir,
 		})
 	case http.MethodDelete:
 		id := r.URL.Query().Get("id")
