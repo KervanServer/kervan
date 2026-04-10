@@ -117,33 +117,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	sendSnapshot := func() error {
-		payload := map[string]any{
-			"type":      "snapshot",
-			"timestamp": time.Now().UTC(),
-		}
-		if hasSnapshotType(requestedTypes, "server") && s.status != nil {
-			payload["server"] = s.status()
-		}
-		if hasSnapshotType(requestedTypes, "sessions") && s.sessions != nil {
-			payload["sessions"] = s.sessions.List()
-		}
-		if hasSnapshotType(requestedTypes, "transfers") && s.transfers != nil {
-			payload["transfers"] = map[string]any{
-				"active": s.transfers.Active(),
-				"recent": s.transfers.Recent(50),
-				"stats":  s.transfers.Stats(),
-			}
-		}
-		if hasSnapshotType(requestedTypes, "audit") {
-			payload["audit"] = map[string]any{
-				"events": s.readRecentAuditEvents(50),
-			}
-		}
-		payload["viewer"] = map[string]any{
-			"username": username,
-			"types":    mapKeys(requestedTypes),
-		}
-
+		payload := s.buildWebSocketSnapshot(username, requestedTypes)
 		raw, err := json.Marshal(payload)
 		if err != nil {
 			return err
@@ -168,6 +142,47 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+}
+
+func (s *Server) buildWebSocketSnapshot(username string, requestedTypes map[string]struct{}) map[string]any {
+	scopedUsername := s.viewerScopedUsername(username, "")
+	payload := map[string]any{
+		"type":      "snapshot",
+		"timestamp": time.Now().UTC(),
+	}
+	if hasSnapshotType(requestedTypes, "server") && s.status != nil {
+		payload["server"] = s.status()
+	}
+	if hasSnapshotType(requestedTypes, "sessions") && s.sessions != nil {
+		payload["sessions"] = filterSessionsByUsername(s.sessions.List(), scopedUsername)
+	}
+	if hasSnapshotType(requestedTypes, "transfers") && s.transfers != nil {
+		active := filterTransfers(s.transfers.Active(), scopedUsername, "", "", "", "")
+		recent := filterTransfers(s.transfers.Recent(50), scopedUsername, "", "", "", "")
+		stats := any(s.transfers.Stats())
+		if scopedUsername != "" {
+			stats = scopedTransferStats(active, recent)
+		}
+		payload["transfers"] = map[string]any{
+			"active": active,
+			"recent": recent,
+			"stats":  stats,
+		}
+	}
+	if hasSnapshotType(requestedTypes, "audit") {
+		events := s.readRecentAuditEvents(50)
+		if scopedUsername != "" {
+			events = filterAuditEvents(events, scopedUsername, "", "", "", "")
+		}
+		payload["audit"] = map[string]any{
+			"events": events,
+		}
+	}
+	payload["viewer"] = map[string]any{
+		"username": username,
+		"types":    mapKeys(requestedTypes),
+	}
+	return payload
 }
 
 func isWebSocketUpgrade(r *http.Request) bool {

@@ -475,7 +475,14 @@ func (s *Server) handleSessions(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"sessions": s.sessions.List()})
+	if s.sessions == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"sessions": []any{}})
+		return
+	}
+	viewer := currentUser(r)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"sessions": filterSessionsByUsername(s.sessions.List(), s.viewerScopedUsername(viewer, "")),
+	})
 }
 
 func (s *Server) handleAPIKeys(w http.ResponseWriter, r *http.Request) {
@@ -1078,7 +1085,8 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 	if page < 1 {
 		page = 1
 	}
-	username := strings.TrimSpace(r.URL.Query().Get("username"))
+	viewer := currentUser(r)
+	username := s.viewerScopedUsername(viewer, r.URL.Query().Get("username"))
 	protocol := strings.TrimSpace(r.URL.Query().Get("protocol"))
 	eventType := strings.TrimSpace(r.URL.Query().Get("type"))
 	status := strings.TrimSpace(r.URL.Query().Get("status"))
@@ -1133,7 +1141,8 @@ func (s *Server) handleTransfers(w http.ResponseWriter, r *http.Request) {
 	if page < 1 {
 		page = 1
 	}
-	username := strings.TrimSpace(r.URL.Query().Get("username"))
+	viewer := currentUser(r)
+	username := s.viewerScopedUsername(viewer, r.URL.Query().Get("username"))
 	protocol := strings.TrimSpace(r.URL.Query().Get("protocol"))
 	status := strings.TrimSpace(r.URL.Query().Get("status"))
 	direction := strings.TrimSpace(r.URL.Query().Get("direction"))
@@ -1142,11 +1151,15 @@ func (s *Server) handleTransfers(w http.ResponseWriter, r *http.Request) {
 	active := filterTransfers(s.transfers.Active(), username, protocol, status, direction, query)
 	recentAll := filterTransfers(s.transfers.Recent(5000), username, protocol, status, direction, query)
 	recentPage, total := paginateTransfers(recentAll, page, limit)
+	stats := any(s.transfers.Stats())
+	if username != "" {
+		stats = scopedTransferStats(active, recentAll)
+	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"active": active,
 		"recent": recentPage,
-		"stats":  s.transfers.Stats(),
+		"stats":  stats,
 		"pagination": map[string]any{
 			"page":      page,
 			"page_size": limit,
@@ -1486,4 +1499,68 @@ func (s *Server) isAdminUser(username string) bool {
 		return false
 	}
 	return user.Type == auth.UserTypeAdmin
+}
+
+func (s *Server) viewerScopedUsername(viewerUsername, requestedUsername string) string {
+	viewerUsername = strings.TrimSpace(viewerUsername)
+	requestedUsername = strings.TrimSpace(requestedUsername)
+	if viewerUsername == "" {
+		return requestedUsername
+	}
+	if s.isAdminUser(viewerUsername) {
+		return requestedUsername
+	}
+	return viewerUsername
+}
+
+func filterSessionsByUsername(in []*session.Session, username string) []*session.Session {
+	if strings.TrimSpace(username) == "" {
+		return in
+	}
+	out := make([]*session.Session, 0, len(in))
+	for _, item := range in {
+		if item == nil {
+			continue
+		}
+		if !strings.EqualFold(item.Username, username) {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func scopedTransferStats(active []*transfer.Transfer, recent []*transfer.Transfer) transfer.Stats {
+	stats := transfer.Stats{
+		ActiveTransfers: int64(len(active)),
+	}
+	for _, item := range recent {
+		if item == nil {
+			continue
+		}
+		stats.TotalTransfers++
+		switch item.Status {
+		case transfer.StatusCompleted:
+			stats.Completed++
+		case transfer.StatusFailed:
+			stats.Failed++
+		}
+		if item.Direction == transfer.DirectionUpload {
+			stats.UploadBytes += item.BytesDone
+		} else {
+			stats.DownloadBytes += item.BytesDone
+		}
+	}
+	stats.TotalTransfers += int64(len(active))
+	for _, item := range active {
+		if item == nil {
+			continue
+		}
+		if item.Direction == transfer.DirectionUpload {
+			stats.UploadBytes += item.BytesDone
+		} else {
+			stats.DownloadBytes += item.BytesDone
+		}
+	}
+	return stats
 }
