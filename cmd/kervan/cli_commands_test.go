@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -316,6 +317,165 @@ func TestRunStatusCommand(t *testing.T) {
 	}
 	if !strings.Contains(output, "ftp: up") {
 		t.Fatalf("expected ftp check in output: %s", output)
+	}
+}
+
+func TestRunMigrateVSFTPDCommand(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "data")
+	configPath := writeTestConfig(t, func(cfg *config.Config) {
+		cfg.Server.DataDir = dataDir
+	})
+
+	userDBPath := filepath.Join(t.TempDir(), "virtual_users.txt")
+	if err := os.WriteFile(userDBPath, []byte(strings.Join([]string{
+		"# comment",
+		"alice",
+		"StrongPass123!",
+		"bob",
+		"AnotherPass123!",
+		"alice",
+		"DuplicatePass123!",
+	}, "\n")), 0o600); err != nil {
+		t.Fatalf("write vsftpd user db: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	if err := runMigrateVSFTPDCommand(&stdout, []string{
+		"--config", configPath,
+		"--user-db", userDBPath,
+		"--home-root", "/legacy",
+		"--json",
+	}); err != nil {
+		t.Fatalf("runMigrateVSFTPDCommand: %v", err)
+	}
+
+	var report migrationReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("decode migrate report: %v", err)
+	}
+	if report.Total != 3 || report.Migrated != 2 || report.Skipped != 1 {
+		t.Fatalf("unexpected migrate report: %#v", report)
+	}
+
+	ctx, err := openCLIContext(configPath)
+	if err != nil {
+		t.Fatalf("openCLIContext: %v", err)
+	}
+	defer ctx.close()
+
+	alice, err := ctx.repo.GetByUsername("alice")
+	if err != nil {
+		t.Fatalf("get alice: %v", err)
+	}
+	if alice == nil {
+		t.Fatal("expected alice to exist")
+	}
+	if alice.HomeDir != "/legacy/alice" {
+		t.Fatalf("expected alice home dir to be migrated, got %q", alice.HomeDir)
+	}
+	if !auth.VerifyPassword("StrongPass123!", alice.PasswordHash) {
+		t.Fatalf("expected alice password hash to match imported password")
+	}
+
+	bob, err := ctx.repo.GetByUsername("bob")
+	if err != nil {
+		t.Fatalf("get bob: %v", err)
+	}
+	if bob == nil {
+		t.Fatal("expected bob to exist")
+	}
+	if bob.HomeDir != "/legacy/bob" {
+		t.Fatalf("expected bob home dir to be migrated, got %q", bob.HomeDir)
+	}
+}
+
+func TestRunMigrateProFTPDCommand(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "data")
+	configPath := writeTestConfig(t, func(cfg *config.Config) {
+		cfg.Server.DataDir = dataDir
+	})
+
+	bcryptHash, err := auth.HashPassword("LegacyPass123!", "bcrypt")
+	if err != nil {
+		t.Fatalf("hash legacy password: %v", err)
+	}
+
+	sourceDir := t.TempDir()
+	userFilePath := filepath.Join(sourceDir, "ftpd.passwd")
+	if err := os.WriteFile(userFilePath, []byte(strings.Join([]string{
+		fmt.Sprintf("carol:%s:1001:1001::/srv/carol:/bin/bash", bcryptHash),
+		"dave:PlainPass123!:1002:1002::/srv/dave:/bin/false",
+		"erin:$1$legacyhash:1003:1003::/srv/erin:/bin/bash",
+	}, "\n")), 0o600); err != nil {
+		t.Fatalf("write proftpd user file: %v", err)
+	}
+
+	proftpdConfigPath := filepath.Join(sourceDir, "proftpd.conf")
+	if err := os.WriteFile(proftpdConfigPath, []byte(strings.Join([]string{
+		"ServerName \"Legacy ProFTPD\"",
+		"AuthUserFile ftpd.passwd",
+		"DefaultRoot ~",
+	}, "\n")), 0o600); err != nil {
+		t.Fatalf("write proftpd config: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	if err := runMigrateProFTPDCommand(&stdout, []string{
+		"--kervan-config", configPath,
+		"--config", proftpdConfigPath,
+		"--json",
+	}); err != nil {
+		t.Fatalf("runMigrateProFTPDCommand: %v", err)
+	}
+
+	var report migrationReport
+	if err := json.Unmarshal(stdout.Bytes(), &report); err != nil {
+		t.Fatalf("decode migrate report: %v", err)
+	}
+	if report.Total != 3 || report.Migrated != 2 || report.Skipped != 1 {
+		t.Fatalf("unexpected migrate report: %#v", report)
+	}
+	if len(report.Warnings) == 0 {
+		t.Fatalf("expected unsupported directive/hash warnings, got %#v", report)
+	}
+
+	ctx, err := openCLIContext(configPath)
+	if err != nil {
+		t.Fatalf("openCLIContext: %v", err)
+	}
+	defer ctx.close()
+
+	carol, err := ctx.repo.GetByUsername("carol")
+	if err != nil {
+		t.Fatalf("get carol: %v", err)
+	}
+	if carol == nil {
+		t.Fatal("expected carol to exist")
+	}
+	if carol.HomeDir != "/srv/carol" {
+		t.Fatalf("expected carol home dir to be migrated, got %q", carol.HomeDir)
+	}
+	if !auth.VerifyPassword("LegacyPass123!", carol.PasswordHash) {
+		t.Fatalf("expected carol bcrypt hash to be preserved")
+	}
+
+	dave, err := ctx.repo.GetByUsername("dave")
+	if err != nil {
+		t.Fatalf("get dave: %v", err)
+	}
+	if dave == nil {
+		t.Fatal("expected dave to exist")
+	}
+	if dave.Enabled {
+		t.Fatalf("expected dave to be disabled because shell is nologin")
+	}
+
+	erin, err := ctx.repo.GetByUsername("erin")
+	if err != nil {
+		t.Fatalf("get erin: %v", err)
+	}
+	if erin != nil {
+		t.Fatalf("expected erin to be skipped due to unsupported hash")
 	}
 }
 

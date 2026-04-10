@@ -43,6 +43,9 @@ func main() {
 		case "check":
 			cmdCheck(os.Args[2:])
 			return
+		case "migrate":
+			cmdMigrate(os.Args[2:])
+			return
 		case "status":
 			cmdStatus(os.Args[2:])
 			return
