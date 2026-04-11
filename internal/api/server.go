@@ -1,10 +1,13 @@
 package api
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"crypto/tls"
+	"encoding/base64"
 	"encoding/csv"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,14 +32,26 @@ import (
 	"github.com/kervanserver/kervan/internal/webui"
 )
 
+const (
+	collSystemSecrets       = "system_secrets"
+	keySessionSigningSecret = "session_signing_secret"
+)
+
 type Config struct {
-	BindAddress    string
-	Port           int
-	SessionTimeout time.Duration
-	CORSOrigins    []string
-	TOTPEnabled    bool
-	TLS            bool
-	TLSConfig      *tls.Config
+	BindAddress          string
+	Port                 int
+	SessionTimeout       time.Duration
+	CORSOrigins          []string
+	ReadTimeout          time.Duration
+	ReadHeaderTimeout    time.Duration
+	WriteTimeout         time.Duration
+	IdleTimeout          time.Duration
+	TOTPEnabled          bool
+	TLS                  bool
+	TLSConfig            *tls.Config
+	BruteForceEnabled    bool
+	LoginMaxAttempts     int
+	LoginLockoutDuration time.Duration
 }
 
 type StatusProvider func() map[string]any
@@ -48,6 +63,7 @@ type ConfigValidateProvider func(patch map[string]any) (map[string]any, error)
 
 type Server struct {
 	cfg          Config
+	cfgMu        sync.RWMutex
 	logger       *slog.Logger
 	auth         *auth.Engine
 	users        *auth.UserRepository
@@ -65,10 +81,68 @@ type Server struct {
 	secret       []byte
 	transfers    *transfer.Manager
 	uiHandler    http.Handler
+	loginState   map[string]*loginAttempt
+	httpMetrics  *httpMetrics
 
 	httpServer *http.Server
 	mu         sync.Mutex
 	closed     bool
+}
+
+type loginAttempt struct {
+	failures     int
+	lastFailedAt time.Time
+	blockedUntil time.Time
+}
+
+type traceContext struct {
+	TraceID     string
+	ParentID    string
+	Traceparent string
+}
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status      int
+	wroteHeader bool
+	bytes       int
+}
+
+func (r *statusRecorder) WriteHeader(status int) {
+	r.status = status
+	r.wroteHeader = true
+	r.ResponseWriter.WriteHeader(status)
+}
+
+func (r *statusRecorder) Write(p []byte) (int, error) {
+	if !r.wroteHeader {
+		r.WriteHeader(http.StatusOK)
+	}
+	n, err := r.ResponseWriter.Write(p)
+	r.bytes += n
+	return n, err
+}
+
+func (r *statusRecorder) Flush() {
+	if flusher, ok := r.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
+}
+
+func (r *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := r.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, errors.New("response writer does not support hijacking")
+	}
+	return hijacker.Hijack()
+}
+
+func (r *statusRecorder) Push(target string, opts *http.PushOptions) error {
+	pusher, ok := r.ResponseWriter.(http.Pusher)
+	if !ok {
+		return http.ErrNotSupported
+	}
+	return pusher.Push(target, opts)
 }
 
 func NewServer(
@@ -93,8 +167,8 @@ func NewServer(
 	if cfg.Port == 0 {
 		cfg.Port = 8080
 	}
-	secret := make([]byte, 32)
-	if _, err := rand.Read(secret); err != nil {
+	secret, err := loadOrCreateSessionSecret(keyStore)
+	if err != nil {
 		return nil, err
 	}
 	uiHandler, err := webui.NewHandler()
@@ -120,10 +194,84 @@ func NewServer(
 		secret:       secret,
 		transfers:    transfers,
 		uiHandler:    uiHandler,
+		loginState:   make(map[string]*loginAttempt),
+		httpMetrics:  newHTTPMetrics(),
 	}, nil
 }
 
+func (s *Server) currentConfig() Config {
+	s.cfgMu.RLock()
+	defer s.cfgMu.RUnlock()
+	return cloneAPIConfig(s.cfg)
+}
+
+func (s *Server) ApplyRuntimeConfig(cfg Config) {
+	s.cfgMu.Lock()
+	prevBruteForceEnabled := s.cfg.BruteForceEnabled
+	s.cfg.SessionTimeout = cfg.SessionTimeout
+	s.cfg.CORSOrigins = append([]string(nil), cfg.CORSOrigins...)
+	s.cfg.TOTPEnabled = cfg.TOTPEnabled
+	s.cfg.BruteForceEnabled = cfg.BruteForceEnabled
+	s.cfg.LoginMaxAttempts = cfg.LoginMaxAttempts
+	s.cfg.LoginLockoutDuration = cfg.LoginLockoutDuration
+	s.cfgMu.Unlock()
+
+	if prevBruteForceEnabled && !cfg.BruteForceEnabled {
+		s.mu.Lock()
+		s.loginState = make(map[string]*loginAttempt)
+		s.mu.Unlock()
+	}
+}
+
+func cloneAPIConfig(cfg Config) Config {
+	out := cfg
+	if cfg.CORSOrigins != nil {
+		out.CORSOrigins = append([]string(nil), cfg.CORSOrigins...)
+	}
+	return out
+}
+
+func loadOrCreateSessionSecret(st *store.Store) ([]byte, error) {
+	if st == nil {
+		return randomSessionSecret()
+	}
+
+	var encoded string
+	err := st.Get(collSystemSecrets, keySessionSigningSecret, &encoded)
+	switch {
+	case err == nil:
+		secret, decodeErr := base64.RawURLEncoding.DecodeString(strings.TrimSpace(encoded))
+		if decodeErr != nil {
+			return nil, fmt.Errorf("decode session signing secret: %w", decodeErr)
+		}
+		if len(secret) < 32 {
+			return nil, errors.New("stored session signing secret is too short")
+		}
+		return secret, nil
+	case errors.Is(err, store.ErrNotFound):
+		secret, genErr := randomSessionSecret()
+		if genErr != nil {
+			return nil, genErr
+		}
+		if putErr := st.Put(collSystemSecrets, keySessionSigningSecret, base64.RawURLEncoding.EncodeToString(secret)); putErr != nil {
+			return nil, putErr
+		}
+		return secret, nil
+	default:
+		return nil, err
+	}
+}
+
+func randomSessionSecret() ([]byte, error) {
+	secret := make([]byte, 32)
+	if _, err := rand.Read(secret); err != nil {
+		return nil, err
+	}
+	return secret, nil
+}
+
 func (s *Server) Start(ctx context.Context) error {
+	cfg := s.currentConfig()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", s.handleHealth)
 	mux.HandleFunc("/metrics", s.handleMetrics)
@@ -184,9 +332,13 @@ func (s *Server) Start(ctx context.Context) error {
 
 	handler := s.withMiddleware(mux)
 	s.httpServer = &http.Server{
-		Addr:      net.JoinHostPort(s.cfg.BindAddress, itoa(s.cfg.Port)),
-		Handler:   handler,
-		TLSConfig: s.cfg.TLSConfig,
+		Addr:              net.JoinHostPort(cfg.BindAddress, itoa(cfg.Port)),
+		Handler:           handler,
+		TLSConfig:         cfg.TLSConfig,
+		ReadTimeout:       cfg.ReadTimeout,
+		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
+		WriteTimeout:      cfg.WriteTimeout,
+		IdleTimeout:       cfg.IdleTimeout,
 	}
 
 	go func() {
@@ -199,7 +351,7 @@ func (s *Server) Start(ctx context.Context) error {
 			s.logger.Info("API server started", "addr", s.httpServer.Addr)
 		}
 		var err error
-		if s.cfg.TLS {
+		if cfg.TLS {
 			if s.httpServer.TLSConfig == nil {
 				err = errors.New("webui tls is enabled but no tls config is configured")
 			} else {
@@ -237,8 +389,15 @@ func (s *Server) handleHealth(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	cfg := s.currentConfig()
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+	clientIP := remoteIP(r.RemoteAddr)
+	if retryAfter, limited := s.loginRateLimitStatus(clientIP, time.Now().UTC()); limited {
+		w.Header().Set("Retry-After", itoa(int(retryAfter.Seconds())))
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "too many login attempts"})
 		return
 	}
 	var req struct {
@@ -252,11 +411,13 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	user, err := s.auth.Authenticate(r.Context(), req.Username, req.Password)
 	if err != nil {
+		s.recordLoginFailure(clientIP, time.Now().UTC())
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid credentials"})
 		return
 	}
-	if s.cfg.TOTPEnabled && user.TOTPEnabled {
+	if cfg.TOTPEnabled && user.TOTPEnabled {
 		if !auth.ValidateTOTP(user.TOTPSecret, req.OTP, time.Now().UTC(), 1) {
+			s.recordLoginFailure(clientIP, time.Now().UTC())
 			writeJSON(w, http.StatusUnauthorized, map[string]string{
 				"error": "two-factor code required",
 				"code":  "totp_required",
@@ -264,7 +425,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	token, err := signToken(s.secret, user.Username, s.cfg.SessionTimeout)
+	s.clearLoginFailures(clientIP)
+	token, err := signToken(s.secret, user.Username, cfg.SessionTimeout)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "token generation failed"})
 		return
@@ -280,7 +442,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleTOTP(w http.ResponseWriter, r *http.Request) {
-	if !s.cfg.TOTPEnabled {
+	cfg := s.currentConfig()
+	if !cfg.TOTPEnabled {
 		if r.Method == http.MethodGet {
 			writeJSON(w, http.StatusOK, map[string]any{"enabled": false, "pending": false})
 			return
@@ -331,11 +494,12 @@ func (s *Server) handleTOTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleTOTPSetup(w http.ResponseWriter, r *http.Request) {
+	cfg := s.currentConfig()
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	if !s.cfg.TOTPEnabled {
+	if !cfg.TOTPEnabled {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "two-factor auth is disabled"})
 		return
 	}
@@ -372,11 +536,12 @@ func (s *Server) handleTOTPSetup(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleTOTPEnable(w http.ResponseWriter, r *http.Request) {
+	cfg := s.currentConfig()
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		return
 	}
-	if !s.cfg.TOTPEnabled {
+	if !cfg.TOTPEnabled {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "two-factor auth is disabled"})
 		return
 	}
@@ -1444,17 +1609,155 @@ func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 
 func (s *Server) withMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if len(s.cfg.CORSOrigins) > 0 {
-			w.Header().Set("Access-Control-Allow-Origin", s.cfg.CORSOrigins[0])
+		requestID := requestIDFromHeader(r.Header.Get("X-Request-ID"))
+		if requestID == "" {
+			requestID = newRequestID()
 		}
-		w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+		trace := requestTraceContext(r.Header.Get("Traceparent"))
+		r.Header.Set("Traceparent", trace.Traceparent)
+		r.Header.Set("X-Trace-ID", trace.TraceID)
+		recorder := &statusRecorder{ResponseWriter: w}
+		recorder.Header().Set("X-Request-ID", requestID)
+		recorder.Header().Set("Traceparent", trace.Traceparent)
+		recorder.Header().Set("X-Trace-ID", trace.TraceID)
+		recorder.Header().Set("X-Content-Type-Options", "nosniff")
+		recorder.Header().Set("X-Frame-Options", "DENY")
+		recorder.Header().Set("Referrer-Policy", "no-referrer")
+		recorder.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
+		recorder.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+		recorder.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Request-ID, Traceparent")
+		recorder.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
+		recorder.Header().Set("Access-Control-Expose-Headers", "X-Request-ID, Traceparent, X-Trace-ID")
+
+		startedAt := time.Now()
+		routeLabel := metricPathLabel(r.URL.Path)
+		httpMetrics := s.httpMetricsState()
+		httpMetrics.begin(r.Method, routeLabel)
+		defer func() {
+			statusCode := recorder.status
+			if statusCode == 0 {
+				statusCode = http.StatusOK
+			}
+			duration := time.Since(startedAt)
+			httpMetrics.complete(r.Method, routeLabel, statusCode, duration)
+			s.logHTTPRequest(r, requestID, trace, routeLabel, statusCode, recorder.bytes, duration)
+		}()
+
+		if origin := strings.TrimSpace(r.Header.Get("Origin")); origin != "" {
+			allowedOrigin, allowed := s.allowedOrigin(origin)
+			if !allowed {
+				if r.Method == http.MethodOptions {
+					writeJSON(recorder, http.StatusForbidden, map[string]string{"error": "origin is not allowed"})
+					return
+				}
+			} else {
+				recorder.Header().Set("Access-Control-Allow-Origin", allowedOrigin)
+				if allowedOrigin != "*" {
+					recorder.Header().Add("Vary", "Origin")
+				}
+			}
+		}
 		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusNoContent)
+			recorder.WriteHeader(http.StatusNoContent)
 			return
 		}
-		next.ServeHTTP(w, r)
+
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				if s.logger != nil {
+					s.logger.Error(
+						"http request panicked",
+						"request_id",
+						requestID,
+						"trace_id",
+						trace.TraceID,
+						"traceparent",
+						trace.Traceparent,
+						"method",
+						r.Method,
+						"path",
+						r.URL.Path,
+						"remote_addr",
+						r.RemoteAddr,
+						"panic",
+						recovered,
+					)
+				}
+				if !recorder.wroteHeader {
+					writeJSON(recorder, http.StatusInternalServerError, map[string]string{
+						"error":      "internal server error",
+						"request_id": requestID,
+						"trace_id":   trace.TraceID,
+					})
+				}
+			}
+		}()
+
+		next.ServeHTTP(recorder, r)
 	})
+}
+
+func (s *Server) httpMetricsState() *httpMetrics {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.httpMetrics == nil {
+		s.httpMetrics = newHTTPMetrics()
+	}
+	return s.httpMetrics
+}
+
+func (s *Server) logHTTPRequest(
+	r *http.Request,
+	requestID string,
+	trace traceContext,
+	route string,
+	statusCode int,
+	bytesWritten int,
+	duration time.Duration,
+) {
+	if s.logger == nil {
+		return
+	}
+
+	level := slog.LevelInfo
+	switch {
+	case statusCode >= 500:
+		level = slog.LevelError
+	case statusCode >= 400:
+		level = slog.LevelWarn
+	case route == "/api/v1/health" || route == "/api/v1/metrics":
+		level = slog.LevelDebug
+	}
+
+	s.logger.Log(
+		r.Context(),
+		level,
+		"http request completed",
+		"request_id",
+		requestID,
+		"trace_id",
+		trace.TraceID,
+		"traceparent",
+		trace.Traceparent,
+		"method",
+		r.Method,
+		"path",
+		r.URL.Path,
+		"route",
+		route,
+		"status",
+		statusCode,
+		"bytes",
+		bytesWritten,
+		"duration_ms",
+		duration.Milliseconds(),
+		"remote_addr",
+		remoteIP(r.RemoteAddr),
+		"user_agent",
+		r.UserAgent(),
+		"auth_user",
+		currentUser(r),
+	)
 }
 
 func (s *Server) userFS(username string) (vfs.FileSystem, error) {
@@ -1494,6 +1797,187 @@ func bearerToken(authHeader string) string {
 		return ""
 	}
 	return strings.TrimSpace(parts[1])
+}
+
+func (s *Server) loginRateLimitStatus(ip string, now time.Time) (time.Duration, bool) {
+	cfg := s.currentConfig()
+	if !cfg.BruteForceEnabled || cfg.LoginMaxAttempts <= 0 || cfg.LoginLockoutDuration <= 0 || ip == "" {
+		return 0, false
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.loginState == nil {
+		s.loginState = make(map[string]*loginAttempt)
+	}
+	entry := s.loginState[ip]
+	if entry == nil {
+		return 0, false
+	}
+	if !entry.blockedUntil.IsZero() && now.Before(entry.blockedUntil) {
+		return time.Until(entry.blockedUntil).Round(time.Second), true
+	}
+	if !entry.blockedUntil.IsZero() || now.Sub(entry.lastFailedAt) > cfg.LoginLockoutDuration {
+		delete(s.loginState, ip)
+	}
+	return 0, false
+}
+
+func (s *Server) recordLoginFailure(ip string, now time.Time) {
+	cfg := s.currentConfig()
+	if !cfg.BruteForceEnabled || cfg.LoginMaxAttempts <= 0 || cfg.LoginLockoutDuration <= 0 || ip == "" {
+		return
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	entry := s.loginState[ip]
+	if entry == nil {
+		entry = &loginAttempt{}
+		s.loginState[ip] = entry
+	}
+	if now.Sub(entry.lastFailedAt) > cfg.LoginLockoutDuration {
+		entry.failures = 0
+		entry.blockedUntil = time.Time{}
+	}
+	entry.lastFailedAt = now
+	entry.failures++
+	if entry.failures >= cfg.LoginMaxAttempts {
+		entry.failures = 0
+		entry.blockedUntil = now.Add(cfg.LoginLockoutDuration)
+	}
+}
+
+func (s *Server) clearLoginFailures(ip string) {
+	if ip == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.loginState, ip)
+}
+
+func (s *Server) allowedOrigin(origin string) (string, bool) {
+	origin = strings.TrimSpace(origin)
+	if origin == "" {
+		return "", false
+	}
+	cfg := s.currentConfig()
+	for _, candidate := range cfg.CORSOrigins {
+		candidate = strings.TrimSpace(candidate)
+		switch {
+		case candidate == "":
+			continue
+		case candidate == "*":
+			return "*", true
+		case strings.EqualFold(candidate, origin):
+			return origin, true
+		}
+	}
+	return "", false
+}
+
+func requestIDFromHeader(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || len(value) > 128 {
+		return ""
+	}
+	return value
+}
+
+func newRequestID() string {
+	buf := make([]byte, 12)
+	if _, err := rand.Read(buf); err != nil {
+		return itoa(int(time.Now().UnixNano()))
+	}
+	return hex.EncodeToString(buf)
+}
+
+func requestTraceContext(header string) traceContext {
+	if trace, ok := parseTraceparent(header); ok {
+		return trace
+	}
+	return newTraceContext()
+}
+
+func parseTraceparent(header string) (traceContext, bool) {
+	header = strings.TrimSpace(header)
+	parts := strings.Split(header, "-")
+	if len(parts) != 4 {
+		return traceContext{}, false
+	}
+	version := normalizeHexPart(parts[0], 2)
+	traceID := normalizeHexPart(parts[1], 32)
+	parentID := normalizeHexPart(parts[2], 16)
+	flags := normalizeHexPart(parts[3], 2)
+	if version == "" || traceID == "" || parentID == "" || flags == "" {
+		return traceContext{}, false
+	}
+	if isAllZeroHex(traceID) || isAllZeroHex(parentID) {
+		return traceContext{}, false
+	}
+	return traceContext{
+		TraceID:     traceID,
+		ParentID:    parentID,
+		Traceparent: version + "-" + traceID + "-" + parentID + "-" + flags,
+	}, true
+}
+
+func newTraceContext() traceContext {
+	traceID := newRandomHex(16)
+	if isAllZeroHex(traceID) {
+		traceID = "00000000000000000000000000000001"
+	}
+	parentID := newRandomHex(8)
+	if isAllZeroHex(parentID) {
+		parentID = "0000000000000001"
+	}
+	return traceContext{
+		TraceID:     traceID,
+		ParentID:    parentID,
+		Traceparent: "00-" + traceID + "-" + parentID + "-01",
+	}
+}
+
+func newRandomHex(byteLen int) string {
+	buf := make([]byte, byteLen)
+	if _, err := rand.Read(buf); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(buf)
+}
+
+func normalizeHexPart(value string, expectedLen int) string {
+	value = strings.TrimSpace(strings.ToLower(value))
+	if len(value) != expectedLen {
+		return ""
+	}
+	if _, err := hex.DecodeString(value); err != nil {
+		return ""
+	}
+	return value
+}
+
+func isAllZeroHex(value string) bool {
+	if value == "" {
+		return true
+	}
+	for _, ch := range value {
+		if ch != '0' {
+			return false
+		}
+	}
+	return true
+}
+
+func remoteIP(addr string) string {
+	host, _, err := net.SplitHostPort(strings.TrimSpace(addr))
+	if err == nil {
+		return host
+	}
+	return strings.TrimSpace(addr)
 }
 
 func itoa(v int) string {

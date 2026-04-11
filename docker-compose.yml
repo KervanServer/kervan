@@ -1,0 +1,36 @@
+name: kervan
+
+services:
+  kervan:
+    image: ${KERVAN_IMAGE:-kervan:dev}
+    build:
+      context: .
+      args:
+        VERSION: ${KERVAN_IMAGE_TAG:-dev}
+        COMMIT: ${KERVAN_BUILD_COMMIT:-local}
+        DATE: ${KERVAN_BUILD_DATE:-local}
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      KERVAN_CONFIG: /var/lib/kervan/kervan.yaml
+      KERVAN_ADMIN_USERNAME: ${KERVAN_ADMIN_USERNAME:-admin}
+      KERVAN_ADMIN_PASSWORD: ${KERVAN_ADMIN_PASSWORD:-}
+    ports:
+      - "2121:2121"
+      - "990:990"
+      - "2222:2222"
+      - "8080:8080"
+      - "50000-50100:50000-50100"
+    volumes:
+      - ./kervan.yaml:/var/lib/kervan/kervan.yaml
+      - kervan-data:/var/lib/kervan/data
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+volumes:
+  kervan-data:

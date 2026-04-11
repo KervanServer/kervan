@@ -89,6 +89,28 @@ func TestHandleMetricsIncludesOperationalMetrics(t *testing.T) {
 	assertContains(t, body, "kervan_memory_bytes ")
 }
 
+func TestHandleMetricsIncludesHTTPMetrics(t *testing.T) {
+	srv := &Server{}
+	handler := srv.withMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte("ok"))
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/users/import", strings.NewReader("{}"))
+	req.Header.Set("X-Request-ID", "req-http-metric")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	metricsRec := httptest.NewRecorder()
+	metricsReq := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	srv.handleMetrics(metricsRec, metricsReq)
+
+	body := metricsRec.Body.String()
+	assertContains(t, body, `kervan_http_requests_total{method="POST",route="/api/v1/users/import",status="201"} 1`)
+	assertContains(t, body, `kervan_http_request_duration_seconds_count{method="POST",route="/api/v1/users/import",status="201"} 1`)
+	assertContains(t, body, `kervan_http_request_duration_seconds_sum{method="POST",route="/api/v1/users/import",status="201"} `)
+}
+
 func TestHandleHealthBuildsStructuredSubsystemChecks(t *testing.T) {
 	tempDir := t.TempDir()
 	st := openTestStoreAt(t, tempDir)
@@ -177,6 +199,7 @@ func TestHandleHealthBuildsStructuredSubsystemChecks(t *testing.T) {
 	assertCheckStatus(t, checks, "cobaltdb", "up")
 	assertCheckStatus(t, checks, "audit", "up")
 	assertCheckStatus(t, checks, "tls_certificate", "up")
+	assertCheckStatus(t, checks, "debug", "disabled")
 }
 
 func TestHandleHealthMarksExpiringTLSCertificateDegraded(t *testing.T) {

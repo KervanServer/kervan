@@ -1,0 +1,5 @@
+ed3317341b91010d610691aa3d20a946dea264c0d7dcd124ed65378911b7971b  kervan_0.0.1-next_darwin_amd64.tar.gz
+7fc4192b1bcc66ed5897017b4fb1a01de77e8458c170ba2b920cccd3095dcac6  kervan_0.0.1-next_darwin_arm64.tar.gz
+8fa06cecdc602bdadc320aded2f0dd8a8677b9d43a649faa4ca51a64ac4012b6  kervan_0.0.1-next_linux_amd64.tar.gz
+d0496ae3ce0e36f6c5f29c4e476dfc916a71a582022476a04de6792dd18159b3  kervan_0.0.1-next_linux_arm64.tar.gz
+76c117fd96b8010e91c086f1709b00c319cf5dd1d63ed94af73657e83fbd461d  kervan_0.0.1-next_windows_amd64.zip

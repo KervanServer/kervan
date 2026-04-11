@@ -4,6 +4,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kervanserver/kervan/internal/config"
 )
@@ -121,5 +122,24 @@ func TestMergeConfigPatchNoChangeWhenSameValue(t *testing.T) {
 	}
 	if len(changed) != 0 {
 		t.Fatalf("expected no changed paths, got %v", changed)
+	}
+}
+
+func TestClassifyRuntimeChanges(t *testing.T) {
+	current := config.DefaultConfig()
+	next := config.DefaultConfig()
+	next.WebUI.CORSOrigins = []string{"https://console.example.com"}
+	next.WebUI.SessionTimeout = 2 * time.Hour
+	next.FTP.Port = 2122
+
+	applied, restart := classifyRuntimeChanges(current, next)
+
+	wantApplied := []string{"webui.cors_origins", "webui.session_timeout"}
+	wantRestart := []string{"ftp.port"}
+	if !reflect.DeepEqual(applied, wantApplied) {
+		t.Fatalf("unexpected applied paths: got=%v want=%v", applied, wantApplied)
+	}
+	if !reflect.DeepEqual(restart, wantRestart) {
+		t.Fatalf("unexpected restart paths: got=%v want=%v", restart, wantRestart)
 	}
 }

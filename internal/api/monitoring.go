@@ -6,7 +6,9 @@ import (
 	"path/filepath"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/kervanserver/kervan/internal/auth"
@@ -29,10 +31,124 @@ type metricsEmitter struct {
 	samples []metricSample
 }
 
+type httpMetricKey struct {
+	Method string
+	Route  string
+	Status string
+}
+
+type httpInflightKey struct {
+	Method string
+	Route  string
+}
+
+type httpMetrics struct {
+	mu            sync.Mutex
+	requests      map[httpMetricKey]uint64
+	durationCount map[httpMetricKey]uint64
+	durationSum   map[httpMetricKey]float64
+	inflight      map[httpInflightKey]int
+}
+
 func newMetricsEmitter() *metricsEmitter {
 	return &metricsEmitter{
 		defs:    make(map[string]metricDefinition),
 		samples: make([]metricSample, 0, 32),
+	}
+}
+
+func newHTTPMetrics() *httpMetrics {
+	return &httpMetrics{
+		requests:      make(map[httpMetricKey]uint64),
+		durationCount: make(map[httpMetricKey]uint64),
+		durationSum:   make(map[httpMetricKey]float64),
+		inflight:      make(map[httpInflightKey]int),
+	}
+}
+
+func (m *httpMetrics) begin(method, route string) {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.inflight[httpInflightKey{Method: method, Route: route}]++
+}
+
+func (m *httpMetrics) complete(method, route string, statusCode int, duration time.Duration) {
+	if m == nil {
+		return
+	}
+	status := strconv.Itoa(statusCode)
+	requestKey := httpMetricKey{Method: method, Route: route, Status: status}
+	inflightKey := httpInflightKey{Method: method, Route: route}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.requests[requestKey]++
+	m.durationCount[requestKey]++
+	m.durationSum[requestKey] += duration.Seconds()
+	if current := m.inflight[inflightKey] - 1; current > 0 {
+		m.inflight[inflightKey] = current
+	} else {
+		delete(m.inflight, inflightKey)
+	}
+}
+
+func (m *httpMetrics) writeTo(emitter *metricsEmitter) {
+	if m == nil || emitter == nil {
+		return
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for key, count := range m.requests {
+		labels := map[string]string{
+			"method": key.Method,
+			"route":  key.Route,
+			"status": key.Status,
+		}
+		emitter.add(
+			"kervan_http_requests_total",
+			"counter",
+			"Total HTTP requests handled grouped by method, normalized route, and status code.",
+			float64(count),
+			labels,
+		)
+	}
+	for key, count := range m.durationCount {
+		labels := map[string]string{
+			"method": key.Method,
+			"route":  key.Route,
+			"status": key.Status,
+		}
+		emitter.add(
+			"kervan_http_request_duration_seconds_count",
+			"counter",
+			"HTTP request duration samples grouped by method, normalized route, and status code.",
+			float64(count),
+			labels,
+		)
+		emitter.add(
+			"kervan_http_request_duration_seconds_sum",
+			"counter",
+			"Total observed HTTP request duration grouped by method, normalized route, and status code.",
+			m.durationSum[key],
+			labels,
+		)
+	}
+	for key, count := range m.inflight {
+		emitter.add(
+			"kervan_http_requests_inflight",
+			"gauge",
+			"Currently in-flight HTTP requests grouped by method and normalized route.",
+			float64(count),
+			map[string]string{
+				"method": key.Method,
+				"route":  key.Route,
+			},
+		)
 	}
 }
 
@@ -123,6 +239,9 @@ func (s *Server) buildHealthResponse() map[string]any {
 	webuiEnabled, _ := boolFromAny(snapshot["webui_enabled"])
 	webuiPort, _ := intFromAny(snapshot["webui_port"])
 	checks["webui"] = listenerCheck(webuiEnabled, webuiPort, map[string]any{"protocol": "http"})
+	debugEnabled, _ := boolFromAny(snapshot["debug_enabled"])
+	debugPort, _ := intFromAny(snapshot["debug_port"])
+	checks["debug"] = listenerCheck(debugEnabled, debugPort, map[string]any{"protocol": "http", "purpose": "pprof"})
 
 	resp := map[string]any{
 		"status":     summarizeHealth(checks),
@@ -258,8 +377,77 @@ func (s *Server) writeMetrics(w io.Writer) {
 	var mem runtime.MemStats
 	runtime.ReadMemStats(&mem)
 	emitter.add("kervan_memory_bytes", "gauge", "Currently allocated heap bytes.", float64(mem.Alloc), nil)
+	s.httpMetricsState().writeTo(emitter)
 
 	emitter.write(w)
+}
+
+func metricPathLabel(rawPath string) string {
+	path := normalizeAPIPath(rawPath)
+	switch {
+	case path == "/health" || path == "/api/health" || path == "/api/v1/health":
+		return "/api/v1/health"
+	case path == "/metrics" || path == "/api/metrics" || path == "/api/v1/metrics":
+		return "/api/v1/metrics"
+	case path == "/api/login" || path == "/api/v1/auth/login":
+		return "/api/v1/auth/login"
+	case path == "/api/v1/auth/totp":
+		return "/api/v1/auth/totp"
+	case path == "/api/v1/auth/totp/setup":
+		return "/api/v1/auth/totp/setup"
+	case path == "/api/v1/auth/totp/enable":
+		return "/api/v1/auth/totp/enable"
+	case path == "/api/server/status" || path == "/api/v1/server/status":
+		return "/api/v1/server/status"
+	case path == "/api/v1/server/config":
+		return "/api/v1/server/config"
+	case path == "/api/v1/server/config/validate":
+		return "/api/v1/server/config/validate"
+	case path == "/api/v1/server/reload":
+		return "/api/v1/server/reload"
+	case path == "/api/users" || path == "/api/v1/users":
+		return "/api/v1/users"
+	case path == "/api/users/import" || path == "/api/v1/users/import":
+		return "/api/v1/users/import"
+	case path == "/api/users/export" || path == "/api/v1/users/export":
+		return "/api/v1/users/export"
+	case path == "/api/apikeys" || path == "/api/v1/apikeys":
+		return "/api/v1/apikeys"
+	case path == "/api/sessions" || path == "/api/v1/sessions":
+		return "/api/v1/sessions"
+	case strings.HasPrefix(path, "/api/sessions/") || strings.HasPrefix(path, "/api/v1/sessions/"):
+		return "/api/v1/sessions/:id"
+	case path == "/api/transfers" || path == "/api/v1/transfers":
+		return "/api/v1/transfers"
+	case path == "/api/audit" || path == "/api/v1/audit/events":
+		return "/api/v1/audit/events"
+	case path == "/api/audit/export" || path == "/api/v1/audit/export":
+		return "/api/v1/audit/export"
+	case path == "/api/share" || path == "/api/v1/share":
+		return "/api/v1/share"
+	case strings.HasPrefix(path, "/api/share/") || strings.HasPrefix(path, "/api/v1/share/"):
+		return "/api/v1/share/:token"
+	case path == "/api/ws" || path == "/api/v1/ws":
+		return "/api/v1/ws"
+	case strings.HasPrefix(path, "/api/v1/files/"):
+		return "/api/v1/files/*"
+	case path == "/api/files/list":
+		return "/api/v1/files/list"
+	case path == "/api/files/mkdir":
+		return "/api/v1/files/mkdir"
+	case path == "/api/files/delete":
+		return "/api/v1/files/delete"
+	case path == "/api/files/rename":
+		return "/api/v1/files/rename"
+	case path == "/api/files/upload":
+		return "/api/v1/files/upload"
+	case path == "/api/files/download":
+		return "/api/v1/files/download"
+	case strings.HasPrefix(path, "/assets/"):
+		return "/assets/*"
+	default:
+		return path
+	}
 }
 
 func (s *Server) serverSnapshot() map[string]any {

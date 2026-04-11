@@ -1,0 +1,14 @@
+.git
+.github
+.project
+bin
+coverage
+kervan.exe
+
+data
+*.db
+*.log
+
+webui/node_modules
+webui/dist
+internal/webui/dist

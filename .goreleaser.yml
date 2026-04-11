@@ -1,0 +1,68 @@
+version: 2
+
+project_name: kervan
+
+before:
+  hooks:
+    - go run ./scripts/generate_webui.go
+
+builds:
+  - id: kervan
+    main: ./cmd/kervan
+    binary: kervan
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+    ldflags:
+      - >-
+        -s -w
+        -X github.com/kervanserver/kervan/internal/build.Version={{ .Version }}
+        -X github.com/kervanserver/kervan/internal/build.Commit={{ .Commit }}
+        -X github.com/kervanserver/kervan/internal/build.Date={{ .Date }}
+
+archives:
+  - id: default
+    ids:
+      - kervan
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - README.md
+      - kervan.example.yaml
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-next"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "^ci:"
+
+release:
+  draft: true
+  replace_existing_draft: true
+  footer: |
+    Built with GoReleaser.

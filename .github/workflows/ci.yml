@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend Checks
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run gofmt check
+        run: |
+          files="$(find . -name '*.go' -not -path './webui/*' -not -path './vendor/*')"
+          test -n "$files"
+          unformatted="$(gofmt -l $files)"
+          if [ -n "$unformatted" ]; then
+            echo "The following files are not gofmt-formatted:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Run go vet
+        run: go vet ./...
+
+      - name: Install staticcheck
+        run: go install honnef.co/go/tools/cmd/staticcheck@latest
+
+      - name: Run staticcheck
+        run: staticcheck ./...
+
+      - name: Run Go tests
+        run: go test ./... -count=1
+
+      - name: Build binary
+        run: go build ./cmd/kervan
+
+  webui:
+    name: WebUI Embed Sync
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: webui/package-lock.json
+
+      - name: Ensure build scripts are executable
+        run: chmod +x scripts/generate-webui.sh
+
+      - name: Build WebUI and refresh embedded assets
+        run: ./scripts/generate-webui.sh
+
+      - name: Verify committed embedded assets are up to date
+        run: git diff --exit-code -- internal/webui/dist
+
+  docker:
+    name: Docker Image Build
+    runs-on: ubuntu-latest
+    needs:
+      - backend
+      - webui
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build production image
+        run: docker build -t kervan:ci .

@@ -2,7 +2,6 @@ package quota
 
 import (
 	"errors"
-	"io/fs"
 	"os"
 	"sync"
 
@@ -151,8 +150,4 @@ func measureDirEntries(fsys vfs.FileSystem, dir string) (int64, error) {
 		total++
 	}
 	return total, nil
-}
-
-type dirEntryInfo interface {
-	Info() (fs.FileInfo, error)
 }

@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -53,6 +54,10 @@ func (c *Config) applyEnvOverride(key, value string) {
 		c.Server.LogLevel = value
 	case "SERVER.LOG_FORMAT":
 		c.Server.LogFormat = value
+	case "SERVER.LOG_MAX_SIZE_MB":
+		c.Server.LogMaxSizeMB = parseInt(value, c.Server.LogMaxSizeMB)
+	case "SERVER.LOG_MAX_BACKUPS":
+		c.Server.LogMaxBackups = parseInt(value, c.Server.LogMaxBackups)
 	case "FTP.ENABLED":
 		c.FTP.Enabled = parseBool(value, c.FTP.Enabled)
 	case "FTP.PORT":
@@ -69,6 +74,22 @@ func (c *Config) applyEnvOverride(key, value string) {
 		c.Auth.PasswordHash = value
 	case "AUTH.MIN_PASSWORD_LENGTH":
 		c.Auth.MinPasswordLength = parseInt(value, c.Auth.MinPasswordLength)
+	case "DEBUG.ENABLED":
+		c.Debug.Enabled = parseBool(value, c.Debug.Enabled)
+	case "DEBUG.BIND_ADDRESS":
+		c.Debug.BindAddress = value
+	case "DEBUG.PORT":
+		c.Debug.Port = parseInt(value, c.Debug.Port)
+	case "DEBUG.PPROF":
+		c.Debug.Pprof = parseBool(value, c.Debug.Pprof)
+	case "WEBUI.READ_TIMEOUT":
+		c.WebUI.ReadTimeout = parseDuration(value, c.WebUI.ReadTimeout)
+	case "WEBUI.READ_HEADER_TIMEOUT":
+		c.WebUI.ReadHeaderTimeout = parseDuration(value, c.WebUI.ReadHeaderTimeout)
+	case "WEBUI.WRITE_TIMEOUT":
+		c.WebUI.WriteTimeout = parseDuration(value, c.WebUI.WriteTimeout)
+	case "WEBUI.IDLE_TIMEOUT":
+		c.WebUI.IdleTimeout = parseDuration(value, c.WebUI.IdleTimeout)
 	case "STORAGE.DEFAULT_BACKEND":
 		c.Storage.DefaultBackend = value
 	}
@@ -99,6 +120,14 @@ func parseInt(raw string, fallback int) int {
 
 func parseBool(raw string, fallback bool) bool {
 	v, err := strconv.ParseBool(raw)
+	if err != nil {
+		return fallback
+	}
+	return v
+}
+
+func parseDuration(raw string, fallback time.Duration) time.Duration {
+	v, err := time.ParseDuration(raw)
 	if err != nil {
 		return fallback
 	}

@@ -3,7 +3,6 @@ package sftp
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"net"
 	"strconv"
@@ -250,5 +249,5 @@ func (s *Server) Addr() string {
 	if s.listener == nil {
 		return ""
 	}
-	return fmt.Sprintf("%s", s.listener.Addr())
+	return s.listener.Addr().String()
 }

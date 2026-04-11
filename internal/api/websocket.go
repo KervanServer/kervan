@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -41,8 +42,13 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "websocket upgrade required"})
 		return
 	}
+	if !s.webSocketOriginAllowed(r) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "origin not allowed"})
+		return
+	}
 
-	token := strings.TrimSpace(r.URL.Query().Get("token"))
+	protocols := parseWebSocketProtocols(r.Header.Get("Sec-WebSocket-Protocol"))
+	token := websocketAuthToken(protocols)
 	if token == "" {
 		token = bearerToken(r.Header.Get("Authorization"))
 	}
@@ -82,8 +88,9 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	accept := computeWebSocketAccept(key)
 	if _, err := fmt.Fprintf(
 		buf,
-		"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s\r\n\r\n",
+		"HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: %s%s\r\n\r\n",
 		accept,
+		websocketProtocolHeader(protocols),
 	); err != nil {
 		return
 	}
@@ -191,6 +198,103 @@ func isWebSocketUpgrade(r *http.Request) bool {
 	}
 	connection := strings.ToLower(r.Header.Get("Connection"))
 	return strings.Contains(connection, "upgrade")
+}
+
+func parseWebSocketProtocols(raw string) []string {
+	parts := strings.Split(raw, ",")
+	protocols := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			protocols = append(protocols, part)
+		}
+	}
+	return protocols
+}
+
+func websocketAuthToken(protocols []string) string {
+	for _, protocol := range protocols {
+		if strings.HasPrefix(protocol, "auth.") {
+			return strings.TrimPrefix(protocol, "auth.")
+		}
+	}
+	return ""
+}
+
+func websocketProtocolHeader(protocols []string) string {
+	for _, protocol := range protocols {
+		if protocol == "kervan.v1" {
+			return "\r\nSec-WebSocket-Protocol: kervan.v1"
+		}
+	}
+	return ""
+}
+
+func (s *Server) webSocketOriginAllowed(r *http.Request) bool {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+		return true
+	}
+	if _, allowed := s.allowedOrigin(origin); allowed {
+		return true
+	}
+	return sameWebSocketOrigin(origin, r.Host)
+}
+
+func sameWebSocketOrigin(origin, requestHost string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(origin))
+	if err != nil || parsed.Host == "" {
+		return false
+	}
+	if !hostIncludesPort(strings.TrimSpace(requestHost)) {
+		return canonicalHostName(parsed.Host) == canonicalHostName(requestHost)
+	}
+	return canonicalOriginHost(parsed.Scheme, parsed.Host) == canonicalOriginHost("", requestHost)
+}
+
+func canonicalOriginHost(scheme, hostport string) string {
+	hostport = strings.TrimSpace(hostport)
+	if hostport == "" {
+		return ""
+	}
+
+	host := hostport
+	port := ""
+	if parsedHost, parsedPort, err := net.SplitHostPort(hostport); err == nil {
+		host = parsedHost
+		port = parsedPort
+	}
+
+	host = strings.Trim(strings.ToLower(host), "[]")
+	if host == "" {
+		return ""
+	}
+	if port == "" {
+		switch strings.ToLower(strings.TrimSpace(scheme)) {
+		case "https", "wss":
+			port = "443"
+		default:
+			port = "80"
+		}
+	}
+	return host + ":" + port
+}
+
+func canonicalHostName(hostport string) string {
+	hostport = strings.TrimSpace(hostport)
+	if hostport == "" {
+		return ""
+	}
+	host := hostport
+	if parsedHost, _, err := net.SplitHostPort(hostport); err == nil {
+		host = parsedHost
+	}
+	return strings.Trim(strings.ToLower(host), "[]")
+}
+
+func hostIncludesPort(hostport string) bool {
+	_, _, err := net.SplitHostPort(strings.TrimSpace(hostport))
+	return err == nil
 }
 
 func computeWebSocketAccept(key string) string {

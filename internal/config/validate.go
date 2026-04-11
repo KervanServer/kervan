@@ -20,6 +20,12 @@ func (c *Config) Validate() error {
 	if c.Server.LogFormat != "json" && c.Server.LogFormat != "text" {
 		errs = append(errs, "server.log_format must be json|text")
 	}
+	if c.Server.LogMaxSizeMB < 1 {
+		errs = append(errs, "server.log_max_size_mb must be >= 1")
+	}
+	if c.Server.LogMaxBackups < 1 {
+		errs = append(errs, "server.log_max_backups must be >= 1")
+	}
 
 	if c.FTP.Enabled {
 		if c.FTP.Port < 1 || c.FTP.Port > 65535 {
@@ -55,6 +61,29 @@ func (c *Config) Validate() error {
 	}
 	if c.WebUI.TLS && !c.FTPS.AutoCert.Enabled && (strings.TrimSpace(c.FTPS.CertFile) == "" || strings.TrimSpace(c.FTPS.KeyFile) == "") {
 		errs = append(errs, "webui.tls requires ftps cert_file/key_file or ftps.auto_cert.enabled=true")
+	}
+	if c.WebUI.ReadTimeout < 0 {
+		errs = append(errs, "webui.read_timeout must be >= 0")
+	}
+	if c.WebUI.ReadHeaderTimeout < 0 {
+		errs = append(errs, "webui.read_header_timeout must be >= 0")
+	}
+	if c.WebUI.WriteTimeout < 0 {
+		errs = append(errs, "webui.write_timeout must be >= 0")
+	}
+	if c.WebUI.IdleTimeout < 0 {
+		errs = append(errs, "webui.idle_timeout must be >= 0")
+	}
+	if c.Debug.Enabled {
+		if strings.TrimSpace(c.Debug.BindAddress) == "" {
+			errs = append(errs, "debug.bind_address is required when debug.enabled=true")
+		}
+		if c.Debug.Port < 1 || c.Debug.Port > 65535 {
+			errs = append(errs, "debug.port must be 1-65535")
+		}
+		if !c.Debug.Pprof {
+			errs = append(errs, "debug.pprof must be enabled when debug.enabled=true")
+		}
 	}
 	if c.Auth.PasswordHash != "argon2id" && c.Auth.PasswordHash != "bcrypt" {
 		errs = append(errs, "auth.password_hash must be argon2id|bcrypt")
@@ -117,6 +146,33 @@ func (c *Config) Validate() error {
 	for _, ip := range c.Security.DeniedIPs {
 		if !validIPOrCIDR(ip) {
 			errs = append(errs, "security.denied_ips contains invalid entry: "+ip)
+		}
+	}
+	for i, output := range c.Audit.Outputs {
+		prefix := fmt.Sprintf("audit.outputs[%d]", i)
+		outputType := strings.ToLower(strings.TrimSpace(output.Type))
+		switch outputType {
+		case "", "file":
+			if strings.TrimSpace(output.Path) == "" {
+				errs = append(errs, prefix+".path is required for file outputs")
+			}
+		case "http", "webhook":
+			if strings.TrimSpace(output.URL) == "" {
+				errs = append(errs, prefix+".url is required for http/webhook outputs")
+			} else if parsed, err := url.Parse(output.URL); err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+				errs = append(errs, prefix+".url must be a valid http:// or https:// URL")
+			}
+			if output.BatchSize < 0 {
+				errs = append(errs, prefix+".batch_size must be >= 0")
+			}
+			if output.FlushInterval < 0 {
+				errs = append(errs, prefix+".flush_interval must be >= 0")
+			}
+			if output.RetryCount < 0 {
+				errs = append(errs, prefix+".retry_count must be >= 0")
+			}
+		default:
+			errs = append(errs, prefix+".type must be file|http|webhook")
 		}
 	}
 	if c.MCP.Enabled {

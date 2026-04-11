@@ -40,6 +40,9 @@ func main() {
 		case "user":
 			cmdUser(os.Args[2:])
 			return
+		case "backup":
+			cmdBackup(os.Args[2:])
+			return
 		case "check":
 			cmdCheck(os.Args[2:])
 			return
@@ -72,7 +75,16 @@ func cmdRun(args []string) {
 	if err != nil {
 		exitf("load config: %v", err)
 	}
-	logger := ilog.New(cfg.Server.LogLevel, cfg.Server.LogFormat, openLogFile(cfg.Server.LogFile))
+	logOutput, err := ilog.OpenFile(cfg.Server.LogFile, cfg.Server.LogMaxSizeMB, cfg.Server.LogMaxBackups)
+	if err != nil {
+		exitf("open log output: %v", err)
+	}
+	if logOutput != nil {
+		defer func() {
+			_ = logOutput.Close()
+		}()
+	}
+	logger := ilog.New(cfg.Server.LogLevel, cfg.Server.LogFormat, logOutput)
 
 	app, err := server.New(cfg, *configPath, logger)
 	if err != nil {
@@ -210,20 +222,6 @@ func cmdAdminReset(args []string) {
 		exitf("reset password: %v", err)
 	}
 	fmt.Printf("Password reset: %s\n", *username)
-}
-
-func openLogFile(path string) *os.File {
-	if path == "" {
-		return nil
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return nil
-	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
-	if err != nil {
-		return nil
-	}
-	return f
 }
 
 func exitf(format string, args ...any) {

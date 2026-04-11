@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/zip"
 	"bytes"
 	"crypto/rand"
 	"crypto/rsa"
@@ -275,6 +276,320 @@ func TestRunUserExportCommand(t *testing.T) {
 	if !strings.Contains(csvOut.String(), "alice,,user,virtual,/alice,true") {
 		t.Fatalf("expected alice in csv output: %s", csvOut.String())
 	}
+}
+
+func TestRunBackupCreateCommand(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "data")
+	configPath := writeTestConfig(t, func(cfg *config.Config) {
+		cfg.Server.DataDir = dataDir
+		cfg.Audit.Outputs = []config.AuditOutput{
+			{Type: "file", Path: filepath.Join(dataDir, "audit.jsonl")},
+		}
+	})
+
+	if err := runUserCreateCommand(io.Discard, []string{
+		"--config", configPath,
+		"--username", "alice",
+		"--password", "StrongPass123!",
+	}); err != nil {
+		t.Fatalf("create alice: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "audit.jsonl"), []byte("{\"type\":\"login\"}\n"), 0o600); err != nil {
+		t.Fatalf("write audit log: %v", err)
+	}
+
+	backupFile := filepath.Join(t.TempDir(), "kervan-backup.zip")
+	var stdout bytes.Buffer
+	if err := runBackupCreateCommand(&stdout, []string{
+		"--config", configPath,
+		"--output", backupFile,
+	}); err != nil {
+		t.Fatalf("runBackupCreateCommand: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "Backup created:") {
+		t.Fatalf("unexpected backup output: %s", stdout.String())
+	}
+
+	reader, err := zip.OpenReader(backupFile)
+	if err != nil {
+		t.Fatalf("open backup zip: %v", err)
+	}
+	defer reader.Close()
+
+	entries := make(map[string]bool, len(reader.File))
+	var manifest backupManifest
+	for _, file := range reader.File {
+		entries[file.Name] = true
+		if file.Name == backupManifestPath {
+			rc, err := file.Open()
+			if err != nil {
+				t.Fatalf("open manifest: %v", err)
+			}
+			raw, err := io.ReadAll(rc)
+			_ = rc.Close()
+			if err != nil {
+				t.Fatalf("read manifest: %v", err)
+			}
+			if err := json.Unmarshal(raw, &manifest); err != nil {
+				t.Fatalf("decode manifest: %v", err)
+			}
+		}
+	}
+	for _, required := range []string{
+		backupStoreArchivePath,
+		backupStoreBakArchivePath,
+		backupAuditArchivePath,
+		backupConfigArchivePath,
+		backupManifestPath,
+	} {
+		if !entries[required] {
+			t.Fatalf("expected backup entry %q, got %#v", required, entries)
+		}
+	}
+	if manifest.Version < 2 {
+		t.Fatalf("expected backup manifest version >= 2, got %d", manifest.Version)
+	}
+	for _, file := range manifest.Files {
+		if file.ArchivePath == "" || file.SHA256 == "" {
+			t.Fatalf("expected checksum-bearing manifest entry, got %#v", file)
+		}
+	}
+}
+
+func TestRunBackupRestoreCommand(t *testing.T) {
+	baseDir := t.TempDir()
+	dataDir := filepath.Join(baseDir, "data")
+	configPath := writeTestConfig(t, func(cfg *config.Config) {
+		cfg.Server.DataDir = dataDir
+		cfg.Audit.Outputs = []config.AuditOutput{
+			{Type: "file", Path: filepath.Join(dataDir, "audit.jsonl")},
+		}
+	})
+
+	if err := runUserCreateCommand(io.Discard, []string{
+		"--config", configPath,
+		"--username", "alice",
+		"--password", "StrongPass123!",
+		"--home-dir", "/alice",
+	}); err != nil {
+		t.Fatalf("create alice: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "audit.jsonl"), []byte("{\"type\":\"upload\"}\n"), 0o600); err != nil {
+		t.Fatalf("write audit log: %v", err)
+	}
+
+	backupFile := filepath.Join(baseDir, "backup.zip")
+	if err := runBackupCreateCommand(io.Discard, []string{
+		"--config", configPath,
+		"--output", backupFile,
+	}); err != nil {
+		t.Fatalf("create backup: %v", err)
+	}
+
+	if err := os.RemoveAll(dataDir); err != nil {
+		t.Fatalf("remove data dir: %v", err)
+	}
+
+	var restoreOut bytes.Buffer
+	if err := runBackupRestoreCommand(&restoreOut, []string{
+		"--config", configPath,
+		"--input", backupFile,
+	}); err != nil {
+		t.Fatalf("runBackupRestoreCommand: %v", err)
+	}
+	if !strings.Contains(restoreOut.String(), "Backup restored:") {
+		t.Fatalf("unexpected restore output: %s", restoreOut.String())
+	}
+
+	ctx, err := openCLIContext(configPath)
+	if err != nil {
+		t.Fatalf("openCLIContext: %v", err)
+	}
+	defer ctx.close()
+
+	alice, err := ctx.repo.GetByUsername("alice")
+	if err != nil {
+		t.Fatalf("get alice: %v", err)
+	}
+	if alice == nil {
+		t.Fatal("expected alice after restore")
+	}
+	if alice.HomeDir != "/alice" {
+		t.Fatalf("unexpected alice home dir after restore: %q", alice.HomeDir)
+	}
+
+	rawAudit, err := os.ReadFile(filepath.Join(dataDir, "audit.jsonl"))
+	if err != nil {
+		t.Fatalf("read restored audit log: %v", err)
+	}
+	if !strings.Contains(string(rawAudit), "\"upload\"") {
+		t.Fatalf("unexpected restored audit log: %s", string(rawAudit))
+	}
+}
+
+func TestRunBackupRestoreCommandRequiresForce(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "data")
+	configPath := writeTestConfig(t, func(cfg *config.Config) {
+		cfg.Server.DataDir = dataDir
+	})
+
+	if err := runUserCreateCommand(io.Discard, []string{
+		"--config", configPath,
+		"--username", "alice",
+		"--password", "StrongPass123!",
+	}); err != nil {
+		t.Fatalf("create alice: %v", err)
+	}
+
+	backupFile := filepath.Join(t.TempDir(), "backup.zip")
+	if err := runBackupCreateCommand(io.Discard, []string{
+		"--config", configPath,
+		"--output", backupFile,
+		"--include-audit=false",
+	}); err != nil {
+		t.Fatalf("create backup: %v", err)
+	}
+
+	err := runBackupRestoreCommand(io.Discard, []string{
+		"--config", configPath,
+		"--input", backupFile,
+	})
+	if err == nil || !strings.Contains(err.Error(), "without --force") {
+		t.Fatalf("expected overwrite protection error, got %v", err)
+	}
+}
+
+func TestRunBackupRestoreCommandRejectsTamperedArchive(t *testing.T) {
+	baseDir := t.TempDir()
+	dataDir := filepath.Join(baseDir, "data")
+	configPath := writeTestConfig(t, func(cfg *config.Config) {
+		cfg.Server.DataDir = dataDir
+	})
+
+	if err := runUserCreateCommand(io.Discard, []string{
+		"--config", configPath,
+		"--username", "alice",
+		"--password", "StrongPass123!",
+	}); err != nil {
+		t.Fatalf("create alice: %v", err)
+	}
+
+	backupFile := filepath.Join(baseDir, "backup.zip")
+	if err := runBackupCreateCommand(io.Discard, []string{
+		"--config", configPath,
+		"--output", backupFile,
+		"--include-audit=false",
+	}); err != nil {
+		t.Fatalf("create backup: %v", err)
+	}
+
+	tamperedFile := filepath.Join(baseDir, "backup-tampered.zip")
+	if err := rewriteBackupEntry(backupFile, tamperedFile, backupStoreArchivePath, []byte(`{"users":[]}`)); err != nil {
+		t.Fatalf("tamper backup: %v", err)
+	}
+
+	if err := os.RemoveAll(dataDir); err != nil {
+		t.Fatalf("remove data dir: %v", err)
+	}
+
+	err := runBackupRestoreCommand(io.Discard, []string{
+		"--config", configPath,
+		"--input", tamperedFile,
+	})
+	if err == nil || !strings.Contains(err.Error(), "backup integrity check failed") {
+		t.Fatalf("expected integrity check error, got %v", err)
+	}
+}
+
+func TestRunBackupVerifyCommand(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "data")
+	configPath := writeTestConfig(t, func(cfg *config.Config) {
+		cfg.Server.DataDir = dataDir
+	})
+
+	if err := runUserCreateCommand(io.Discard, []string{
+		"--config", configPath,
+		"--username", "alice",
+		"--password", "StrongPass123!",
+	}); err != nil {
+		t.Fatalf("create alice: %v", err)
+	}
+
+	backupFile := filepath.Join(t.TempDir(), "backup.zip")
+	if err := runBackupCreateCommand(io.Discard, []string{
+		"--config", configPath,
+		"--output", backupFile,
+		"--include-audit=false",
+	}); err != nil {
+		t.Fatalf("create backup: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	if err := runBackupVerifyCommand(&stdout, []string{"--input", backupFile}); err != nil {
+		t.Fatalf("verify backup: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "Backup verified:") {
+		t.Fatalf("unexpected verify output: %s", stdout.String())
+	}
+
+	var jsonOut bytes.Buffer
+	if err := runBackupVerifyCommand(&jsonOut, []string{"--input", backupFile, "--json"}); err != nil {
+		t.Fatalf("verify backup json: %v", err)
+	}
+	var payload struct {
+		Verified        bool `json:"verified"`
+		ManifestPresent bool `json:"manifest_present"`
+		VerifiedFiles   int  `json:"verified_files"`
+	}
+	if err := json.Unmarshal(jsonOut.Bytes(), &payload); err != nil {
+		t.Fatalf("decode verify json: %v", err)
+	}
+	if !payload.Verified || !payload.ManifestPresent || payload.VerifiedFiles == 0 {
+		t.Fatalf("unexpected verify payload: %#v", payload)
+	}
+}
+
+func rewriteBackupEntry(srcPath, dstPath, archivePath string, replacement []byte) error {
+	reader, err := zip.OpenReader(srcPath)
+	if err != nil {
+		return err
+	}
+	defer reader.Close()
+
+	out, err := os.OpenFile(dstPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	writer := zip.NewWriter(out)
+	for _, file := range reader.File {
+		header := file.FileHeader
+		entry, err := writer.CreateHeader(&header)
+		if err != nil {
+			_ = writer.Close()
+			return err
+		}
+		if file.Name == archivePath {
+			if _, err := entry.Write(replacement); err != nil {
+				_ = writer.Close()
+				return err
+			}
+			continue
+		}
+		rc, err := file.Open()
+		if err != nil {
+			_ = writer.Close()
+			return err
+		}
+		if _, err := io.Copy(entry, rc); err != nil {
+			_ = rc.Close()
+			_ = writer.Close()
+			return err
+		}
+		_ = rc.Close()
+	}
+	return writer.Close()
 }
 
 func TestRunStatusCommand(t *testing.T) {

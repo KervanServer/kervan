@@ -9,12 +9,12 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	pprofhttp "net/http/pprof"
 	"os"
 	"path"
 	"path/filepath"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/kervanserver/kervan/internal/acme"
@@ -52,9 +52,9 @@ type App struct {
 	apiServer  *api.Server
 	acmeMgr    *acme.Manager
 	acmeHTTP   *http.Server
+	debugHTTP  *http.Server
 
 	cancel context.CancelFunc
-	wg     sync.WaitGroup
 	start  time.Time
 }
 
@@ -83,15 +83,17 @@ func New(cfg *config.Config, configPath string, logger *slog.Logger) (*App, erro
 	}
 
 	sinkPath := filepath.Join(cfg.Server.DataDir, "audit.jsonl")
-	if len(cfg.Audit.Outputs) > 0 && cfg.Audit.Outputs[0].Path != "" {
-		sinkPath = cfg.Audit.Outputs[0].Path
-	}
-	fileSink, err := audit.NewFileSink(sinkPath)
+	auditSinks, primaryAuditPath, err := buildAuditSinks(cfg)
 	if err != nil {
 		_ = st.Close()
 		return nil, err
 	}
-	auditEngine := audit.NewEngine(logger, fileSink)
+	if primaryAuditPath != "" {
+		sinkPath = primaryAuditPath
+	} else {
+		sinkPath = ""
+	}
+	auditEngine := audit.NewEngine(logger, auditSinks...)
 
 	app := &App{
 		cfg:       cfg,
@@ -200,13 +202,20 @@ func New(cfg *config.Config, configPath string, logger *slog.Logger) (*App, erro
 
 	app.apiServer, err = api.NewServer(
 		api.Config{
-			BindAddress:    cfg.WebUI.BindAddress,
-			Port:           cfg.WebUI.Port,
-			SessionTimeout: cfg.WebUI.SessionTimeout,
-			CORSOrigins:    cfg.WebUI.CORSOrigins,
-			TOTPEnabled:    cfg.WebUI.TOTPEnabled,
-			TLS:            cfg.WebUI.TLS,
-			TLSConfig:      sharedTLSConfig,
+			BindAddress:          cfg.WebUI.BindAddress,
+			Port:                 cfg.WebUI.Port,
+			SessionTimeout:       cfg.WebUI.SessionTimeout,
+			CORSOrigins:          cfg.WebUI.CORSOrigins,
+			ReadTimeout:          cfg.WebUI.ReadTimeout,
+			ReadHeaderTimeout:    cfg.WebUI.ReadHeaderTimeout,
+			WriteTimeout:         cfg.WebUI.WriteTimeout,
+			IdleTimeout:          cfg.WebUI.IdleTimeout,
+			TOTPEnabled:          cfg.WebUI.TOTPEnabled,
+			TLS:                  cfg.WebUI.TLS,
+			TLSConfig:            sharedTLSConfig,
+			BruteForceEnabled:    cfg.Security.BruteForce.Enabled,
+			LoginMaxAttempts:     cfg.Security.BruteForce.MaxAttempts,
+			LoginLockoutDuration: cfg.Security.BruteForce.LockoutDuration,
 		},
 		logger,
 		engine,
@@ -243,6 +252,8 @@ func New(cfg *config.Config, configPath string, logger *slog.Logger) (*App, erro
 				"scp_enabled":           cfg.SCP.Enabled,
 				"webui_enabled":         cfg.WebUI.Enabled,
 				"webui_port":            cfg.WebUI.Port,
+				"debug_enabled":         cfg.Debug.Enabled,
+				"debug_port":            cfg.Debug.Port,
 				"data_dir":              cfg.Server.DataDir,
 				"store_path":            filepath.Join(cfg.Server.DataDir, "kervan-store.json"),
 				"storage_backend":       storageBackend,
@@ -272,10 +283,14 @@ func New(cfg *config.Config, configPath string, logger *slog.Logger) (*App, erro
 			if err != nil {
 				return nil, err
 			}
+			appliedPaths, restartPaths := app.applyRuntimeConfig(nextCfg)
+			requiresRestart := len(restartPaths) > 0
 			return map[string]any{
 				"validated":        true,
-				"requires_restart": true,
-				"message":          "Configuration file is valid. Restart is required to apply runtime changes.",
+				"requires_restart": requiresRestart,
+				"applied_paths":    appliedPaths,
+				"restart_paths":    restartPaths,
+				"message":          reloadMessage(appliedPaths, restartPaths),
 				"config":           redactConfig(nextCfg),
 			}, nil
 		},
@@ -294,10 +309,14 @@ func New(cfg *config.Config, configPath string, logger *slog.Logger) (*App, erro
 			if err := writeConfigFile(configPath, mergedCfg); err != nil {
 				return nil, err
 			}
+			appliedPaths, restartPaths := app.applyRuntimeConfig(mergedCfg)
+			requiresRestart := len(restartPaths) > 0
 			return map[string]any{
 				"updated":          true,
-				"requires_restart": true,
-				"message":          "Configuration updated on disk. Restart is required to apply changes.",
+				"requires_restart": requiresRestart,
+				"applied_paths":    appliedPaths,
+				"restart_paths":    restartPaths,
+				"message":          updateMessage(appliedPaths, restartPaths),
 				"changed_paths":    changedPaths,
 				"config":           redactConfig(mergedCfg),
 			}, nil
@@ -314,9 +333,12 @@ func New(cfg *config.Config, configPath string, logger *slog.Logger) (*App, erro
 			if err != nil {
 				return nil, err
 			}
+			appliedPaths, restartPaths := classifyRuntimeChanges(currentCfg, mergedCfg)
 			return map[string]any{
 				"validated":        true,
-				"requires_restart": true,
+				"requires_restart": len(restartPaths) > 0,
+				"applied_paths":    appliedPaths,
+				"restart_paths":    restartPaths,
 				"changed_paths":    changedPaths,
 				"config":           redactConfig(mergedCfg),
 			}, nil
@@ -391,6 +413,19 @@ func (a *App) Start(ctx context.Context) error {
 			return fmt.Errorf("start api: %w", err)
 		}
 	}
+	if a.cfg.Debug.Enabled {
+		if err := a.startDebugServer(runCtx); err != nil {
+			if a.acmeHTTP != nil {
+				_ = a.acmeHTTP.Shutdown(context.Background())
+			}
+			if a.apiServer != nil {
+				_ = a.apiServer.Stop(context.Background())
+			}
+			_ = a.sftpServer.Stop()
+			_ = a.ftpServer.Stop()
+			return fmt.Errorf("start debug server: %w", err)
+		}
+	}
 	if a.logger != nil {
 		a.logger.Info("Kervan server started")
 	}
@@ -417,6 +452,9 @@ func (a *App) Close() error {
 		if a.apiServer != nil {
 			_ = a.apiServer.Stop(context.Background())
 		}
+		if a.debugHTTP != nil {
+			_ = a.debugHTTP.Shutdown(context.Background())
+		}
 		if a.acmeHTTP != nil {
 			_ = a.acmeHTTP.Shutdown(context.Background())
 		}
@@ -440,6 +478,55 @@ func (a *App) Close() error {
 	return nil
 }
 
+func (a *App) startDebugServer(ctx context.Context) error {
+	addr := net.JoinHostPort(a.cfg.Debug.BindAddress, fmt.Sprintf("%d", a.cfg.Debug.Port))
+	a.debugHTTP = &http.Server{
+		Addr:    addr,
+		Handler: buildDebugMux(a.cfg.Debug.Pprof),
+	}
+
+	go func() {
+		<-ctx.Done()
+		_ = a.debugHTTP.Shutdown(context.Background())
+	}()
+
+	go func() {
+		if a.logger != nil {
+			a.logger.Info("debug server started", "addr", a.debugHTTP.Addr, "pprof", a.cfg.Debug.Pprof)
+		}
+		if err := a.debugHTTP.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) && a.logger != nil {
+			a.logger.Error("debug server failed", "error", err)
+		}
+	}()
+	return nil
+}
+
+func buildDebugMux(pprofEnabled bool) *http.ServeMux {
+	mux := http.NewServeMux()
+	if pprofEnabled {
+		mux.HandleFunc("/debug/pprof/", pprofhttp.Index)
+		mux.HandleFunc("/debug/pprof/cmdline", pprofhttp.Cmdline)
+		mux.HandleFunc("/debug/pprof/profile", pprofhttp.Profile)
+		mux.HandleFunc("/debug/pprof/symbol", pprofhttp.Symbol)
+		mux.HandleFunc("/debug/pprof/trace", pprofhttp.Trace)
+		mux.Handle("/debug/pprof/allocs", pprofhttp.Handler("allocs"))
+		mux.Handle("/debug/pprof/block", pprofhttp.Handler("block"))
+		mux.Handle("/debug/pprof/goroutine", pprofhttp.Handler("goroutine"))
+		mux.Handle("/debug/pprof/heap", pprofhttp.Handler("heap"))
+		mux.Handle("/debug/pprof/mutex", pprofhttp.Handler("mutex"))
+		mux.Handle("/debug/pprof/threadcreate", pprofhttp.Handler("threadcreate"))
+	}
+	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status": "up",
+			"debug":  true,
+			"pprof":  pprofEnabled,
+		})
+	})
+	return mux
+}
+
 func (a *App) ensureAdmin() error {
 	users, err := a.authRepo.List()
 	if err != nil {
@@ -450,17 +537,26 @@ func (a *App) ensureAdmin() error {
 			return nil
 		}
 	}
-	password := a.cfg.WebUI.AdminPassword
-	if password == "" {
-		password = "admin123!"
+	if !a.cfg.WebUI.Enabled {
+		return nil
 	}
-	_, err = a.auth.CreateUser(
+	password := strings.TrimSpace(a.cfg.WebUI.AdminPassword)
+	if password == "" {
+		return errors.New("no admin user found; set webui.admin_password before first startup or run `kervan admin create --username admin --password <strong-password>`")
+	}
+	user, err := a.auth.CreateUser(
 		a.cfg.WebUI.AdminUsername,
 		password,
 		"/",
 		true,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	if a.logger != nil {
+		a.logger.Info("bootstrap admin user created", "username", user.Username)
+	}
+	return nil
 }
 
 func (a *App) buildUserFS(user *auth.User) (vfs.FileSystem, error) {
@@ -807,4 +903,183 @@ func joinStoragePath(parts ...string) string {
 		return ""
 	}
 	return path.Join(clean...)
+}
+
+var runtimeReloadablePaths = map[string]struct{}{
+	"webui.session_timeout":                 {},
+	"webui.totp_enabled":                    {},
+	"webui.cors_origins":                    {},
+	"security.brute_force.enabled":          {},
+	"security.brute_force.max_attempts":     {},
+	"security.brute_force.lockout_duration": {},
+}
+
+func classifyRuntimeChanges(currentCfg, nextCfg *config.Config) ([]string, []string) {
+	if currentCfg == nil || nextCfg == nil {
+		return nil, nil
+	}
+	currentMap, err := configToMap(currentCfg)
+	if err != nil {
+		return nil, []string{"<unknown>"}
+	}
+	nextMap, err := configToMap(nextCfg)
+	if err != nil {
+		return nil, []string{"<unknown>"}
+	}
+	changed := make(map[string]struct{})
+	diffConfigMaps(currentMap, nextMap, "", changed)
+	allPaths := make([]string, 0, len(changed))
+	for path := range changed {
+		allPaths = append(allPaths, path)
+	}
+	sort.Strings(allPaths)
+
+	applied := make([]string, 0, len(allPaths))
+	restart := make([]string, 0, len(allPaths))
+	for _, path := range allPaths {
+		if _, ok := runtimeReloadablePaths[path]; ok {
+			applied = append(applied, path)
+		} else {
+			restart = append(restart, path)
+		}
+	}
+	return applied, restart
+}
+
+func diffConfigMaps(current, next map[string]any, prefix string, changed map[string]struct{}) {
+	keys := make(map[string]struct{}, len(current)+len(next))
+	for key := range current {
+		keys[key] = struct{}{}
+	}
+	for key := range next {
+		keys[key] = struct{}{}
+	}
+	for key := range keys {
+		path := joinPath(prefix, key)
+		currentValue, currentOK := current[key]
+		nextValue, nextOK := next[key]
+		switch {
+		case !currentOK || !nextOK:
+			changed[path] = struct{}{}
+		default:
+			currentMap, currentIsMap := currentValue.(map[string]any)
+			nextMap, nextIsMap := nextValue.(map[string]any)
+			if currentIsMap && nextIsMap {
+				diffConfigMaps(currentMap, nextMap, path, changed)
+				continue
+			}
+			if !isSameJSONValue(currentValue, nextValue) {
+				changed[path] = struct{}{}
+			}
+		}
+	}
+}
+
+func reloadMessage(appliedPaths, restartPaths []string) string {
+	switch {
+	case len(appliedPaths) > 0 && len(restartPaths) > 0:
+		return "Runtime-safe configuration changes were applied. Restart is still required for the remaining changes."
+	case len(appliedPaths) > 0:
+		return "Runtime-safe configuration changes were applied successfully."
+	default:
+		return "Configuration file is valid. Restart is required to apply runtime changes."
+	}
+}
+
+func updateMessage(appliedPaths, restartPaths []string) string {
+	switch {
+	case len(appliedPaths) > 0 && len(restartPaths) > 0:
+		return "Configuration updated on disk. Runtime-safe changes were applied immediately; restart is still required for the remaining changes."
+	case len(appliedPaths) > 0:
+		return "Configuration updated on disk and applied immediately for runtime-safe settings."
+	default:
+		return "Configuration updated on disk. Restart is required to apply changes."
+	}
+}
+
+func (a *App) applyRuntimeConfig(nextCfg *config.Config) ([]string, []string) {
+	appliedPaths, restartPaths := classifyRuntimeChanges(a.cfg, nextCfg)
+	if nextCfg == nil {
+		return appliedPaths, restartPaths
+	}
+
+	a.cfg.WebUI.SessionTimeout = nextCfg.WebUI.SessionTimeout
+	a.cfg.WebUI.TOTPEnabled = nextCfg.WebUI.TOTPEnabled
+	a.cfg.WebUI.CORSOrigins = append([]string(nil), nextCfg.WebUI.CORSOrigins...)
+	a.cfg.Security.BruteForce.Enabled = nextCfg.Security.BruteForce.Enabled
+	a.cfg.Security.BruteForce.MaxAttempts = nextCfg.Security.BruteForce.MaxAttempts
+	a.cfg.Security.BruteForce.LockoutDuration = nextCfg.Security.BruteForce.LockoutDuration
+
+	if a.apiServer != nil {
+		a.apiServer.ApplyRuntimeConfig(api.Config{
+			SessionTimeout:       nextCfg.WebUI.SessionTimeout,
+			CORSOrigins:          nextCfg.WebUI.CORSOrigins,
+			TOTPEnabled:          nextCfg.WebUI.TOTPEnabled,
+			BruteForceEnabled:    nextCfg.Security.BruteForce.Enabled,
+			LoginMaxAttempts:     nextCfg.Security.BruteForce.MaxAttempts,
+			LoginLockoutDuration: nextCfg.Security.BruteForce.LockoutDuration,
+		})
+	}
+
+	return appliedPaths, restartPaths
+}
+
+func buildAuditSinks(cfg *config.Config) ([]audit.Sink, string, error) {
+	if cfg == nil {
+		return nil, "", errors.New("config is nil")
+	}
+
+	outputs := cfg.Audit.Outputs
+	if len(outputs) == 0 {
+		outputs = []config.AuditOutput{{
+			Type: "file",
+			Path: filepath.Join(cfg.Server.DataDir, "audit.jsonl"),
+		}}
+	}
+
+	sinks := make([]audit.Sink, 0, len(outputs))
+	primaryFilePath := ""
+	for _, output := range outputs {
+		outputType := strings.ToLower(strings.TrimSpace(output.Type))
+		switch outputType {
+		case "", "file":
+			path := strings.TrimSpace(output.Path)
+			if path == "" {
+				path = filepath.Join(cfg.Server.DataDir, "audit.jsonl")
+			}
+			sink, err := audit.NewFileSink(path)
+			if err != nil {
+				closeAuditSinks(sinks)
+				return nil, "", err
+			}
+			if primaryFilePath == "" {
+				primaryFilePath = path
+			}
+			sinks = append(sinks, sink)
+		case "http", "webhook":
+			sink, err := audit.NewHTTPSink(audit.HTTPSinkOptions{
+				URL:           output.URL,
+				Method:        output.Method,
+				Headers:       output.Headers,
+				BatchSize:     output.BatchSize,
+				FlushInterval: output.FlushInterval,
+				RetryCount:    output.RetryCount,
+			})
+			if err != nil {
+				closeAuditSinks(sinks)
+				return nil, "", err
+			}
+			sinks = append(sinks, sink)
+		default:
+			closeAuditSinks(sinks)
+			return nil, "", fmt.Errorf("unsupported audit output type: %s", output.Type)
+		}
+	}
+	return sinks, primaryFilePath, nil
+}
+
+func closeAuditSinks(sinks []audit.Sink) {
+	for _, sink := range sinks {
+		_ = sink.Close()
+	}
 }

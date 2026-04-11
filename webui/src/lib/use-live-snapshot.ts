@@ -31,8 +31,8 @@ export function useLiveSnapshot(token: string, types: string[] = ["server", "ses
     const protocol = window.location.protocol === "https:" ? "wss" : "ws"
     const normalizedTypes = Array.from(new Set(types.map((x) => x.trim().toLowerCase()).filter((x) => x.length > 0)))
     const typesParam = normalizedTypes.join(",")
-    const url = `${protocol}://${window.location.host}/api/v1/ws?token=${encodeURIComponent(token)}&types=${encodeURIComponent(typesParam)}`
-    const ws = new WebSocket(url)
+    const url = `${protocol}://${window.location.host}/api/v1/ws?types=${encodeURIComponent(typesParam)}`
+    const ws = new WebSocket(url, ["kervan.v1", `auth.${token}`])
 
     ws.onopen = () => {
       setConnected(true)

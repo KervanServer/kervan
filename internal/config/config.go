@@ -9,6 +9,7 @@ type Config struct {
 	SFTP     SFTPConfig     `yaml:"sftp"`
 	SCP      SCPConfig      `yaml:"scp"`
 	WebUI    WebUIConfig    `yaml:"webui"`
+	Debug    DebugConfig    `yaml:"debug"`
 	Auth     AuthConfig     `yaml:"auth"`
 	Storage  StorageConfig  `yaml:"storage"`
 	Quota    QuotaConfig    `yaml:"quota"`
@@ -25,6 +26,8 @@ type ServerConfig struct {
 	LogLevel                string        `yaml:"log_level"`
 	LogFormat               string        `yaml:"log_format"`
 	LogFile                 string        `yaml:"log_file"`
+	LogMaxSizeMB            int           `yaml:"log_max_size_mb"`
+	LogMaxBackups           int           `yaml:"log_max_backups"`
 	GracefulShutdownTimeout time.Duration `yaml:"graceful_shutdown_timeout"`
 }
 
@@ -77,15 +80,26 @@ type SCPConfig struct {
 }
 
 type WebUIConfig struct {
-	Enabled        bool          `yaml:"enabled"`
-	Port           int           `yaml:"port"`
-	TLS            bool          `yaml:"tls"`
-	BindAddress    string        `yaml:"bind_address"`
-	AdminUsername  string        `yaml:"admin_username"`
-	AdminPassword  string        `yaml:"admin_password"`
-	SessionTimeout time.Duration `yaml:"session_timeout"`
-	TOTPEnabled    bool          `yaml:"totp_enabled"`
-	CORSOrigins    []string      `yaml:"cors_origins"`
+	Enabled           bool          `yaml:"enabled"`
+	Port              int           `yaml:"port"`
+	TLS               bool          `yaml:"tls"`
+	BindAddress       string        `yaml:"bind_address"`
+	AdminUsername     string        `yaml:"admin_username"`
+	AdminPassword     string        `yaml:"admin_password"`
+	SessionTimeout    time.Duration `yaml:"session_timeout"`
+	TOTPEnabled       bool          `yaml:"totp_enabled"`
+	CORSOrigins       []string      `yaml:"cors_origins"`
+	ReadTimeout       time.Duration `yaml:"read_timeout"`
+	ReadHeaderTimeout time.Duration `yaml:"read_header_timeout"`
+	WriteTimeout      time.Duration `yaml:"write_timeout"`
+	IdleTimeout       time.Duration `yaml:"idle_timeout"`
+}
+
+type DebugConfig struct {
+	Enabled     bool   `yaml:"enabled"`
+	BindAddress string `yaml:"bind_address"`
+	Port        int    `yaml:"port"`
+	Pprof       bool   `yaml:"pprof"`
 }
 
 type AuthConfig struct {

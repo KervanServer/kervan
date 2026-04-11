@@ -4,6 +4,9 @@ server:
   data_dir: ./data
   log_level: info
   log_format: json
+  log_file: ""
+  log_max_size_mb: 100
+  log_max_backups: 5
   graceful_shutdown_timeout: 30s
 
 ftp:
@@ -49,12 +52,21 @@ webui:
   port: 8080
   tls: false
   bind_address: 0.0.0.0
+  read_timeout: 15s
+  read_header_timeout: 10s
+  write_timeout: 60s
+  idle_timeout: 120s
   admin_username: admin
-  admin_password: admin123!
+  admin_password: ""
   session_timeout: 24h
   totp_enabled: false
-  cors_origins:
-    - "*"
+  cors_origins: []
+
+debug:
+  enabled: false
+  bind_address: 127.0.0.1
+  port: 6060
+  pprof: true
 
 auth:
   default_provider: local
@@ -87,6 +99,14 @@ audit:
   outputs:
     - type: file
       path: ./data/audit.jsonl
+    # - type: webhook
+    #   url: https://audit.example.com/events
+    #   method: POST
+    #   headers:
+    #     Authorization: Bearer change-me
+    #   batch_size: 50
+    #   flush_interval: 5s
+    #   retry_count: 3
 
 security:
   allowed_ips: []
@@ -102,4 +122,3 @@ security:
 mcp:
   enabled: true
   transport: stdio
-

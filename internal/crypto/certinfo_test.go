@@ -55,6 +55,46 @@ func TestResolveCertificateInfoDisabled(t *testing.T) {
 	}
 }
 
+func TestParseCertificateInfoAndResolveBranches(t *testing.T) {
+	now := time.Now().UTC()
+	expiredPath := filepath.Join(t.TempDir(), "expired.pem")
+	writeTestCertificate(t, expiredPath, []string{"expired.example.com"}, now.Add(-1*time.Hour))
+
+	raw, err := os.ReadFile(expiredPath)
+	if err != nil {
+		t.Fatalf("read expired cert: %v", err)
+	}
+	info, err := ParseCertificateInfo(raw, "file", now)
+	if err != nil {
+		t.Fatalf("parse certificate info: %v", err)
+	}
+	if info.Status != "expired" {
+		t.Fatalf("expected expired status, got %q", info.Status)
+	}
+
+	if _, err := ParseCertificateInfo([]byte("not a cert"), "file", now); err == nil {
+		t.Fatal("expected parsing non-certificate data to fail")
+	}
+
+	mapped := CertificateInfoMap(info)
+	if mapped["serial_number"] == "" {
+		t.Fatalf("expected certificate info map to include serial number, got %#v", mapped)
+	}
+	if empty := CertificateInfoMap(nil); len(empty) != 0 {
+		t.Fatalf("expected nil certificate info map to be empty, got %#v", empty)
+	}
+
+	pending := ResolveCertificateInfo("", true, t.TempDir(), []string{"missing.example.com"}, now)
+	if pending["status"] != "pending" {
+		t.Fatalf("expected pending ACME info, got %#v", pending)
+	}
+
+	down := ResolveCertificateInfo(filepath.Join(t.TempDir(), "missing.pem"), false, "", nil, now)
+	if down["status"] != "down" {
+		t.Fatalf("expected down file cert info, got %#v", down)
+	}
+}
+
 func writeTestCertificate(t *testing.T, path string, dnsNames []string, notAfter time.Time) {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)

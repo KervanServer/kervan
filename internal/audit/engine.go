@@ -19,19 +19,18 @@ type Engine struct {
 	ch     chan Event
 	sinks  []Sink
 	wg     sync.WaitGroup
-	cancel context.CancelFunc
+	mu     sync.RWMutex
+	closed bool
 }
 
 func NewEngine(logger *slog.Logger, sinks ...Sink) *Engine {
-	ctx, cancel := context.WithCancel(context.Background())
 	e := &Engine{
 		logger: logger,
 		ch:     make(chan Event, 1024),
 		sinks:  sinks,
-		cancel: cancel,
 	}
 	e.wg.Add(1)
-	go e.loop(ctx)
+	go e.loop()
 	return e
 }
 
@@ -41,6 +40,11 @@ func (e *Engine) Emit(evt Event) {
 	}
 	if evt.Timestamp.IsZero() {
 		evt.Timestamp = time.Now().UTC()
+	}
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	if e.closed {
+		return
 	}
 	select {
 	case e.ch <- evt:
@@ -52,28 +56,26 @@ func (e *Engine) Emit(evt Event) {
 }
 
 func (e *Engine) Close() {
-	e.cancel()
+	e.mu.Lock()
+	if e.closed {
+		e.mu.Unlock()
+		return
+	}
+	e.closed = true
 	close(e.ch)
+	e.mu.Unlock()
 	e.wg.Wait()
 	for _, sink := range e.sinks {
 		_ = sink.Close()
 	}
 }
 
-func (e *Engine) loop(ctx context.Context) {
+func (e *Engine) loop() {
 	defer e.wg.Done()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case evt, ok := <-e.ch:
-			if !ok {
-				return
-			}
-			for _, sink := range e.sinks {
-				if err := sink.Write(ctx, evt); err != nil && e.logger != nil {
-					e.logger.Error("audit sink write failed", "error", err, "type", evt.Type)
-				}
+	for evt := range e.ch {
+		for _, sink := range e.sinks {
+			if err := sink.Write(context.Background(), evt); err != nil && e.logger != nil {
+				e.logger.Error("audit sink write failed", "error", err, "type", evt.Type)
 			}
 		}
 	}

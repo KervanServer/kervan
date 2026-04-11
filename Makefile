@@ -6,7 +6,7 @@ LDFLAGS := -s -w \
   -X github.com/kervanserver/kervan/internal/build.Commit=$(COMMIT) \
   -X github.com/kervanserver/kervan/internal/build.Date=$(DATE)
 
-.PHONY: build webui test clean
+.PHONY: build webui test clean docker-build compose-config compose-up compose-down release-snapshot release-check
 
 build: webui
 	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/kervan ./cmd/kervan
@@ -21,3 +21,25 @@ test:
 
 clean:
 	rm -rf bin
+
+docker-build:
+	docker build \
+		--build-arg VERSION="$(VERSION)" \
+		--build-arg COMMIT="$(COMMIT)" \
+		--build-arg DATE="$(DATE)" \
+		-t kervan:$(VERSION) .
+
+compose-config:
+	docker compose config
+
+compose-up:
+	docker compose up -d --build
+
+compose-down:
+	docker compose down
+
+release-check:
+	goreleaser check
+
+release-snapshot:
+	goreleaser release --snapshot --clean

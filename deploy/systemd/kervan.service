@@ -1,0 +1,35 @@
+[Unit]
+Description=Kervan Unified File Transfer Server
+Documentation=https://github.com/kervanserver/kervan
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=kervan
+Group=kervan
+WorkingDirectory=/var/lib/kervan
+Environment=KERVAN_CONFIG=/etc/kervan/kervan.yaml
+EnvironmentFile=-/etc/kervan/kervan.env
+ExecStart=/usr/local/bin/kervan -config /etc/kervan/kervan.yaml
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=5s
+TimeoutStopSec=45s
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ReadWritePaths=/var/lib/kervan /var/log/kervan
+StateDirectory=kervan
+LogsDirectory=kervan
+UMask=0077
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target

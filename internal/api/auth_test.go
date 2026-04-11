@@ -2,14 +2,17 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/kervanserver/kervan/internal/auth"
 	"github.com/kervanserver/kervan/internal/store"
+	ilog "github.com/kervanserver/kervan/internal/util/log"
 )
 
 func TestTOTPSetupEnableLoginAndDisable(t *testing.T) {
@@ -96,6 +99,228 @@ func TestTOTPSetupEnableLoginAndDisable(t *testing.T) {
 	}
 }
 
+func TestHandleLoginRateLimitsByRemoteIP(t *testing.T) {
+	srv, _ := newAuthTestServer(t, false)
+
+	for attempt := 0; attempt < 5; attempt++ {
+		body, _ := json.Marshal(map[string]string{
+			"username": "alice",
+			"password": "wrong-password",
+		})
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewReader(body))
+		req.RemoteAddr = "203.0.113.10:12345"
+		rec := httptest.NewRecorder()
+
+		srv.handleLogin(rec, req)
+
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("attempt %d: expected 401, got %d", attempt+1, rec.Code)
+		}
+	}
+
+	body, _ := json.Marshal(map[string]string{
+		"username": "alice",
+		"password": "StrongPass123!",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewReader(body))
+	req.RemoteAddr = "203.0.113.10:12345"
+	rec := httptest.NewRecorder()
+
+	srv.handleLogin(rec, req)
+
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("Retry-After") == "" {
+		t.Fatal("expected Retry-After header to be set")
+	}
+}
+
+func TestWithMiddlewareAppliesSecurityHeadersAndExactCORS(t *testing.T) {
+	srv, _ := newAuthTestServer(t, false)
+	srv.cfg.CORSOrigins = []string{"https://console.example.com"}
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	req.Header.Set("Origin", "https://console.example.com")
+	req.Header.Set("X-Request-ID", "req-123")
+	req.Header.Set("Traceparent", "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+	rec := httptest.NewRecorder()
+
+	srv.withMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rec, req)
+
+	if rec.Header().Get("Access-Control-Allow-Origin") != "https://console.example.com" {
+		t.Fatalf("expected exact CORS origin, got %q", rec.Header().Get("Access-Control-Allow-Origin"))
+	}
+	if rec.Header().Get("X-Request-ID") != "req-123" {
+		t.Fatalf("expected request id to be echoed, got %q", rec.Header().Get("X-Request-ID"))
+	}
+	if rec.Header().Get("Traceparent") != "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01" {
+		t.Fatalf("expected traceparent to be echoed, got %q", rec.Header().Get("Traceparent"))
+	}
+	if rec.Header().Get("X-Trace-ID") != "4bf92f3577b34da6a3ce929d0e0e4736" {
+		t.Fatalf("expected trace id to be exposed, got %q", rec.Header().Get("X-Trace-ID"))
+	}
+	if rec.Header().Get("X-Frame-Options") != "DENY" {
+		t.Fatalf("expected X-Frame-Options DENY, got %q", rec.Header().Get("X-Frame-Options"))
+	}
+	if rec.Header().Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatalf("expected nosniff header, got %q", rec.Header().Get("X-Content-Type-Options"))
+	}
+}
+
+func TestWithMiddlewareRejectsDisallowedPreflight(t *testing.T) {
+	srv, _ := newAuthTestServer(t, false)
+	srv.cfg.CORSOrigins = []string{"https://console.example.com"}
+
+	req := httptest.NewRequest(http.MethodOptions, "/api/v1/users", nil)
+	req.Header.Set("Origin", "https://evil.example.com")
+	rec := httptest.NewRecorder()
+
+	srv.withMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), "origin is not allowed") {
+		t.Fatalf("unexpected body: %s", rec.Body.String())
+	}
+}
+
+func TestWithMiddlewareLogsCompletedRequests(t *testing.T) {
+	srv, _ := newAuthTestServer(t, false)
+	var logs bytes.Buffer
+	srv.logger = ilog.New("debug", "json", &logs)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/users", nil)
+	req.Header.Set("X-Request-ID", "req-log-123")
+	req.Header.Set("User-Agent", "kervan-test")
+	req.RemoteAddr = "203.0.113.10:12345"
+	rec := httptest.NewRecorder()
+
+	srv.withMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		r.Header.Set("X-Auth-User", "alice")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte("ok"))
+	})).ServeHTTP(rec, req)
+
+	output := logs.String()
+	if !strings.Contains(output, `"msg":"http request completed"`) {
+		t.Fatalf("expected request completion log, got %s", output)
+	}
+	for _, needle := range []string{
+		`"request_id":"req-log-123"`,
+		`"trace_id":"`,
+		`"traceparent":"00-`,
+		`"route":"/api/v1/users"`,
+		`"status":202`,
+		`"auth_user":"alice"`,
+	} {
+		if !strings.Contains(output, needle) {
+			t.Fatalf("expected log to contain %s, got %s", needle, output)
+		}
+	}
+}
+
+func TestWithMiddlewareGeneratesTraceContextWhenMissing(t *testing.T) {
+	srv, _ := newAuthTestServer(t, false)
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rec := httptest.NewRecorder()
+
+	srv.withMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	})).ServeHTTP(rec, req)
+
+	traceparent := rec.Header().Get("Traceparent")
+	if !strings.HasPrefix(traceparent, "00-") {
+		t.Fatalf("expected generated traceparent, got %q", traceparent)
+	}
+	if traceID := rec.Header().Get("X-Trace-ID"); len(traceID) != 32 {
+		t.Fatalf("expected 32-char trace id, got %q", traceID)
+	}
+}
+
+func TestStartConfiguresHTTPServerTimeouts(t *testing.T) {
+	srv := &Server{
+		cfg: Config{
+			BindAddress:       "127.0.0.1",
+			Port:              0,
+			ReadTimeout:       15 * time.Second,
+			ReadHeaderTimeout: 10 * time.Second,
+			WriteTimeout:      45 * time.Second,
+			IdleTimeout:       90 * time.Second,
+		},
+		httpMetrics: newHTTPMetrics(),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := srv.Start(ctx); err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = srv.Stop(context.Background())
+	})
+
+	if srv.httpServer == nil {
+		t.Fatal("expected http server to be initialized")
+	}
+	if srv.httpServer.ReadTimeout != 15*time.Second {
+		t.Fatalf("expected read timeout=15s, got=%s", srv.httpServer.ReadTimeout)
+	}
+	if srv.httpServer.ReadHeaderTimeout != 10*time.Second {
+		t.Fatalf("expected read header timeout=10s, got=%s", srv.httpServer.ReadHeaderTimeout)
+	}
+	if srv.httpServer.WriteTimeout != 45*time.Second {
+		t.Fatalf("expected write timeout=45s, got=%s", srv.httpServer.WriteTimeout)
+	}
+	if srv.httpServer.IdleTimeout != 90*time.Second {
+		t.Fatalf("expected idle timeout=90s, got=%s", srv.httpServer.IdleTimeout)
+	}
+}
+
+func TestApplyRuntimeConfigUpdatesHotSettings(t *testing.T) {
+	srv, _ := newAuthTestServer(t, false)
+	srv.cfg.CORSOrigins = []string{"https://old.example.com"}
+	srv.loginState["203.0.113.10"] = &loginAttempt{failures: 3}
+
+	srv.ApplyRuntimeConfig(Config{
+		SessionTimeout:       2 * time.Hour,
+		CORSOrigins:          []string{"https://console.example.com"},
+		TOTPEnabled:          true,
+		BruteForceEnabled:    false,
+		LoginMaxAttempts:     10,
+		LoginLockoutDuration: 30 * time.Minute,
+	})
+
+	cfg := srv.currentConfig()
+	if cfg.SessionTimeout != 2*time.Hour {
+		t.Fatalf("expected session timeout=2h, got=%s", cfg.SessionTimeout)
+	}
+	if !cfg.TOTPEnabled {
+		t.Fatal("expected totp to be enabled after runtime config apply")
+	}
+	if cfg.BruteForceEnabled {
+		t.Fatal("expected brute force protection to be disabled after runtime config apply")
+	}
+	if cfg.LoginMaxAttempts != 10 {
+		t.Fatalf("expected login max attempts=10, got=%d", cfg.LoginMaxAttempts)
+	}
+	if cfg.LoginLockoutDuration != 30*time.Minute {
+		t.Fatalf("expected lockout duration=30m, got=%s", cfg.LoginLockoutDuration)
+	}
+	if len(cfg.CORSOrigins) != 1 || cfg.CORSOrigins[0] != "https://console.example.com" {
+		t.Fatalf("unexpected cors origins after runtime config apply: %v", cfg.CORSOrigins)
+	}
+	if len(srv.loginState) != 0 {
+		t.Fatalf("expected login state to be cleared when brute force protection is disabled, got %#v", srv.loginState)
+	}
+}
+
 func newAuthTestServer(t *testing.T, totpEnabled bool) (*Server, *auth.UserRepository) {
 	t.Helper()
 
@@ -114,9 +339,16 @@ func newAuthTestServer(t *testing.T, totpEnabled bool) (*Server, *auth.UserRepos
 	}
 
 	return &Server{
-		cfg:    Config{TOTPEnabled: totpEnabled, SessionTimeout: time.Hour},
-		auth:   engine,
-		users:  repo,
-		secret: []byte("0123456789abcdef0123456789abcdef"),
+		cfg: Config{
+			TOTPEnabled:          totpEnabled,
+			SessionTimeout:       time.Hour,
+			BruteForceEnabled:    true,
+			LoginMaxAttempts:     5,
+			LoginLockoutDuration: 15 * time.Minute,
+		},
+		auth:       engine,
+		users:      repo,
+		secret:     []byte("0123456789abcdef0123456789abcdef"),
+		loginState: make(map[string]*loginAttempt),
 	}, repo
 }

@@ -452,7 +452,7 @@ type mountDirEntry struct {
 func (m mountDirEntry) Name() string               { return m.name }
 func (m mountDirEntry) IsDir() bool                { return true }
 func (m mountDirEntry) Type() fs.FileMode          { return fs.ModeDir | 0o755 }
-func (m mountDirEntry) Info() (fs.FileInfo, error) { return mountInfo{name: m.name}, nil }
+func (m mountDirEntry) Info() (fs.FileInfo, error) { return mountInfo(m), nil }
 
 type mountInfo struct {
 	name string

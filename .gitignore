@@ -1,6 +1,7 @@
 bin/
 *.db
 *.log
+.env
 kervan.yaml
 
 webui/node_modules/

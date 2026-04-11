@@ -1,18 +1,23 @@
 $ErrorActionPreference = "Stop"
+Set-StrictMode -Version Latest
 
-$RootDir = Split-Path -Parent $PSScriptRoot
+$rootDir = Split-Path -Parent $PSScriptRoot
+$webuiDir = Join-Path $rootDir "webui"
+$embeddedDistDir = Join-Path $rootDir "internal/webui/dist"
+$sourceDistDir = Join-Path $webuiDir "dist"
 
-Push-Location (Join-Path $RootDir "webui")
-npm ci
-npm run build
-Pop-Location
-
-$distPath = Join-Path $RootDir "internal/webui/dist"
-if (Test-Path $distPath) {
-    Remove-Item -LiteralPath $distPath -Recurse -Force
+Push-Location $webuiDir
+try {
+    npm ci
+    npm run build
+}
+finally {
+    Pop-Location
 }
 
-Copy-Item -Path (Join-Path $RootDir "webui/dist") -Destination $distPath -Recurse
+if (Test-Path $embeddedDistDir) {
+    Remove-Item -Recurse -Force $embeddedDistDir
+}
 
-Write-Output "WebUI build copied to internal/webui/dist"
-
+Copy-Item -Recurse -Force $sourceDistDir $embeddedDistDir
+Write-Host "WebUI build copied to internal/webui/dist"

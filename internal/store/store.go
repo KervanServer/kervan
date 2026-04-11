@@ -3,6 +3,7 @@ package store
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -13,9 +14,10 @@ import (
 var ErrNotFound = errors.New("not found")
 
 type Store struct {
-	path string
-	mu   sync.RWMutex
-	data map[string]json.RawMessage
+	path       string
+	backupPath string
+	mu         sync.RWMutex
+	data       map[string]json.RawMessage
 }
 
 func Open(dataDir string) (*Store, error) {
@@ -24,8 +26,9 @@ func Open(dataDir string) (*Store, error) {
 	}
 	path := filepath.Join(dataDir, "kervan-store.json")
 	s := &Store{
-		path: path,
-		data: make(map[string]json.RawMessage),
+		path:       path,
+		backupPath: path + ".bak",
+		data:       make(map[string]json.RawMessage),
 	}
 	if err := s.load(); err != nil {
 		return nil, err
@@ -93,30 +96,67 @@ func (s *Store) composite(collection, key string) string {
 }
 
 func (s *Store) load() error {
-	raw, err := os.ReadFile(s.path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return err
-	}
-	if len(raw) == 0 {
+	decoded, _, err := loadStoreFile(s.path)
+	if err == nil {
+		s.data = decoded
 		return nil
 	}
-	var decoded map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &decoded); err != nil {
-		return err
+	if !errors.Is(err, os.ErrNotExist) {
+		backupDecoded, backupRaw, backupErr := loadStoreFile(s.backupPath)
+		if backupErr == nil {
+			s.data = backupDecoded
+			_ = writeFileAtomically(s.path, backupRaw, 0o600)
+			return nil
+		}
+		return fmt.Errorf("load store: %w; backup recovery failed: %v", err, backupErr)
 	}
-	s.data = decoded
-	return nil
+
+	backupDecoded, backupRaw, backupErr := loadStoreFile(s.backupPath)
+	if backupErr == nil {
+		s.data = backupDecoded
+		_ = writeFileAtomically(s.path, backupRaw, 0o600)
+		return nil
+	}
+	if errors.Is(backupErr, os.ErrNotExist) {
+		return nil
+	}
+	return backupErr
 }
 
 func (s *Store) flush() error {
-	s.mu.RLock()
-	raw, err := json.MarshalIndent(s.data, "", "  ")
-	s.mu.RUnlock()
+	snapshot := s.snapshot()
+	raw, err := json.MarshalIndent(snapshot, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(s.path, raw, 0o600)
+	if err := writeFileAtomically(s.path, raw, 0o600); err != nil {
+		return err
+	}
+	return writeFileAtomically(s.backupPath, raw, 0o600)
+}
+
+func (s *Store) snapshot() map[string]json.RawMessage {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	cloned := make(map[string]json.RawMessage, len(s.data))
+	for key, value := range s.data {
+		cloned[key] = append(json.RawMessage(nil), value...)
+	}
+	return cloned
+}
+
+func loadStoreFile(path string) (map[string]json.RawMessage, []byte, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(raw) == 0 {
+		return make(map[string]json.RawMessage), raw, nil
+	}
+	var decoded map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		return nil, nil, err
+	}
+	return decoded, raw, nil
 }
