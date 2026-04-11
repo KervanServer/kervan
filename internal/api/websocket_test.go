@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestWebSocketProtocolHelpers(t *testing.T) {
@@ -63,5 +64,37 @@ func TestHandleWebSocketRejectsDisallowedOrigin(t *testing.T) {
 	}
 	if got := rec.Body.String(); got == "" {
 		t.Fatal("expected error body for disallowed websocket origin")
+	}
+}
+
+func TestHandleWebSocketRejectsDisabledUserToken(t *testing.T) {
+	srv, repo := newAuthTestServer(t, false)
+
+	alice, err := repo.GetByUsername("alice")
+	if err != nil {
+		t.Fatalf("GetByUsername: %v", err)
+	}
+	alice.Enabled = false
+	if err := repo.Update(alice); err != nil {
+		t.Fatalf("disable alice: %v", err)
+	}
+
+	token, err := signToken(srv.secret, "alice", time.Hour)
+	if err != nil {
+		t.Fatalf("signToken: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "http://kervan.local/api/v1/ws", nil)
+	req.Host = "kervan.local"
+	req.Header.Set("Connection", "Upgrade")
+	req.Header.Set("Upgrade", "websocket")
+	req.Header.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+	req.Header.Set("Sec-WebSocket-Protocol", "kervan.v1, auth."+token)
+
+	rec := httptest.NewRecorder()
+	srv.handleWebSocket(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
 	}
 }

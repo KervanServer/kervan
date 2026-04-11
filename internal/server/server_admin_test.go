@@ -78,3 +78,42 @@ func TestEnsureAdminCreatesConfiguredBootstrapUser(t *testing.T) {
 		t.Fatalf("expected admin type, got %q", user.Type)
 	}
 }
+
+func TestApplyRuntimeConfigUpdatesMinPasswordLength(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.Server.DataDir = t.TempDir()
+
+	st, err := store.Open(cfg.Server.DataDir)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = st.Close()
+	})
+
+	repo := auth.NewUserRepository(st)
+	engine := auth.NewEngine(repo, cfg.Auth.PasswordHash, 5, 15*time.Minute)
+	engine.SetMinPasswordLength(cfg.Auth.MinPasswordLength)
+	app := &App{
+		cfg:      cfg,
+		store:    st,
+		authRepo: repo,
+		auth:     engine,
+	}
+
+	next := config.DefaultConfig()
+	next.Server.DataDir = cfg.Server.DataDir
+	next.Auth.MinPasswordLength = 14
+
+	applied, restart := app.applyRuntimeConfig(next)
+	if len(restart) != 0 {
+		t.Fatalf("expected no restart-required paths, got %v", restart)
+	}
+	if len(applied) != 1 || applied[0] != "auth.min_password_length" {
+		t.Fatalf("unexpected applied paths: %v", applied)
+	}
+
+	if _, err := app.auth.CreateUser("alice", "short-pass", "/", false); err == nil {
+		t.Fatal("expected updated runtime password policy to be enforced")
+	}
+}

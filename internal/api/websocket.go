@@ -56,16 +56,12 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing token"})
 		return
 	}
-	claims, err := verifyToken(s.secret, token)
+	user, err := s.activeUserFromBearerToken(token)
 	if err != nil {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid token"})
 		return
 	}
-	username := strings.TrimSpace(claims.Sub)
-	if username == "" {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid token subject"})
-		return
-	}
+	username := strings.TrimSpace(user.Username)
 	requestedTypes := parseRequestedSnapshotTypes(r.URL.Query().Get("types"))
 
 	hijacker, ok := w.(http.Hijacker)

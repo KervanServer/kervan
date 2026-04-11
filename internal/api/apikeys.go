@@ -63,9 +63,10 @@ func (r *apiKeyRepository) Create(userID, name, permissions string) (string, *AP
 	if name == "" {
 		return "", nil, errors.New("name is required")
 	}
-	permissions = strings.TrimSpace(permissions)
-	if permissions == "" {
-		permissions = "read-write"
+	var err error
+	permissions, err = normalizeAPIKeyPermissions(permissions)
+	if err != nil {
+		return "", nil, err
 	}
 
 	token, err := generateAPIKeyToken()
@@ -100,6 +101,41 @@ func (r *apiKeyRepository) Delete(userID, id string) error {
 		return errors.New("api key not found")
 	}
 	return r.store.Delete(collAPIKeys, id)
+}
+
+func (r *apiKeyRepository) GetByToken(token string) (*APIKeyRecord, error) {
+	if r == nil || r.store == nil {
+		return nil, errors.New("api key repository is not configured")
+	}
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return nil, errors.New("api key is required")
+	}
+	var all []*APIKeyRecord
+	if err := r.store.List(collAPIKeys, &all); err != nil {
+		return nil, err
+	}
+	hash := hashAPIKey(token)
+	for _, item := range all {
+		if item == nil || item.Hash != hash {
+			continue
+		}
+		return item, nil
+	}
+	return nil, nil
+}
+
+func (r *apiKeyRepository) UpdateLastUsed(id string, usedAt time.Time) error {
+	if r == nil || r.store == nil {
+		return errors.New("api key repository is not configured")
+	}
+	var record APIKeyRecord
+	if err := r.store.Get(collAPIKeys, id, &record); err != nil {
+		return err
+	}
+	usedAt = usedAt.UTC()
+	record.LastUsedAt = &usedAt
+	return r.store.Put(collAPIKeys, record.ID, &record)
 }
 
 func generateAPIKeyToken() (string, error) {

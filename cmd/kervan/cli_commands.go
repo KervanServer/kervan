@@ -17,6 +17,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	iapi "github.com/kervanserver/kervan/internal/api"
 	"github.com/kervanserver/kervan/internal/auth"
 	"github.com/kervanserver/kervan/internal/config"
 	"github.com/kervanserver/kervan/internal/store"
@@ -37,6 +38,20 @@ func cmdStatus(args []string) {
 func cmdUser(args []string) {
 	if err := runUserCommand(os.Stdout, args); err != nil {
 		exitf("user: %v", err)
+	}
+}
+
+func runAPIKeyCommand(stdout io.Writer, args []string) error {
+	if len(args) == 0 {
+		return errors.New("usage: kervan apikey <scopes|presets> [flags]")
+	}
+	switch args[0] {
+	case "scopes":
+		return runAPIKeyScopesCommand(stdout, args[1:])
+	case "presets":
+		return runAPIKeyPresetsCommand(stdout, args[1:])
+	default:
+		return fmt.Errorf("unknown apikey command: %s", args[0])
 	}
 }
 
@@ -78,6 +93,7 @@ func runStatusCommand(stdout io.Writer, args []string) error {
 	fs.SetOutput(io.Discard)
 	configPath := fs.String("config", defaultConfigPath, "Path to config file")
 	timeout := fs.Duration("timeout", 5*time.Second, "Request timeout")
+	insecure := fs.Bool("insecure", false, "Skip TLS certificate verification")
 	jsonOut := fs.Bool("json", false, "Output JSON")
 	if err := fs.Parse(args); err != nil {
 		return err
@@ -96,8 +112,10 @@ func runStatusCommand(stdout io.Writer, args []string) error {
 	client := &http.Client{Timeout: *timeout}
 	if cfg.WebUI.TLS {
 		scheme = "https"
-		client.Transport = &http.Transport{
-			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		if *insecure {
+			client.Transport = &http.Transport{
+				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+			}
 		}
 	}
 
@@ -166,6 +184,48 @@ func runUserCommand(stdout io.Writer, args []string) error {
 	default:
 		return fmt.Errorf("unknown user command: %s", args[0])
 	}
+}
+
+func runAPIKeyScopesCommand(stdout io.Writer, args []string) error {
+	fs := flag.NewFlagSet("apikey scopes", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	jsonOut := fs.Bool("json", false, "Output JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	scopes := iapi.SupportedAPIKeyScopes()
+	if *jsonOut {
+		return json.NewEncoder(stdout).Encode(scopes)
+	}
+
+	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
+	_, _ = fmt.Fprintln(tw, "SCOPE\tRESOURCE\tACCESS\tDESCRIPTION")
+	for _, scope := range scopes {
+		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", scope.Name, scope.Resource, scope.Access, scope.Description)
+	}
+	return tw.Flush()
+}
+
+func runAPIKeyPresetsCommand(stdout io.Writer, args []string) error {
+	fs := flag.NewFlagSet("apikey presets", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	jsonOut := fs.Bool("json", false, "Output JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	presets := iapi.APIKeyPresets()
+	if *jsonOut {
+		return json.NewEncoder(stdout).Encode(presets)
+	}
+
+	for _, preset := range presets {
+		_, _ = fmt.Fprintf(stdout, "%s (%s)\n", preset.Label, preset.ID)
+		_, _ = fmt.Fprintf(stdout, "  %s\n", preset.Description)
+		_, _ = fmt.Fprintf(stdout, "  scopes: %s\n", strings.Join(preset.Scopes, ", "))
+	}
+	return nil
 }
 
 func runUserListCommand(stdout io.Writer, args []string) error {
@@ -478,6 +538,7 @@ func openCLIContext(configPath string) (*cliContext, error) {
 	}
 	repo := auth.NewUserRepository(st)
 	engine := auth.NewEngine(repo, cfg.Auth.PasswordHash, cfg.Security.BruteForce.MaxAttempts, cfg.Security.BruteForce.LockoutDuration)
+	engine.SetMinPasswordLength(cfg.Auth.MinPasswordLength)
 	return &cliContext{
 		cfg:    cfg,
 		store:  st,

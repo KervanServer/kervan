@@ -168,6 +168,9 @@ func TestWithMiddlewareAppliesSecurityHeadersAndExactCORS(t *testing.T) {
 	if rec.Header().Get("X-Content-Type-Options") != "nosniff" {
 		t.Fatalf("expected nosniff header, got %q", rec.Header().Get("X-Content-Type-Options"))
 	}
+	if !strings.Contains(rec.Header().Get("Access-Control-Allow-Headers"), "X-API-Key") {
+		t.Fatalf("expected X-API-Key to be allowed, got %q", rec.Header().Get("Access-Control-Allow-Headers"))
+	}
 }
 
 func TestWithMiddlewareRejectsDisallowedPreflight(t *testing.T) {
@@ -321,6 +324,224 @@ func TestApplyRuntimeConfigUpdatesHotSettings(t *testing.T) {
 	}
 }
 
+func TestWithAuthAcceptsAPIKeyAndTracksUsage(t *testing.T) {
+	srv, repo := newAuthTestServer(t, false)
+
+	alice, err := repo.GetByUsername("alice")
+	if err != nil {
+		t.Fatalf("GetByUsername: %v", err)
+	}
+	token, created, err := srv.apiKeys.Create(alice.ID, "CI key", "read-write")
+	if err != nil {
+		t.Fatalf("Create api key: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/server/status", nil)
+	req.Header.Set("Authorization", "ApiKey "+token)
+	rec := httptest.NewRecorder()
+
+	srv.withAuth(func(w http.ResponseWriter, r *http.Request) {
+		if got := currentUser(r); got != "alice" {
+			t.Fatalf("expected authenticated user alice, got %q", got)
+		}
+		if got := r.Header.Get("X-Auth-Method"); got != "api-key" {
+			t.Fatalf("expected auth method api-key, got %q", got)
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	keys, err := srv.apiKeys.ListByUser(alice.ID)
+	if err != nil {
+		t.Fatalf("ListByUser: %v", err)
+	}
+	if len(keys) != 1 || keys[0].ID != created.ID || keys[0].LastUsedAt == nil {
+		t.Fatalf("expected api key usage to be tracked, got %#v", keys)
+	}
+}
+
+func TestWithAuthRejectsWriteRequestsForReadOnlyAPIKey(t *testing.T) {
+	srv, repo := newAuthTestServer(t, false)
+
+	alice, err := repo.GetByUsername("alice")
+	if err != nil {
+		t.Fatalf("GetByUsername: %v", err)
+	}
+	token, _, err := srv.apiKeys.Create(alice.ID, "Read only key", "read-only")
+	if err != nil {
+		t.Fatalf("Create api key: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/files/mkdir", strings.NewReader(`{}`))
+	req.Header.Set("X-API-Key", token)
+	rec := httptest.NewRecorder()
+
+	srv.withAuth(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "read-only") {
+		t.Fatalf("expected read-only error, got %s", rec.Body.String())
+	}
+}
+
+func TestWithAuthAllowsScopedAPIKeyForMatchingEndpoint(t *testing.T) {
+	srv, repo := newAuthTestServer(t, false)
+
+	alice, err := repo.GetByUsername("alice")
+	if err != nil {
+		t.Fatalf("GetByUsername: %v", err)
+	}
+	token, _, err := srv.apiKeys.Create(alice.ID, "Server reader", "server:read")
+	if err != nil {
+		t.Fatalf("Create api key: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/server/status", nil)
+	req.Header.Set("X-API-Key", token)
+	rec := httptest.NewRecorder()
+
+	srv.withAuth(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("expected 204, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestWithAuthRejectsScopedAPIKeyForWrongEndpoint(t *testing.T) {
+	srv, repo := newAuthTestServer(t, false)
+
+	alice, err := repo.GetByUsername("alice")
+	if err != nil {
+		t.Fatalf("GetByUsername: %v", err)
+	}
+	token, _, err := srv.apiKeys.Create(alice.ID, "Server reader", "server:read")
+	if err != nil {
+		t.Fatalf("Create api key: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/transfers", nil)
+	req.Header.Set("X-API-Key", token)
+	rec := httptest.NewRecorder()
+
+	srv.withAuth(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "required scope") {
+		t.Fatalf("expected scope error, got %s", rec.Body.String())
+	}
+}
+
+func TestWithAuthRejectsAPIKeyForAuthEndpoints(t *testing.T) {
+	srv, repo := newAuthTestServer(t, false)
+
+	alice, err := repo.GetByUsername("alice")
+	if err != nil {
+		t.Fatalf("GetByUsername: %v", err)
+	}
+	token, _, err := srv.apiKeys.Create(alice.ID, "Wide key", "read-write")
+	if err != nil {
+		t.Fatalf("Create api key: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/totp/setup", nil)
+	req.Header.Set("X-API-Key", token)
+	rec := httptest.NewRecorder()
+
+	srv.withAuth(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "not allowed") {
+		t.Fatalf("expected endpoint restriction error, got %s", rec.Body.String())
+	}
+}
+
+func TestWithAuthRejectsBearerTokenForDisabledUser(t *testing.T) {
+	srv, repo := newAuthTestServer(t, false)
+
+	alice, err := repo.GetByUsername("alice")
+	if err != nil {
+		t.Fatalf("GetByUsername: %v", err)
+	}
+	alice.Enabled = false
+	if err := repo.Update(alice); err != nil {
+		t.Fatalf("disable alice: %v", err)
+	}
+
+	token, err := signToken(srv.secret, "alice", time.Hour)
+	if err != nil {
+		t.Fatalf("signToken: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/server/status", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+
+	srv.withAuth(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}).ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleAPIKeysIncludesScopeMetadata(t *testing.T) {
+	srv, repo := newAuthTestServer(t, false)
+
+	alice, err := repo.GetByUsername("alice")
+	if err != nil {
+		t.Fatalf("GetByUsername: %v", err)
+	}
+	if _, _, err := srv.apiKeys.Create(alice.ID, "CI key", "read-only"); err != nil {
+		t.Fatalf("Create api key: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/apikeys", nil)
+	req.Header.Set("X-Auth-User", "alice")
+	rec := httptest.NewRecorder()
+
+	srv.handleAPIKeys(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var payload struct {
+		Keys            []map[string]any `json:"keys"`
+		SupportedScopes []map[string]any `json:"supported_scopes"`
+		Presets         []map[string]any `json:"presets"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if len(payload.Keys) != 1 {
+		t.Fatalf("expected one key, got %#v", payload.Keys)
+	}
+	if len(payload.SupportedScopes) == 0 {
+		t.Fatal("expected supported scopes metadata")
+	}
+	if len(payload.Presets) == 0 {
+		t.Fatal("expected presets metadata")
+	}
+}
+
 func newAuthTestServer(t *testing.T, totpEnabled bool) (*Server, *auth.UserRepository) {
 	t.Helper()
 
@@ -348,6 +569,7 @@ func newAuthTestServer(t *testing.T, totpEnabled bool) (*Server, *auth.UserRepos
 		},
 		auth:       engine,
 		users:      repo,
+		apiKeys:    newAPIKeyRepository(st),
 		secret:     []byte("0123456789abcdef0123456789abcdef"),
 		loginState: make(map[string]*loginAttempt),
 	}, repo

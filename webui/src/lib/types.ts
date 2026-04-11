@@ -92,6 +92,26 @@ export type ApiKey = {
   last_used?: string
 }
 
+export type ApiKeyScopeInfo = {
+  name: string
+  resource: string
+  access: string
+  description: string
+}
+
+export type ApiKeyPreset = {
+  id: string
+  label: string
+  description: string
+  scopes: string[]
+}
+
+export type ApiKeysResponse = {
+  keys: ApiKey[]
+  supported_scopes: ApiKeyScopeInfo[]
+  presets: ApiKeyPreset[]
+}
+
 export type ApiShareLink = {
   token: string
   username: string

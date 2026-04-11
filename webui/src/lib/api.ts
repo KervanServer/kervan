@@ -2,7 +2,7 @@ import type {
   ApiFileEntry,
   ApiSession,
   ApiShareLink,
-  ApiKey,
+  ApiKeysResponse,
   ApiTransfer,
   ApiUserImportReport,
   ApiUser,
@@ -177,8 +177,8 @@ export const api = {
     return requestBlob(`/api/v1/users/export?format=${encodeURIComponent(format)}`, token)
   },
 
-  apiKeys(token: string): Promise<{ keys: ApiKey[] }> {
-    return request<{ keys: ApiKey[] }>("/api/v1/apikeys", token)
+  apiKeys(token: string): Promise<ApiKeysResponse> {
+    return request<ApiKeysResponse>("/api/v1/apikeys", token)
   },
 
   createApiKey(token: string, payload: { name: string; permissions: string }): Promise<{ key: string; id: string }> {

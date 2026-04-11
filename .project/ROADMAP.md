@@ -5,119 +5,185 @@
 
 ## Current State Assessment
 
-KervanServer is past the toy stage and already delivers a meaningful single-binary file-transfer platform: FTP, FTPS, SFTP, limited SCP, REST API, Web UI, health/metrics, API keys, share links, LDAP basics, TOTP, and migration tooling are all present. The main blockers are not "does it do anything?" but "can this be trusted in production?" Right now the answer is no, mainly because security defaults are unsafe, persistence is weak, deployment infrastructure is absent, and the implementation still trails the specification in several core areas.
+Kervan is a real, working server, not a stub. The Go build passes, the WebUI build passes, the Go test suite passes, and the repository already includes CI, Docker, Goreleaser, health checks, metrics, backup/restore, migration commands, and a usable embedded React admin UI.
+
+The main blockers are trust and completeness:
+- some promised features are missing or partial
+- some security/config knobs exist but are not enforced
+- frontend coverage is absent
+- the project plan/docs do not accurately reflect the implementation
 
 What is working well:
-
-- The codebase is modular and understandable.
-- Build, tests, vet, staticcheck, govulncheck, and frontend build all succeed.
-- The admin surface is broader than the README's cautionary language suggests.
-
-Key production blockers:
-
-- Default admin bootstrap password
-- Weak browser/API hardening
-- Fragile JSON-file persistence
-- No deployment pipeline or container packaging
-- Partial protocol compatibility and limited interoperability confidence
+- local auth, LDAP auth, TOTP, SSH public-key auth
+- local/memory/S3 backends
+- share links, user import/export, backup/restore
+- metrics, health, debug server, structured logging
 
 ## Phase 1: Critical Fixes (Week 1-2)
 
-### Must-fix items blocking safe deployment
+### Must-fix items blocking production trust
 
-- [ ] Remove the hardcoded admin fallback at `internal/server/server.go:455`; require explicit bootstrap credentials or generate a one-time secret. Effort: `4h`
-- [ ] Replace per-process API token secrets in `internal/api/server.go:96-120` with persistent signing material and explicit rotation support. Effort: `12h`
-- [ ] Add secure HTTP middleware: panic recovery, request IDs, request logging, secure headers, stricter CORS, and basic abuse-rate limits. Effort: `20h`
-- [ ] Remove token-in-query-string WebSocket auth in `internal/api/websocket.go:45-47`. Effort: `4h`
-- [ ] Decide whether the product claim is "production-ready appliance" or "advanced beta", and align README/spec language accordingly until the hardening work lands. Effort: `4h`
+- [ ] Implement API-key authentication and permission enforcement.
+  Affected files: `internal/api/apikeys.go`, `internal/api/server.go`
+  Effort: 12-16h
+
+- [ ] Enforce or remove unsupported config claims: `allowed_ips`, `denied_ips`, `max_connections`, LDAP pool size.
+  Affected files: `internal/config/*`, `internal/server/server.go`, `internal/protocol/*`, `internal/api/server.go`
+  Effort: 16-24h
+
+- [ ] Resolve the persistence truth gap: stop labeling the JSON file store as “CobaltDB” unless the DB layer is actually implemented.
+  Affected files: `internal/store/store.go`, `internal/api/monitoring.go`, `internal/server/server.go`, docs
+  Effort: 4-8h
+
+- [ ] Enforce password policy in create/import/reset flows.
+  Affected files: `internal/auth/engine.go`, `cmd/kervan/cli_commands.go`, `internal/api/server.go`, `internal/api/users_bulk.go`
+  Effort: 4-6h
+
+- [ ] Remove the TLS verification bypass from `kervan status`, or gate it behind an explicit unsafe flag.
+  Affected files: `cmd/kervan/cli_commands.go`
+  Effort: 2-3h
 
 ## Phase 2: Core Completion (Week 3-6)
 
 ### Complete missing core features from specification
 
-- [ ] Finish FTP compatibility gaps: `PORT`, `EPRT`, `EPSV`, `REST`, `ABOR`, and honest `FEAT` advertising in `internal/protocol/ftp/server.go`. Effort: `36h`
-- [ ] Expand SFTP/SCP compatibility, especially recursive SCP and more complete file attribute operations. Effort: `40h`
-- [ ] Implement or deliberately cut spec promises around groups/shared directories and account lifecycle features. Effort: `32h`
-- [ ] Decide on OIDC scope. If keeping it in-spec, implement Web UI SSO; if not, move it out of v1 commitments. Effort: `40h`
-- [ ] Expand MCP from the current 3 tools / 3 resources to a useful administrative surface aligned with Spec Sec. 11. Effort: `24h`
+- [ ] Add a real group model and `/api/v1/groups` endpoints.
+  Current gap: groups are promised but absent.
+  Effort: 24-32h
+
+- [ ] Decide whether OIDC is in or out for v1.0.
+  If in: implement WebUI SSO.
+  If out: remove it from the advertised scope.
+  Effort: 4h to rescope, 24h+ to implement
+
+- [ ] Implement FTP active-mode support and the missing extension coverage the docs still claim.
+  Current gap: passive-mode-centric implementation.
+  Effort: 24-36h
+
+- [ ] Expand MCP to match the useful runtime surface: sessions, transfers, config summaries, maybe quota/report resources.
+  Current gap: only 3 tools and 3 resources.
+  Effort: 12-20h
+
+- [ ] Decide on the long-term persistence strategy.
+  Option A: formally adopt the JSON store and rewrite the spec.
+  Option B: implement the originally planned embedded DB layer.
+  Effort: 8h for rescoping, 40h+ for real DB work
 
 ## Phase 3: Hardening (Week 7-8)
 
-### Security, reliability, and data-safety work
+### Security, error handling, edge cases
 
-- [ ] Replace `internal/store` JSON-file persistence with a durable embedded store plus schema/migration layer. Effort: `60h`
-- [ ] Add startup config validation for all security-sensitive runtime combinations. Effort: `10h`
-- [ ] Harden audit pipeline against event loss and improve retention/rotation strategy. Effort: `16h`
-- [ ] Add stronger share-link controls: shorter defaults, optional one-time links, IP binding or signed metadata, and more explicit audit trails. Effort: `12h`
-- [ ] Tighten TLS behavior and certificate error handling, especially around ACME failure modes. Effort: `12h`
+- [ ] Add request-body size limits to login, config update, file upload, and other JSON endpoints.
+  Effort: 4-6h
+
+- [ ] Add CSP and HSTS defaults for the WebUI/API.
+  Effort: 4-6h
+
+- [ ] Update session `last_seen_at` during real FTP/SFTP/SCP activity.
+  Effort: 8-12h
+
+- [ ] Stream S3 uploads instead of buffering entire request bodies in memory.
+  Effort: 16-24h
+
+- [ ] Audit all dead config fields and make each one either enforced or explicitly unsupported.
+  Effort: 8-12h
 
 ## Phase 4: Testing (Week 9-10)
 
 ### Comprehensive test coverage
 
-- [ ] Add tests for packages with zero coverage priority order: `internal/protocol/ftp`, `internal/store`, `internal/audit`, `internal/session`, `internal/storage/local`, `internal/webui`. Effort: `48h`
-- [ ] Add protocol integration tests with real FTP/SFTP/SCP client interoperability. Effort: `40h`
-- [ ] Add API end-to-end tests for login, TOTP, config patching, file flows, and share-link flows. Effort: `24h`
-- [ ] Add frontend component or browser tests for the main admin workflows. Effort: `24h`
-- [ ] Fix local environment so `go test -race ./...` is runnable and keep it in CI. Effort: `6h`
+- [ ] Raise coverage in `internal/protocol/ftp` and `internal/protocol/sftp`.
+  Current coverage: 18.5% / 8.7%
+  Effort: 20-28h
+
+- [ ] Add API integration tests for file operations, share links, config reload/update, and error cases.
+  Effort: 12-16h
+
+- [ ] Add frontend component tests with Vitest + React Testing Library.
+  Effort: 12-16h
+
+- [ ] Add Playwright smoke tests for login, files, sessions, users, and monitoring views.
+  Effort: 16-24h
+
+- [ ] Enable a race-detector job on a CGO-capable CI runner.
+  Effort: 4-6h
 
 ## Phase 5: Performance & Optimization (Week 11-12)
 
 ### Performance tuning and optimization
 
-- [ ] Replace whole-file audit reads with streaming or indexed access. Effort: `12h`
-- [ ] Rework S3 backend for multipart upload and streamed I/O instead of whole-object buffering. Effort: `40h`
-- [ ] Reduce WebSocket full-snapshot polling by moving to incremental event messages or adaptive intervals. Effort: `16h`
-- [ ] Review bundle splitting and route-level code splitting for the Web UI. Effort: `8h`
-- [ ] Add large-file transfer benchmarks and memory profiling. Effort: `12h`
+- [ ] Replace 2-second WebSocket snapshots with more event-driven updates where practical.
+  Effort: 16-24h
+
+- [ ] Add route-level code splitting in the React app.
+  Effort: 4-6h
+
+- [ ] Add asset compression or document proxy-side compression as a deployment requirement.
+  Effort: 4-6h
+
+- [ ] Reassess JSON store write-amplification under heavy metadata churn.
+  Effort: 6-10h
 
 ## Phase 6: Documentation & DX (Week 13-14)
 
 ### Documentation and developer experience
 
-- [ ] Update `README.md` to reflect what is now implemented versus still planned. Effort: `6h`
-- [ ] Add `ARCHITECTURE.md` with component diagrams and lifecycle notes. Effort: `8h`
-- [ ] Add `API.md` or OpenAPI output for the current REST surface. Effort: `16h`
-- [ ] Add `CONTRIBUTING.md`, `LICENSE`, and a realistic release process description. Effort: `8h`
-- [ ] Convert `TASKS.md` from stale checkbox backlog into either ADRs + milestone issues or a generated status board. Effort: `6h`
+- [ ] Rewrite `README.md` around the implemented feature set, not the aspirational one.
+  Effort: 8-10h
+
+- [ ] Mark `TASKS.md` as archived/stale or update it to reflect actual progress.
+  Effort: 4-6h
+
+- [ ] Publish an API reference or OpenAPI document for the current endpoints.
+  Effort: 12-20h
+
+- [ ] Add `CONTRIBUTING.md` and a concise architecture map for new contributors.
+  Effort: 6-8h
 
 ## Phase 7: Release Preparation (Week 15-16)
 
 ### Final production preparation
 
-- [ ] Add GitHub Actions CI for build, test, race, lint, and frontend build. Effort: `12h`
-- [ ] Add `Dockerfile` and production image hardening. Effort: `10h`
-- [ ] Add `.goreleaser.yml` or equivalent release automation. Effort: `8h`
-- [ ] Add backup/restore documentation and operational runbooks. Effort: `10h`
-- [ ] Add environment-specific config guidance for dev, staging, and prod. Effort: `8h`
+- [ ] Decide on the final container hardening target: Alpine accepted, or move to distroless/scratch as originally planned.
+  Effort: 6-10h
+
+- [ ] Add deployment examples for reverse-proxy TLS termination, object storage, and systemd.
+  Effort: 6-8h
+
+- [ ] Add rollback/recovery docs centered on backup/restore.
+  Effort: 4-6h
+
+- [ ] Add a release checklist that only includes features actually implemented.
+  Effort: 4-6h
 
 ## Beyond v1.0: Future Enhancements
 
-- [ ] Multi-node/shared-state architecture instead of single-process in-memory coordination
-- [ ] Better admin UX for file preview, audit exploration, and operational drill-down
-- [ ] Policy engine for per-user, per-group, and per-path constraints
-- [ ] Real event streaming and richer observability/tracing
-- [ ] Optional external database-backed control plane
+- [ ] OIDC WebUI SSO
+- [ ] Full groups/policy model
+- [ ] Event-driven WebSocket subscriptions
+- [ ] Syslog / CEF / richer audit sinks
+- [ ] Shared-state or clustered control plane
+- [ ] Stronger metadata persistence if the JSON store becomes a bottleneck
 
 ## Effort Summary
 
 | Phase | Estimated Hours | Priority | Dependencies |
-|---|---|---|---|
-| Phase 1 | 44h | CRITICAL | None |
-| Phase 2 | 172h | HIGH | Phase 1 |
-| Phase 3 | 110h | HIGH | Phase 1 |
-| Phase 4 | 142h | HIGH | Phase 1-3 |
-| Phase 5 | 88h | MEDIUM | Phase 3-4 |
-| Phase 6 | 44h | MEDIUM | Phase 2 |
-| Phase 7 | 48h | HIGH | Phase 1-6 |
-| **Total** | **648h** |  |  |
+|---|---:|---|---|
+| Phase 1 | 40h | CRITICAL | None |
+| Phase 2 | 80h | HIGH | Phase 1 |
+| Phase 3 | 40h | HIGH | Phase 1 |
+| Phase 4 | 55h | HIGH | Phases 1-3 |
+| Phase 5 | 30h | MEDIUM | Phase 4 |
+| Phase 6 | 30h | MEDIUM | Phase 2 |
+| Phase 7 | 20h | HIGH | Phases 1-6 |
+| **Total** | **295h** | | |
 
 ## Risk Assessment
 
 | Risk | Probability | Impact | Mitigation |
 |---|---|---|---|
-| Security incident caused by weak auth/session defaults | High | High | Complete Phase 1 before any internet-facing deployment |
-| Data corruption or loss from JSON-file persistence | Medium | High | Replace `internal/store` and add backup strategy |
-| Protocol incompatibility with real-world clients | High | Medium | Add interoperability testing before release |
-| Scope creep from trying to finish every spec item before stabilizing core | High | Medium | Freeze v1 scope after Phase 2 decisions |
-| Operational fragility due to absent CI/CD and packaging | High | Medium | Implement Phase 7 before release candidates |
+| Operators trust unsupported config/docs and deploy with false assumptions | High | High | Rewrite docs and either implement or remove dead controls immediately |
+| API-key feature ships as a false promise for automation users | High | High | Implement auth path or cut the feature from release scope |
+| Large S3 uploads cause avoidable memory spikes | Medium | High | Stream uploads or stage them to disk |
+| FTP/SFTP protocol regressions surface with real client diversity | Medium | High | Expand protocol integration coverage before broader rollout |
+| Frontend regressions ship unnoticed | High | Medium | Add component and e2e tests |

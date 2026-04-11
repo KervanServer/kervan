@@ -78,6 +78,7 @@ func New(cfg *config.Config, configPath string, logger *slog.Logger) (*App, erro
 		cfg.Security.BruteForce.MaxAttempts,
 		cfg.Security.BruteForce.LockoutDuration,
 	)
+	engine.SetMinPasswordLength(cfg.Auth.MinPasswordLength)
 	if cfg.Auth.LDAP.Enabled {
 		engine.SetLDAPProvider(auth.NewLDAPProvider(cfg.Auth.LDAP))
 	}
@@ -906,6 +907,7 @@ func joinStoragePath(parts ...string) string {
 }
 
 var runtimeReloadablePaths = map[string]struct{}{
+	"auth.min_password_length":              {},
 	"webui.session_timeout":                 {},
 	"webui.totp_enabled":                    {},
 	"webui.cors_origins":                    {},
@@ -1006,9 +1008,13 @@ func (a *App) applyRuntimeConfig(nextCfg *config.Config) ([]string, []string) {
 	a.cfg.WebUI.SessionTimeout = nextCfg.WebUI.SessionTimeout
 	a.cfg.WebUI.TOTPEnabled = nextCfg.WebUI.TOTPEnabled
 	a.cfg.WebUI.CORSOrigins = append([]string(nil), nextCfg.WebUI.CORSOrigins...)
+	a.cfg.Auth.MinPasswordLength = nextCfg.Auth.MinPasswordLength
 	a.cfg.Security.BruteForce.Enabled = nextCfg.Security.BruteForce.Enabled
 	a.cfg.Security.BruteForce.MaxAttempts = nextCfg.Security.BruteForce.MaxAttempts
 	a.cfg.Security.BruteForce.LockoutDuration = nextCfg.Security.BruteForce.LockoutDuration
+	if a.auth != nil {
+		a.auth.SetMinPasswordLength(nextCfg.Auth.MinPasswordLength)
+	}
 
 	if a.apiServer != nil {
 		a.apiServer.ApplyRuntimeConfig(api.Config{

@@ -41,6 +41,34 @@ func TestRunCheckCommand(t *testing.T) {
 	}
 }
 
+func TestRunAPIKeyScopesCommand(t *testing.T) {
+	var stdout bytes.Buffer
+	if err := runAPIKeyScopesCommand(&stdout, nil); err != nil {
+		t.Fatalf("runAPIKeyScopesCommand: %v", err)
+	}
+	output := stdout.String()
+	if !strings.Contains(output, "SCOPE") || !strings.Contains(output, "files:write") {
+		t.Fatalf("unexpected scopes output: %s", output)
+	}
+}
+
+func TestRunAPIKeyPresetsCommandJSON(t *testing.T) {
+	var stdout bytes.Buffer
+	if err := runAPIKeyPresetsCommand(&stdout, []string{"--json"}); err != nil {
+		t.Fatalf("runAPIKeyPresetsCommand: %v", err)
+	}
+	var presets []map[string]any
+	if err := json.Unmarshal(stdout.Bytes(), &presets); err != nil {
+		t.Fatalf("decode presets: %v", err)
+	}
+	if len(presets) == 0 {
+		t.Fatal("expected at least one preset")
+	}
+	if presets[0]["id"] == "" {
+		t.Fatalf("unexpected preset payload: %#v", presets[0])
+	}
+}
+
 func TestRunUserLifecycleCommands(t *testing.T) {
 	dataDir := filepath.Join(t.TempDir(), "data")
 	configPath := writeTestConfig(t, func(cfg *config.Config) {
@@ -635,6 +663,98 @@ func TestRunStatusCommand(t *testing.T) {
 	}
 	if !strings.Contains(output, "ftp: up") {
 		t.Fatalf("expected ftp check in output: %s", output)
+	}
+}
+
+func TestRunStatusCommandTLSRequiresTrustedCertificate(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/health" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "healthy"})
+	}))
+	defer server.Close()
+
+	u, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("parse test server url: %v", err)
+	}
+	host, port, err := net.SplitHostPort(u.Host)
+	if err != nil {
+		t.Fatalf("split host port: %v", err)
+	}
+
+	configPath := writeTestConfig(t, func(cfg *config.Config) {
+		cfg.WebUI.BindAddress = host
+		cfg.WebUI.Port = mustAtoi(t, port)
+		cfg.WebUI.Enabled = true
+		cfg.WebUI.TLS = true
+		cfg.FTPS.AutoCert.Enabled = true
+		cfg.FTPS.AutoCert.Domains = []string{"localhost"}
+		cfg.FTPS.AutoCert.ACMEDir = filepath.Join(t.TempDir(), "acme")
+		cfg.Server.DataDir = filepath.Join(t.TempDir(), "data")
+	})
+
+	if err := runStatusCommand(io.Discard, []string{"--config", configPath}); err == nil {
+		t.Fatal("expected TLS status check to fail without --insecure")
+	}
+}
+
+func TestRunStatusCommandTLSAllowsInsecureFlag(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/health" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "healthy"})
+	}))
+	defer server.Close()
+
+	u, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("parse test server url: %v", err)
+	}
+	host, port, err := net.SplitHostPort(u.Host)
+	if err != nil {
+		t.Fatalf("split host port: %v", err)
+	}
+
+	configPath := writeTestConfig(t, func(cfg *config.Config) {
+		cfg.WebUI.BindAddress = host
+		cfg.WebUI.Port = mustAtoi(t, port)
+		cfg.WebUI.Enabled = true
+		cfg.WebUI.TLS = true
+		cfg.FTPS.AutoCert.Enabled = true
+		cfg.FTPS.AutoCert.Domains = []string{"localhost"}
+		cfg.FTPS.AutoCert.ACMEDir = filepath.Join(t.TempDir(), "acme")
+		cfg.Server.DataDir = filepath.Join(t.TempDir(), "data")
+	})
+
+	var stdout bytes.Buffer
+	if err := runStatusCommand(&stdout, []string{"--config", configPath, "--insecure"}); err != nil {
+		t.Fatalf("runStatusCommand --insecure: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "Server status: healthy") {
+		t.Fatalf("unexpected output: %s", stdout.String())
+	}
+}
+
+func TestRunUserCreateCommandEnforcesConfiguredMinPasswordLength(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "data")
+	configPath := writeTestConfig(t, func(cfg *config.Config) {
+		cfg.Server.DataDir = dataDir
+		cfg.Auth.MinPasswordLength = 12
+	})
+
+	err := runUserCreateCommand(io.Discard, []string{
+		"--config", configPath,
+		"--username", "alice",
+		"--password", "short",
+		"--home-dir", "/uploads",
+	})
+	if err == nil || !strings.Contains(err.Error(), "at least 12 characters") {
+		t.Fatalf("expected password policy error, got %v", err)
 	}
 }
 

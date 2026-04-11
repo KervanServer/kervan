@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/kervanserver/kervan/internal/auth"
+	"github.com/kervanserver/kervan/internal/session"
 	"github.com/kervanserver/kervan/internal/store"
 )
 
@@ -31,6 +32,7 @@ func TestHandleUsersRequiresAdmin(t *testing.T) {
 
 func TestHandleUsersUpdateByAdmin(t *testing.T) {
 	srv, repo := newUserTestServer(t)
+	aliceSession := srv.sessions.Start("alice", "ftp", "10.0.0.1:1000")
 
 	target, err := repo.GetByUsername("alice")
 	if err != nil {
@@ -71,6 +73,35 @@ func TestHandleUsersUpdateByAdmin(t *testing.T) {
 	}
 	if updated.HomeDir != "/archive" {
 		t.Fatalf("expected updated home dir, got %q", updated.HomeDir)
+	}
+	if got := srv.sessions.Get(aliceSession.ID); got != nil {
+		t.Fatalf("expected alice session to be terminated after disable, got %#v", got)
+	}
+}
+
+func TestHandleUsersDeleteByAdminTerminatesSessions(t *testing.T) {
+	srv, repo := newUserTestServer(t)
+	aliceSession := srv.sessions.Start("alice", "ftp", "10.0.0.1:1000")
+
+	target, err := repo.GetByUsername("alice")
+	if err != nil {
+		t.Fatalf("get alice: %v", err)
+	}
+	if target == nil {
+		t.Fatal("expected alice to exist")
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/users?id="+target.ID, nil)
+	req.Header.Set("X-Auth-User", "admin")
+	rec := httptest.NewRecorder()
+
+	srv.handleUsers(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if got := srv.sessions.Get(aliceSession.ID); got != nil {
+		t.Fatalf("expected alice session to be terminated after delete, got %#v", got)
 	}
 }
 
@@ -193,7 +224,8 @@ func newUserTestServer(t *testing.T) (*Server, *auth.UserRepository) {
 	}
 
 	return &Server{
-		auth:  engine,
-		users: repo,
+		auth:     engine,
+		users:    repo,
+		sessions: session.NewManager(),
 	}, repo
 }

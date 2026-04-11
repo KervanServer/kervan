@@ -1,8 +1,11 @@
 bin/
 *.db
 *.log
+*.exe
 .env
 kervan.yaml
+coverage
+coverage.out
 
 webui/node_modules/
 webui/dist/

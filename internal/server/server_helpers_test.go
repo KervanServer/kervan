@@ -188,6 +188,20 @@ func TestDiffRuntimeChangesAndWriteConfigFile(t *testing.T) {
 	}
 }
 
+func TestClassifyRuntimeChangesIncludesAuthMinPasswordLength(t *testing.T) {
+	current := config.DefaultConfig()
+	next := config.DefaultConfig()
+	next.Auth.MinPasswordLength = current.Auth.MinPasswordLength + 4
+
+	applied, restart := classifyRuntimeChanges(current, next)
+	if !reflect.DeepEqual(applied, []string{"auth.min_password_length"}) {
+		t.Fatalf("expected auth min password length to be runtime reloadable, got applied=%v", applied)
+	}
+	if len(restart) != 0 {
+		t.Fatalf("expected no restart-required paths, got %v", restart)
+	}
+}
+
 func TestBuildAuditSinksFallbackAndErrors(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.Server.DataDir = t.TempDir()

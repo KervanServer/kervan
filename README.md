@@ -103,10 +103,19 @@ go run ./cmd/kervan status --config ./kervan.yaml
 go run ./cmd/kervan user list   --config ./kervan.yaml
 go run ./cmd/kervan user create --config ./kervan.yaml --username alice --password 'StrongPass123!' --home-dir /uploads
 go run ./cmd/kervan user delete --config ./kervan.yaml --username alice
+
+# Discover API key presets and supported scopes
+go run ./cmd/kervan apikey scopes
+go run ./cmd/kervan apikey presets
 ```
 
-> *Planned CLI (per Spec §17):* `user list/create/delete/import/export`,
-> `status`, `check`, `migrate vsftpd|proftpd|ssh-keys`.
+API key scopes currently include surfaces such as `server:read`,
+`files:read`, `files:write`, `share:write`, `audit:read`,
+`sessions:write`, and `transfers:read`. Presets (`read-only`,
+`automation`, `operations`, `read-write`) expand to curated scope sets.
+
+> Additional CLI management for API key create/list/revoke is not yet exposed;
+> the WebUI/API remains the primary management surface.
 
 ---
 
@@ -423,8 +432,8 @@ The management API is served from the same process as the WebUI (default
 | `GET`  | `/api/v1/users`              | List users (admin)                        |
 | `POST` | `/api/v1/users`              | Create user (admin)                       |
 | `DELETE` | `/api/v1/users?id=…`       | Delete user (admin)                       |
-| `GET`  | `/api/v1/apikeys`            | List API keys (current user)              |
-| `POST` | `/api/v1/apikeys`            | Create API key (shown once)               |
+| `GET`  | `/api/v1/apikeys`            | List API keys plus supported scopes/presets |
+| `POST` | `/api/v1/apikeys`            | Create scoped API key (shown once)        |
 | `DELETE` | `/api/v1/apikeys?id=…`     | Revoke API key                            |
 | `GET`  | `/api/v1/sessions`           | Active session list                       |
 | `GET`  | `/api/v1/files/{user}/ls`    | List directory contents                   |

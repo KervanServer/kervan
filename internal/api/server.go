@@ -787,6 +787,9 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
+		if req.Enabled != nil && !*req.Enabled {
+			s.terminateUserSessions(user.Username)
+		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"id":       user.ID,
 			"username": user.Username,
@@ -800,10 +803,20 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id is required"})
 			return
 		}
+		user, err := s.users.GetByID(id)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		if user == nil {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "user not found"})
+			return
+		}
 		if err := s.users.Delete(id); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
+		s.terminateUserSessions(user.Username)
 		writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -907,7 +920,11 @@ func (s *Server) handleAPIKeys(w http.ResponseWriter, r *http.Request) {
 				"last_used":   item.LastUsedAt,
 			})
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"keys": response})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"keys":             response,
+			"supported_scopes": apiKeySupportedScopeInfo(),
+			"presets":          apiKeyPresets(),
+		})
 	case http.MethodPost:
 		var req struct {
 			Name        string `json:"name"`
@@ -1593,16 +1610,62 @@ func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
 func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		token := bearerToken(r.Header.Get("Authorization"))
-		if token == "" {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing bearer token"})
+		if token != "" {
+			user, err := s.activeUserFromBearerToken(token)
+			if err != nil {
+				if errors.Is(err, errAuthenticatedUserUnavailable) {
+					writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid token"})
+					return
+				}
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to resolve authenticated user"})
+				return
+			}
+			r.Header.Set("X-Auth-User", user.Username)
+			r.Header.Set("X-Auth-Method", "bearer")
+			next(w, r)
 			return
 		}
-		claims, err := verifyToken(s.secret, token)
+
+		rawAPIKey := apiKeyToken(r)
+		if rawAPIKey == "" {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing bearer token or api key"})
+			return
+		}
+		if s.apiKeys == nil {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "api key auth is not configured"})
+			return
+		}
+
+		record, err := s.apiKeys.GetByToken(rawAPIKey)
 		if err != nil {
-			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid token"})
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid api key"})
 			return
 		}
-		r.Header.Set("X-Auth-User", claims.Sub)
+		if record == nil {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid api key"})
+			return
+		}
+
+		user, err := s.users.GetByID(record.UserID)
+		if err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to resolve api key owner"})
+			return
+		}
+		if user == nil || !user.Enabled {
+			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "api key owner is not available"})
+			return
+		}
+		if allowed, reason := apiKeyPermissionAllowsRequest(record.Permissions, r.Method, r.URL.Path); !allowed {
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": reason})
+			return
+		}
+		if err := s.apiKeys.UpdateLastUsed(record.ID, time.Now().UTC()); err != nil && s.logger != nil {
+			s.logger.Warn("failed to update api key last used timestamp", "key_id", record.ID, "error", err)
+		}
+
+		r.Header.Set("X-Auth-User", user.Username)
+		r.Header.Set("X-Auth-Method", "api-key")
+		r.Header.Set("X-Auth-Permissions", record.Permissions)
 		next(w, r)
 	}
 }
@@ -1625,7 +1688,7 @@ func (s *Server) withMiddleware(next http.Handler) http.Handler {
 		recorder.Header().Set("Referrer-Policy", "no-referrer")
 		recorder.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
 		recorder.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
-		recorder.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-Request-ID, Traceparent")
+		recorder.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-API-Key, X-Request-ID, Traceparent")
 		recorder.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 		recorder.Header().Set("Access-Control-Expose-Headers", "X-Request-ID, Traceparent, X-Trace-ID")
 
@@ -1794,6 +1857,24 @@ func bearerToken(authHeader string) string {
 	}
 	parts := strings.SplitN(authHeader, " ", 2)
 	if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+		return ""
+	}
+	return strings.TrimSpace(parts[1])
+}
+
+func apiKeyToken(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	if token := strings.TrimSpace(r.Header.Get("X-API-Key")); token != "" {
+		return token
+	}
+	authHeader := strings.TrimSpace(r.Header.Get("Authorization"))
+	if authHeader == "" {
+		return ""
+	}
+	parts := strings.SplitN(authHeader, " ", 2)
+	if len(parts) != 2 || !strings.EqualFold(parts[0], "ApiKey") {
 		return ""
 	}
 	return strings.TrimSpace(parts[1])
@@ -2287,6 +2368,42 @@ func (s *Server) isAdminUser(username string) bool {
 		return false
 	}
 	return user.Type == auth.UserTypeAdmin
+}
+
+var errAuthenticatedUserUnavailable = errors.New("authenticated user is unavailable")
+
+func (s *Server) activeUserFromBearerToken(token string) (*auth.User, error) {
+	claims, err := verifyToken(s.secret, token)
+	if err != nil {
+		return nil, errAuthenticatedUserUnavailable
+	}
+	return s.activeUserByUsername(claims.Sub)
+}
+
+func (s *Server) activeUserByUsername(username string) (*auth.User, error) {
+	if s.users == nil {
+		return nil, errors.New("user repository is not configured")
+	}
+	user, err := s.users.GetByUsername(strings.TrimSpace(username))
+	if err != nil {
+		return nil, err
+	}
+	if user == nil || !user.Enabled {
+		return nil, errAuthenticatedUserUnavailable
+	}
+	return user, nil
+}
+
+func (s *Server) terminateUserSessions(username string) {
+	if s == nil || s.sessions == nil || strings.TrimSpace(username) == "" {
+		return
+	}
+	for _, item := range s.sessions.List() {
+		if item == nil || !strings.EqualFold(item.Username, username) {
+			continue
+		}
+		s.sessions.Kill(item.ID)
+	}
 }
 
 func (s *Server) viewerScopedUsername(viewerUsername, requestedUsername string) string {

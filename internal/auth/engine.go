@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -21,11 +22,12 @@ const (
 )
 
 type Engine struct {
-	repo         *UserRepository
-	hashAlgo     string
-	maxAttempts  int
-	lockDuration time.Duration
-	ldap         *LDAPProvider
+	repo              *UserRepository
+	hashAlgo          string
+	maxAttempts       int
+	lockDuration      time.Duration
+	minPasswordLength int
+	ldap              *LDAPProvider
 }
 
 func NewEngine(repo *UserRepository, hashAlgo string, maxAttempts int, lockDuration time.Duration) *Engine {
@@ -120,7 +122,17 @@ func (e *Engine) SetLDAPProvider(provider *LDAPProvider) {
 	e.ldap = provider
 }
 
+func (e *Engine) SetMinPasswordLength(length int) {
+	if length < 0 {
+		length = 0
+	}
+	e.minPasswordLength = length
+}
+
 func (e *Engine) CreateUser(username, password, homeDir string, admin bool) (*User, error) {
+	if err := e.validatePassword(password); err != nil {
+		return nil, err
+	}
 	hash, err := HashPassword(password, e.hashAlgo)
 	if err != nil {
 		return nil, err
@@ -151,6 +163,9 @@ func (e *Engine) ResetPassword(username, password string) error {
 	if u == nil {
 		return ErrInvalidCredentials
 	}
+	if err := e.validatePassword(password); err != nil {
+		return err
+	}
 	hash, err := HashPassword(password, e.hashAlgo)
 	if err != nil {
 		return err
@@ -159,6 +174,16 @@ func (e *Engine) ResetPassword(username, password string) error {
 	u.FailedLogins = 0
 	u.LockedUntil = nil
 	return e.repo.Update(u)
+}
+
+func (e *Engine) validatePassword(password string) error {
+	if e == nil || e.minPasswordLength <= 0 {
+		return nil
+	}
+	if len(password) < e.minPasswordLength {
+		return fmt.Errorf("password must be at least %d characters", e.minPasswordLength)
+	}
+	return nil
 }
 
 func normalizeAuthorizedKey(raw []byte) string {

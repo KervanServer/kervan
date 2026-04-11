@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react"
-import { Copy, KeyRound, Trash2 } from "lucide-react"
+import { useEffect, useState, type FormEvent } from "react"
+import { Copy, KeyRound, ShieldCheck, Trash2 } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
@@ -7,14 +7,40 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { api } from "@/lib/api"
-import type { ApiKey } from "@/lib/types"
+import type { ApiKey, ApiKeyPreset, ApiKeyScopeInfo } from "@/lib/types"
 
 type Props = { token: string }
 
+function sortScopes(scopes: string[], supportedScopes: ApiKeyScopeInfo[]): string[] {
+  const order = new Map(supportedScopes.map((scope, index) => [scope.name, index]))
+  return [...scopes].sort((left, right) => (order.get(left) ?? 999) - (order.get(right) ?? 999))
+}
+
+function sameScopes(left: string[], right: string[]): boolean {
+  if (left.length !== right.length) {
+    return false
+  }
+  return left.every((scope, index) => scope === right[index])
+}
+
+function formatLastUsed(value?: string): string {
+  if (!value) {
+    return "Never"
+  }
+  const parsed = new Date(value)
+  if (Number.isNaN(parsed.getTime())) {
+    return value
+  }
+  return parsed.toLocaleString()
+}
+
 export function ApiKeysPage({ token }: Props) {
   const [keys, setKeys] = useState<ApiKey[]>([])
+  const [supportedScopes, setSupportedScopes] = useState<ApiKeyScopeInfo[]>([])
+  const [presets, setPresets] = useState<ApiKeyPreset[]>([])
   const [name, setName] = useState("")
-  const [permissions, setPermissions] = useState("read-write")
+  const [selectedPreset, setSelectedPreset] = useState("read-write")
+  const [selectedScopes, setSelectedScopes] = useState<string[]>([])
   const [generatedKey, setGeneratedKey] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
@@ -25,6 +51,16 @@ export function ApiKeysPage({ token }: Props) {
     try {
       const response = await api.apiKeys(token)
       setKeys(response.keys)
+      setSupportedScopes(response.supported_scopes)
+      setPresets(response.presets)
+      if (response.presets.length > 0 && selectedScopes.length === 0) {
+        const preferredPreset =
+          response.presets.find((preset) => preset.id === selectedPreset) ?? response.presets[response.presets.length - 1]
+        setSelectedPreset(preferredPreset.id)
+        setSelectedScopes(sortScopes(preferredPreset.scopes, response.supported_scopes))
+      } else {
+        setSelectedScopes((current) => sortScopes(current, response.supported_scopes))
+      }
       setError(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to load API keys")
@@ -38,13 +74,33 @@ export function ApiKeysPage({ token }: Props) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [token])
 
-  const create = async (event: React.FormEvent) => {
+  const applyPreset = (preset: ApiKeyPreset) => {
+    setSelectedPreset(preset.id)
+    setSelectedScopes(sortScopes(preset.scopes, supportedScopes))
+  }
+
+  const toggleScope = (scopeName: string) => {
+    setSelectedScopes((current) => {
+      const exists = current.includes(scopeName)
+      const next = exists ? current.filter((item) => item !== scopeName) : [...current, scopeName]
+      const sorted = sortScopes(next, supportedScopes)
+      const matchedPreset = presets.find((preset) => sameScopes(sortScopes(preset.scopes, supportedScopes), sorted))
+      setSelectedPreset(matchedPreset?.id ?? "custom")
+      return sorted
+    })
+  }
+
+  const create = async (event: FormEvent) => {
     event.preventDefault()
-    if (!name.trim()) {
+    if (!name.trim() || selectedScopes.length === 0) {
       return
     }
     setCreating(true)
     try {
+      const permissions =
+        selectedPreset !== "custom" && presets.some((preset) => preset.id === selectedPreset)
+          ? selectedPreset
+          : selectedScopes.join(",")
       const response = await api.createApiKey(token, { name: name.trim(), permissions })
       setGeneratedKey(response.key)
       setName("")
@@ -86,33 +142,88 @@ export function ApiKeysPage({ token }: Props) {
       <Card>
         <CardHeader>
           <CardTitle>API Keys</CardTitle>
-          <CardDescription>Create and revoke personal API keys.</CardDescription>
+          <CardDescription>Create scoped personal API keys with only the access an integration needs.</CardDescription>
         </CardHeader>
-        <CardContent className="space-y-4">
-          <form className="grid gap-2 md:grid-cols-[1fr_auto_auto]" onSubmit={create}>
-            <Input placeholder="Key name" value={name} onChange={(event) => setName(event.target.value)} />
-            <div className="flex gap-1 rounded-xl border border-[var(--border)] bg-[var(--muted)] p-1">
-              <Button
-                type="button"
-                size="sm"
-                variant={permissions === "read-only" ? "default" : "ghost"}
-                onClick={() => setPermissions("read-only")}
-              >
-                Read only
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                variant={permissions === "read-write" ? "default" : "ghost"}
-                onClick={() => setPermissions("read-write")}
-              >
-                Read/write
+        <CardContent className="space-y-5">
+          <form className="space-y-4" onSubmit={create}>
+            <div className="grid gap-2 md:grid-cols-[1.2fr_0.8fr]">
+              <Input placeholder="Key name" value={name} onChange={(event) => setName(event.target.value)} />
+              <div className="rounded-xl border border-[var(--border)] bg-[var(--muted)]/40 px-3 py-2 text-sm text-[var(--muted-foreground)]">
+                Selected scopes: <span className="font-medium text-[var(--foreground)]">{selectedScopes.length}</span>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <p className="text-sm font-medium">Presets</p>
+              <div className="grid gap-2 lg:grid-cols-4">
+                {presets.map((preset) => (
+                  <button
+                    key={preset.id}
+                    type="button"
+                    onClick={() => applyPreset(preset)}
+                    className={`rounded-2xl border p-3 text-left transition ${
+                      selectedPreset === preset.id
+                        ? "border-[var(--primary)] bg-[color-mix(in_oklab,var(--primary)_12%,transparent)]"
+                        : "border-[var(--border)] bg-[var(--muted)]/25 hover:bg-[var(--muted)]/50"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <p className="font-medium">{preset.label}</p>
+                      <Badge variant="outline">{preset.scopes.length} scopes</Badge>
+                    </div>
+                    <p className="mt-2 text-sm text-[var(--muted-foreground)]">{preset.description}</p>
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-sm font-medium">Scopes</p>
+                {selectedPreset === "custom" ? (
+                  <Badge variant="outline" className="gap-1">
+                    <ShieldCheck className="h-3.5 w-3.5" />
+                    Custom
+                  </Badge>
+                ) : null}
+              </div>
+              <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+                {supportedScopes.map((scope) => {
+                  const checked = selectedScopes.includes(scope.name)
+                  return (
+                    <label
+                      key={scope.name}
+                      className={`flex cursor-pointer gap-3 rounded-2xl border p-3 transition ${
+                        checked
+                          ? "border-[var(--primary)] bg-[color-mix(in_oklab,var(--primary)_10%,transparent)]"
+                          : "border-[var(--border)] bg-[var(--card)]"
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        className="mt-1 h-4 w-4 accent-[var(--primary)]"
+                        checked={checked}
+                        onChange={() => toggleScope(scope.name)}
+                      />
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <span className="font-mono text-xs font-semibold">{scope.name}</span>
+                          <Badge variant="outline">{scope.access}</Badge>
+                        </div>
+                        <p className="mt-1 text-sm text-[var(--muted-foreground)]">{scope.description}</p>
+                      </div>
+                    </label>
+                  )
+                })}
+              </div>
+            </div>
+
+            <div className="flex justify-end">
+              <Button type="submit" disabled={creating || !name.trim() || selectedScopes.length === 0}>
+                <KeyRound className="mr-2 h-4 w-4" />
+                {creating ? "Creating..." : "Create key"}
               </Button>
             </div>
-            <Button type="submit" disabled={creating}>
-              <KeyRound className="mr-2 h-4 w-4" />
-              {creating ? "Creating..." : "Create key"}
-            </Button>
           </form>
 
           {generatedKey ? (
@@ -135,9 +246,10 @@ export function ApiKeysPage({ token }: Props) {
               <TableHeader>
                 <TableRow>
                   <TableHead>Name</TableHead>
-                  <TableHead>Permission</TableHead>
+                  <TableHead>Permissions</TableHead>
                   <TableHead>Prefix</TableHead>
                   <TableHead>Created</TableHead>
+                  <TableHead>Last used</TableHead>
                   <TableHead className="text-right">Action</TableHead>
                 </TableRow>
               </TableHeader>
@@ -145,11 +257,18 @@ export function ApiKeysPage({ token }: Props) {
                 {keys.map((key) => (
                   <TableRow key={key.id}>
                     <TableCell>{key.name}</TableCell>
-                    <TableCell>
-                      <Badge variant="outline">{key.permissions}</Badge>
+                    <TableCell className="max-w-[28rem]">
+                      <div className="flex flex-wrap gap-1">
+                        {key.permissions.split(",").map((permission) => (
+                          <Badge key={permission} variant="outline" className="font-mono text-[11px]">
+                            {permission}
+                          </Badge>
+                        ))}
+                      </div>
                     </TableCell>
                     <TableCell className="font-mono text-xs">{key.prefix}</TableCell>
                     <TableCell>{new Date(key.created_at).toLocaleString()}</TableCell>
+                    <TableCell>{formatLastUsed(key.last_used)}</TableCell>
                     <TableCell className="text-right">
                       <Button variant="destructive" size="sm" onClick={() => void revoke(key.id)}>
                         <Trash2 className="mr-2 h-3.5 w-3.5" />
@@ -160,7 +279,7 @@ export function ApiKeysPage({ token }: Props) {
                 ))}
                 {!loading && keys.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={5} className="text-center text-sm text-[var(--muted-foreground)]">
+                    <TableCell colSpan={6} className="text-center text-sm text-[var(--muted-foreground)]">
                       No API keys yet.
                     </TableCell>
                   </TableRow>

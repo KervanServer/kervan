@@ -40,6 +40,9 @@ func main() {
 		case "user":
 			cmdUser(os.Args[2:])
 			return
+		case "apikey":
+			cmdAPIKey(os.Args[2:])
+			return
 		case "backup":
 			cmdBackup(os.Args[2:])
 			return
@@ -191,6 +194,7 @@ func cmdAdminCreate(args []string) {
 	defer st.Close()
 	repo := auth.NewUserRepository(st)
 	engine := auth.NewEngine(repo, cfg.Auth.PasswordHash, cfg.Security.BruteForce.MaxAttempts, cfg.Security.BruteForce.LockoutDuration)
+	engine.SetMinPasswordLength(cfg.Auth.MinPasswordLength)
 	u, err := engine.CreateUser(*username, *password, "/", true)
 	if err != nil {
 		exitf("create admin: %v", err)
@@ -218,10 +222,17 @@ func cmdAdminReset(args []string) {
 	defer st.Close()
 	repo := auth.NewUserRepository(st)
 	engine := auth.NewEngine(repo, cfg.Auth.PasswordHash, cfg.Security.BruteForce.MaxAttempts, cfg.Security.BruteForce.LockoutDuration)
+	engine.SetMinPasswordLength(cfg.Auth.MinPasswordLength)
 	if err := engine.ResetPassword(*username, *password); err != nil {
 		exitf("reset password: %v", err)
 	}
 	fmt.Printf("Password reset: %s\n", *username)
+}
+
+func cmdAPIKey(args []string) {
+	if err := runAPIKeyCommand(os.Stdout, args); err != nil {
+		exitf("apikey: %v", err)
+	}
 }
 
 func exitf(format string, args ...any) {
