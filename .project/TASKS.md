@@ -1,19 +1,19 @@
-# KERVAN — TASKS
+﻿# KERVAN â€” TASKS
 
 ## Implementation Task List v1.0
 
 **Total Tasks:** 127
-**Estimated Duration:** 12–14 weeks (solo developer, full-time)
+**Estimated Duration:** 12â€“14 weeks (solo developer, full-time)
 
 ---
 
-## PHASE 1 — FOUNDATION (Tasks 1–18)
+## PHASE 1 â€” FOUNDATION (Tasks 1â€“18)
 
 > Config, database, VFS core, local backend, build system
 
 ### Task 1: Project Scaffold
 - [ ] `go mod init github.com/kervanserver/kervan`
-- [ ] Create full directory structure per SPECIFICATION §15
+- [ ] Create full directory structure per SPECIFICATION Â§15
 - [ ] `go get golang.org/x/crypto@latest && go get golang.org/x/sys@latest`
 - [ ] Create `internal/build/build.go` with Version/Commit/Date ldflags
 - [ ] Create `Makefile` with build/test/release/clean targets
@@ -26,27 +26,27 @@
 
 ### Task 3: Config Defaults
 - [ ] Implement `DefaultConfig()` in `internal/config/defaults.go`
-- [ ] All default values per SPECIFICATION §10.1
+- [ ] All default values per SPECIFICATION Â§10.1
 - [ ] FTP port 2121, SFTP port 2222, WebUI port 8443
-- [ ] Default passive range 50000–50100
+- [ ] Default passive range 50000â€“50100
 - [ ] Default Argon2id, min password length 8
 - [ ] Default brute force: 5 attempts, 15m lockout
 
 ### Task 4: Config Loader
-- [ ] Implement `Load(path)` — read YAML file, expand env vars, unmarshal, validate
-- [ ] Implement `expandEnvVars()` — `${VAR_NAME}` pattern with `os.Expand`
-- [ ] Implement `OverlayEnv()` — `KERVAN_SECTION_KEY` env var override pattern
+- [ ] Implement `Load(path)` â€” read YAML file, expand env vars, unmarshal, validate
+- [ ] Implement `expandEnvVars()` â€” `${VAR_NAME}` pattern with `os.Expand`
+- [ ] Implement `OverlayEnv()` â€” `KERVAN_SECTION_KEY` env var override pattern
 - [ ] Support `--config` CLI flag and fallback to `./kervan.yaml`
 - [ ] Generate default config file on `kervan init`
 
 ### Task 5: Config Validation
 - [ ] Implement `Validate()` in `internal/config/validate.go`
-- [ ] Validate port ranges (1–65535)
-- [ ] Validate passive port range format and bounds (1024–65535, start ≤ end)
+- [ ] Validate port ranges (1â€“65535)
+- [ ] Validate passive port range format and bounds (1024â€“65535, start â‰¤ end)
 - [ ] Validate FTPS mode enum (explicit|implicit|both)
 - [ ] Validate cert_file required when FTPS enabled and auto_cert disabled
 - [ ] Validate password_hash enum (argon2id|bcrypt)
-- [ ] Validate min_password_length ≥ 4
+- [ ] Validate min_password_length â‰¥ 4
 - [ ] Validate IP/CIDR notation in allowed/denied lists
 - [ ] Validate log_level enum (debug|info|warn|error)
 - [ ] Return aggregated error list (not fail-fast)
@@ -65,7 +65,7 @@
 - [ ] Fields: timestamp, level, component, message, extra key-value pairs
 - [ ] Log file output with configurable path
 - [ ] Stderr fallback when log file unavailable
-- [ ] Thread-safe (no external dep — use `sync.Mutex` + `encoding/json`)
+- [ ] Thread-safe (no external dep â€” use `sync.Mutex` + `encoding/json`)
 
 ### Task 8: ULID Generator
 - [ ] Implement ULID generation in `internal/id/ulid.go`
@@ -75,15 +75,15 @@
 - [ ] No external dependency
 
 ### Task 9: CobaltDB Store Layer
-- [ ] Implement `internal/cobalt/store.go` — Open, Close, Put, Get, Delete, List
+- [ ] Implement `internal/cobalt/store.go` â€” Open, Close, Put, Get, Delete, List
 - [ ] Collection-based key prefix pattern: `{collection}:{key}`
 - [ ] JSON marshaling/unmarshaling for values
 - [ ] `PrefixScan` for listing collection entries
 - [ ] `Query` with filter function for complex lookups
-- [ ] Secondary index support pattern: `{collection}:idx:{field}:{value}` → primary key
+- [ ] Secondary index support pattern: `{collection}:idx:{field}:{value}` â†’ primary key
 
 ### Task 10: User Model
-- [ ] Define `User` struct in `internal/auth/user.go` per SPECIFICATION §5.2
+- [ ] Define `User` struct in `internal/auth/user.go` per SPECIFICATION Â§5.2
 - [ ] Define `UserPermissions` struct (upload, download, delete, rename, createDir, listDir, chmod, overwrite, deniedExts, allowedExts, maxFileSize)
 - [ ] Define `QuotaConfig` struct (maxStorage, maxFiles, maxBandwidth)
 - [ ] Define `RateLimitConfig` struct
@@ -93,24 +93,24 @@
 
 ### Task 11: User Repository
 - [ ] Implement `UserRepository` in `internal/auth/user_repo.go`
-- [ ] `Create(user)` — ULID generation, unique username check, store + index
-- [ ] `GetByID(id)` — direct lookup
-- [ ] `GetByUsername(username)` — index lookup → ID → get
-- [ ] `Update(user)` — update timestamp, store
-- [ ] `Delete(id)` — remove index + record
-- [ ] `List()` — prefix scan, deserialize all users
-- [ ] `UpdateLastLogin(id)` — set LastLoginAt timestamp
-- [ ] `Count()` — total user count
+- [ ] `Create(user)` â€” ULID generation, unique username check, store + index
+- [ ] `GetByID(id)` â€” direct lookup
+- [ ] `GetByUsername(username)` â€” index lookup â†’ ID â†’ get
+- [ ] `Update(user)` â€” update timestamp, store
+- [ ] `Delete(id)` â€” remove index + record
+- [ ] `List()` â€” prefix scan, deserialize all users
+- [ ] `UpdateLastLogin(id)` â€” set LastLoginAt timestamp
+- [ ] `Count()` â€” total user count
 
 ### Task 12: Group Model & Repository
-- [ ] Define `Group` struct per SPECIFICATION §5.3
+- [ ] Define `Group` struct per SPECIFICATION Â§5.3
 - [ ] Define `SharedDir` struct
-- [ ] Implement `GroupRepository` — CRUD + member management
+- [ ] Implement `GroupRepository` â€” CRUD + member management
 - [ ] `AddMember(groupID, userID)`, `RemoveMember(groupID, userID)`
-- [ ] `GetGroupsForUser(userID)` — reverse lookup
+- [ ] `GetGroupsForUser(userID)` â€” reverse lookup
 
 ### Task 13: VFS Interface Definitions
-- [ ] Define `FileSystem` interface in `internal/vfs/vfs.go` — all methods per IMPLEMENTATION §4.1
+- [ ] Define `FileSystem` interface in `internal/vfs/vfs.go` â€” all methods per IMPLEMENTATION Â§4.1
 - [ ] Define `File` interface (Reader, ReaderAt, Writer, WriterAt, Seeker, Closer, Stat, Sync, Truncate, ReadDir, Name)
 - [ ] Define `StatVFS` struct
 - [ ] Define `FileInfo` wrapper struct with all fields
@@ -118,8 +118,8 @@
 
 ### Task 14: Path Resolver
 - [ ] Implement `Resolver` in `internal/vfs/resolver.go`
-- [ ] `Resolve(virtualPath)` — clean, validate, depth check, forbidden char check
-- [ ] `ResolvePair(from, to)` — for rename ops
+- [ ] `Resolve(virtualPath)` â€” clean, validate, depth check, forbidden char check
+- [ ] `ResolvePair(from, to)` â€” for rename ops
 - [ ] Max depth constant (256)
 - [ ] Null byte rejection
 - [ ] `path.Clean("/" + virtualPath)` normalization
@@ -127,15 +127,15 @@
 
 ### Task 15: Mount Table
 - [ ] Implement `MountTable` in `internal/vfs/mount.go`
-- [ ] `Mount(virtualPath, backend, readOnly)` — add + sort by path length desc
-- [ ] `Lookup(virtualPath)` — longest prefix match, return (backend, relativePath, readOnly)
-- [ ] `ListMountPoints(dir)` — child mounts visible at directory level
+- [ ] `Mount(virtualPath, backend, readOnly)` â€” add + sort by path length desc
+- [ ] `Lookup(virtualPath)` â€” longest prefix match, return (backend, relativePath, readOnly)
+- [ ] `ListMountPoints(dir)` â€” child mounts visible at directory level
 - [ ] Thread-safe (RWMutex)
 - [ ] Test: nested mounts, root mount, overlapping paths
 
 ### Task 16: User VFS (Composite)
 - [ ] Implement `UserVFS` in `internal/vfs/user_vfs.go`
-- [ ] Wire resolver → mount table → backend for every operation
+- [ ] Wire resolver â†’ mount table â†’ backend for every operation
 - [ ] Permission checks: upload, download, delete, rename, createDir, listDir, chmod
 - [ ] Read-only mount enforcement
 - [ ] File extension filtering (allowed/denied lists)
@@ -146,11 +146,11 @@
 
 ### Task 17: Local Filesystem Backend
 - [ ] Implement `Backend` in `internal/storage/local/local.go`
-- [ ] `physicalPath(name)` — join root + name, `filepath.Abs`, `isSubPath` escape check
+- [ ] `physicalPath(name)` â€” join root + name, `filepath.Abs`, `isSubPath` escape check
 - [ ] Open, Stat, Lstat, Rename, Remove, RemoveAll, Mkdir, MkdirAll, ReadDir
-- [ ] Symlink, Readlink (convert physical → VFS path on readlink)
+- [ ] Symlink, Readlink (convert physical â†’ VFS path on readlink)
 - [ ] Chmod, Chown, Chtimes
-- [ ] `Statvfs` — Linux: `syscall.Statfs`, macOS: `syscall.Statfs`, Windows: stub
+- [ ] `Statvfs` â€” Linux: `syscall.Statfs`, macOS: `syscall.Statfs`, Windows: stub
 - [ ] `localFile` wrapper with optional sync-on-write
 - [ ] CreateRoot option (MkdirAll on init)
 - [ ] Configurable file/dir permissions, uid/gid
@@ -167,14 +167,14 @@
 
 ---
 
-## PHASE 2 — FTP SERVER (Tasks 19–36)
+## PHASE 2 â€” FTP SERVER (Tasks 19â€“36)
 
 > Full FTP + FTPS implementation
 
 ### Task 19: FTP Server Listener
 - [ ] Implement `Server` in `internal/protocol/ftp/server.go`
 - [ ] TCP listener on configured port
-- [ ] `acceptLoop()` — accept, check connection limit, spawn handler goroutine
+- [ ] `acceptLoop()` â€” accept, check connection limit, spawn handler goroutine
 - [ ] Connection counting with `atomic.Int64`
 - [ ] `sync.WaitGroup` for graceful shutdown
 - [ ] Context-based cancellation
@@ -183,62 +183,62 @@
 ### Task 20: FTP Connection Handler
 - [ ] Implement `connectionHandler` in `internal/protocol/ftp/handler.go`
 - [ ] Buffered reader/writer (4KB)
-- [ ] `serve()` — banner → command loop with idle timeout
-- [ ] `parseCommand(line)` — split CMD ARGS
-- [ ] `dispatch(cmd, args)` — route to handler methods
+- [ ] `serve()` â€” banner â†’ command loop with idle timeout
+- [ ] `parseCommand(line)` â€” split CMD ARGS
+- [ ] `dispatch(cmd, args)` â€” route to handler methods
 - [ ] Pre-auth commands: USER, PASS, AUTH, FEAT, QUIT, SYST, NOOP, OPTS, PBSZ, PROT, HOST
 - [ ] Post-auth command routing
-- [ ] `reply(code, message)` — single-line response
-- [ ] `replyMultiline(code, lines)` — multi-line response
-- [ ] `close()` — cleanup data connections, passive listeners
+- [ ] `reply(code, message)` â€” single-line response
+- [ ] `replyMultiline(code, lines)` â€” multi-line response
+- [ ] `close()` â€” cleanup data connections, passive listeners
 
 ### Task 21: FTP Session State
-- [ ] Define `ftpSession` struct — id, username, authenticated, vfs, cwd, dataConn, passiveListener, dataType, renameFrom, restOffset, tlsUpgraded, lastActivity, ctx/cancel
+- [ ] Define `ftpSession` struct â€” id, username, authenticated, vfs, cwd, dataConn, passiveListener, dataType, renameFrom, restOffset, tlsUpgraded, lastActivity, ctx/cancel
 - [ ] Session ID generation (ULID)
 - [ ] Register/deregister with session manager
 
 ### Task 22: FTP Authentication Commands
-- [ ] `handleUSER(args)` — store username, reply 331
-- [ ] `handlePASS(args)` — authenticate via auth engine, setup UserVFS, audit event
+- [ ] `handleUSER(args)` â€” store username, reply 331
+- [ ] `handlePASS(args)` â€” authenticate via auth engine, setup UserVFS, audit event
 - [ ] Auth failure: audit event, reply 530
 - [ ] Protocol permission check (`user.CanUseProtocol("ftp")`)
 - [ ] Session setup on success: vfs, cwd="/", reply 230
 
 ### Task 23: FTP Navigation Commands
-- [ ] `handlePWD()` — reply 257 with quoted CWD
-- [ ] `handleCWD(args)` — resolve path, stat, verify isDir, update CWD
-- [ ] `handleCDUP()` — delegate to CWD("..")
-- [ ] `resolvePath(p)` — absolute vs relative against CWD
+- [ ] `handlePWD()` â€” reply 257 with quoted CWD
+- [ ] `handleCWD(args)` â€” resolve path, stat, verify isDir, update CWD
+- [ ] `handleCDUP()` â€” delegate to CWD("..")
+- [ ] `resolvePath(p)` â€” absolute vs relative against CWD
 
 ### Task 24: FTP Data Connection (Passive Mode)
 - [ ] Passive port range tracking with `atomic.Int64` round-robin
-- [ ] `handlePASV()` — listen on next passive port, reply 227 with h1,h2,h3,h4,p1,p2
-- [ ] `handleEPSV()` — listen on next passive port, reply 229 with (|||port|)
+- [ ] `handlePASV()` â€” listen on next passive port, reply 227 with h1,h2,h3,h4,p1,p2
+- [ ] `handleEPSV()` â€” listen on next passive port, reply 229 with (|||port|)
 - [ ] Passive IP auto-detection (configurable override for NAT)
-- [ ] `openDataConnection()` — accept from passive listener with 30s timeout
+- [ ] `openDataConnection()` â€” accept from passive listener with 30s timeout
 - [ ] Cleanup: close passive listener after accept
 
 ### Task 25: FTP Data Connection (Active Mode)
-- [ ] `handlePORT(args)` — parse h1,h2,h3,h4,p1,p2, connect to client
-- [ ] `handleEPRT(args)` — parse |proto|addr|port|, connect to client
+- [ ] `handlePORT(args)` â€” parse h1,h2,h3,h4,p1,p2, connect to client
+- [ ] `handleEPRT(args)` â€” parse |proto|addr|port|, connect to client
 - [ ] Active mode security: optional disable, IP validation (only to client IP)
-- [ ] `openDataConnection()` — return active connection if set
+- [ ] `openDataConnection()` â€” return active connection if set
 
 ### Task 26: FTP Directory Listing (LIST)
-- [ ] `handleLIST(args)` — ReadDir from VFS, format Unix ls -l, send via data connection
-- [ ] `formatLIST(info)` — permission string + links + owner + group + size + date + name
+- [ ] `handleLIST(args)` â€” ReadDir from VFS, format Unix ls -l, send via data connection
+- [ ] `formatLIST(info)` â€” permission string + links + owner + group + size + date + name
 - [ ] Handle `-a`, `-l` flags (ignore, list all)
 - [ ] Reply 150 before data, 226 after complete
 
 ### Task 27: FTP Machine-Readable Listing (MLSD/MLST)
-- [ ] `handleMLSD(args)` — ReadDir, format facts, send via data connection
-- [ ] `handleMLST(args)` — single entry, send in control channel (reply 250)
-- [ ] `formatMLST(info)` — `type=file;size=12345;modify=20240101120000;perm=rfwdcm; filename`
+- [ ] `handleMLSD(args)` â€” ReadDir, format facts, send via data connection
+- [ ] `handleMLST(args)` â€” single entry, send in control channel (reply 250)
+- [ ] `formatMLST(info)` â€” `type=file;size=12345;modify=20240101120000;perm=rfwdcm; filename`
 - [ ] Fact types: type (file/dir/cdir/pdir), size, modify, perm, unique
 - [ ] Permission mapping: `r`=read, `w`=write, `f`=rename, `d`=delete, `c`=createDir, `m`=chmod
 
 ### Task 28: FTP File Download (RETR)
-- [ ] `handleRETR(args)` — open file, open data conn, stream file → data conn
+- [ ] `handleRETR(args)` â€” open file, open data conn, stream file â†’ data conn
 - [ ] Resume support: apply `restOffset` with Seek before copy
 - [ ] Reset restOffset after use
 - [ ] Reply 150 with filename and size, reply 226 on complete
@@ -246,170 +246,170 @@
 - [ ] Transfer timeout enforcement
 
 ### Task 29: FTP File Upload (STOR/STOU/APPE)
-- [ ] `handleSTOR(args)` — create/truncate file, stream data conn → file
-- [ ] `handleSTOU()` — unique filename generation, reply 150 with generated name
-- [ ] `handleAPPE(args)` — open with O_APPEND, stream data conn → file
+- [ ] `handleSTOR(args)` â€” create/truncate file, stream data conn â†’ file
+- [ ] `handleSTOU()` â€” unique filename generation, reply 150 with generated name
+- [ ] `handleAPPE(args)` â€” open with O_APPEND, stream data conn â†’ file
 - [ ] Quota check before/during upload
 - [ ] Audit event: FileUploadComplete or FileUploadFailed
 - [ ] Transfer timeout enforcement
 
 ### Task 30: FTP File Operations
-- [ ] `handleDELE(args)` — vfs.Remove + audit event
-- [ ] `handleMKD(args)` — vfs.Mkdir + reply 257 with quoted path
-- [ ] `handleRMD(args)` — vfs.Remove (directory)
-- [ ] `handleRNFR(args)` — store renameFrom, reply 350
-- [ ] `handleRNTO(args)` — vfs.Rename(renameFrom, to) + audit event, clear renameFrom
-- [ ] `handleSITE(args)` — SITE CHMOD support
+- [ ] `handleDELE(args)` â€” vfs.Remove + audit event
+- [ ] `handleMKD(args)` â€” vfs.Mkdir + reply 257 with quoted path
+- [ ] `handleRMD(args)` â€” vfs.Remove (directory)
+- [ ] `handleRNFR(args)` â€” store renameFrom, reply 350
+- [ ] `handleRNTO(args)` â€” vfs.Rename(renameFrom, to) + audit event, clear renameFrom
+- [ ] `handleSITE(args)` â€” SITE CHMOD support
 
 ### Task 31: FTP Metadata Commands
-- [ ] `handleSIZE(args)` — vfs.Stat, reply 213 with size
-- [ ] `handleMDTM(args)` — vfs.Stat, reply 213 with YYYYMMDDhhmmss
-- [ ] `handleTYPE(args)` — set A (ASCII) or I (Binary)
-- [ ] `handleREST(args)` — parse offset, store in session
-- [ ] `handleABOR()` — close active data connection
+- [ ] `handleSIZE(args)` â€” vfs.Stat, reply 213 with size
+- [ ] `handleMDTM(args)` â€” vfs.Stat, reply 213 with YYYYMMDDhhmmss
+- [ ] `handleTYPE(args)` â€” set A (ASCII) or I (Binary)
+- [ ] `handleREST(args)` â€” parse offset, store in session
+- [ ] `handleABOR()` â€” close active data connection
 
 ### Task 32: FTP Feature Negotiation
-- [ ] `handleFEAT()` — list all supported extensions (AUTH TLS, MLSD, SIZE, MDTM, REST STREAM, EPSV, EPRT, HOST, UTF8)
-- [ ] `handleOPTS(args)` — handle OPTS UTF8 ON
-- [ ] `handleSYST()` — reply 215 "UNIX Type: L8"
-- [ ] `handleNOOP()` — reply 200
-- [ ] `handleHOST(args)` — virtual hosting support (store hostname in session)
+- [ ] `handleFEAT()` â€” list all supported extensions (AUTH TLS, MLSD, SIZE, MDTM, REST STREAM, EPSV, EPRT, HOST, UTF8)
+- [ ] `handleOPTS(args)` â€” handle OPTS UTF8 ON
+- [ ] `handleSYST()` â€” reply 215 "UNIX Type: L8"
+- [ ] `handleNOOP()` â€” reply 200
+- [ ] `handleHOST(args)` â€” virtual hosting support (store hostname in session)
 
 ### Task 33: FTP NLST Command
-- [ ] `handleNLST(args)` — ReadDir, send filenames only (no metadata), one per line
+- [ ] `handleNLST(args)` â€” ReadDir, send filenames only (no metadata), one per line
 - [ ] Used by legacy clients and scripts
 
-### Task 34: FTPS — Explicit Mode (AUTH TLS)
-- [ ] `handleAUTH(args)` — accept TLS/SSL, reply 234, upgrade conn with `tls.Server`
+### Task 34: FTPS â€” Explicit Mode (AUTH TLS)
+- [ ] `handleAUTH(args)` â€” accept TLS/SSL, reply 234, upgrade conn with `tls.Server`
 - [ ] Reset reader/writer after TLS upgrade
 - [ ] Track `tlsUpgraded` state
-- [ ] `handlePBSZ(args)` — reply 200 "PBSZ=0" (required for PROT)
-- [ ] `handlePROT(args)` — P (private) or C (clear) data channel protection
+- [ ] `handlePBSZ(args)` â€” reply 200 "PBSZ=0" (required for PROT)
+- [ ] `handlePROT(args)` â€” P (private) or C (clear) data channel protection
 
-### Task 35: FTPS — Implicit Mode
+### Task 35: FTPS â€” Implicit Mode
 - [ ] Separate `tls.Listen` on implicit port (default 990)
 - [ ] `acceptLoop` with implicitTLS=true flag
 - [ ] Connection handler auto-sets `tlsUpgraded = true`
 - [ ] Same command handling as explicit mode
 
-### Task 36: FTPS — TLS Configuration
+### Task 36: FTPS â€” TLS Configuration
 - [ ] Build `tls.Config` from FTPSConfig: min/max version, cipher suites, cert/key
 - [ ] Certificate loading from file
 - [ ] Client auth modes: none, request, require (with CA file)
-- [ ] TLS version mapping: "1.2" → `tls.VersionTLS12`, "1.3" → `tls.VersionTLS13`
+- [ ] TLS version mapping: "1.2" â†’ `tls.VersionTLS12`, "1.3" â†’ `tls.VersionTLS13`
 - [ ] Data channel TLS wrapping for passive/active connections when PROT P
 
 ---
 
-## PHASE 3 — SSH PROTOCOLS (Tasks 37–52)
+## PHASE 3 â€” SSH PROTOCOLS (Tasks 37â€“52)
 
 > SFTP + SCP over SSH
 
 ### Task 37: SSH Host Key Management
 - [ ] Implement `internal/crypto/ssh.go`
-- [ ] `GenerateEd25519Key()` — generate + marshal to PEM
-- [ ] `GenerateRSAKey(bits)` — generate 4096-bit RSA + marshal to PEM
-- [ ] `LoadHostKeys(dir)` — read all key files from directory
-- [ ] `LoadOrGenerate(dir, algorithms)` — load existing or generate on first run
+- [ ] `GenerateEd25519Key()` â€” generate + marshal to PEM
+- [ ] `GenerateRSAKey(bits)` â€” generate 4096-bit RSA + marshal to PEM
+- [ ] `LoadHostKeys(dir)` â€” read all key files from directory
+- [ ] `LoadOrGenerate(dir, algorithms)` â€” load existing or generate on first run
 - [ ] Key file naming: `host_key_ed25519`, `host_key_rsa`
 - [ ] File permissions check (warn if not 0600)
 
 ### Task 38: SSH Server Foundation
 - [ ] Implement SSH server in `internal/protocol/sftp/server.go`
 - [ ] `ssh.ServerConfig` with PasswordCallback, PublicKeyCallback, KeyboardInteractiveCallback
-- [ ] Algorithm configuration: key exchange, ciphers, MACs per SPECIFICATION §9.2
+- [ ] Algorithm configuration: key exchange, ciphers, MACs per SPECIFICATION Â§9.2
 - [ ] TCP listener on SFTP port
 - [ ] `ssh.NewServerConn()` handshake
 - [ ] Discard global requests
 - [ ] Channel handler: accept "session" type, reject others
 
-### Task 39: SSH Authentication — Password
+### Task 39: SSH Authentication â€” Password
 - [ ] PasswordCallback: delegate to auth engine `Authenticate(username, password)`
 - [ ] Store user ID in `ssh.Permissions.Extensions`
 - [ ] Audit events: AuthLoginSuccess / AuthLoginFailure
 - [ ] Protocol permission check
 
-### Task 40: SSH Authentication — Public Key
+### Task 40: SSH Authentication â€” Public Key
 - [ ] PublicKeyCallback: delegate to auth engine `AuthenticatePublicKey(username, key)`
 - [ ] `AuthenticatePublicKey` implementation: lookup user, compare authorized keys
 - [ ] SSH public key parsing (Ed25519, RSA, ECDSA)
 - [ ] `authorized_keys` format parsing and matching
 - [ ] Audit events: AuthKeyAccepted / AuthKeyRejected
 
-### Task 41: SSH Authentication — Keyboard-Interactive
+### Task 41: SSH Authentication â€” Keyboard-Interactive
 - [ ] KeyboardInteractiveCallback implementation
 - [ ] Password prompt as first challenge
 - [ ] Optional TOTP prompt as second challenge (when user has 2FA enabled)
 - [ ] Challenge/response flow via `ssh.KeyboardInteractiveChallenge`
 
 ### Task 42: SSH Session Handling
-- [ ] `handleSession()` — process channel requests
-- [ ] "subsystem" request → route "sftp" to SFTP handler
-- [ ] "exec" request → detect SCP command, route to SCP handler
-- [ ] "shell" request → reject when DisableShell=true
+- [ ] `handleSession()` â€” process channel requests
+- [ ] "subsystem" request â†’ route "sftp" to SFTP handler
+- [ ] "exec" request â†’ detect SCP command, route to SCP handler
+- [ ] "shell" request â†’ reject when DisableShell=true
 - [ ] Build UserVFS for authenticated user
 - [ ] Proper channel closure after handler completes
 
 ### Task 43: SFTP Packet I/O
-- [ ] Implement `readPacket()` — 4-byte length header + type byte + payload
-- [ ] Implement `writePacket(type, payload)` — length prefix + type + payload
+- [ ] Implement `readPacket()` â€” 4-byte length header + type byte + payload
+- [ ] Implement `writePacket(type, payload)` â€” length prefix + type + payload
 - [ ] Max packet size enforcement (default 34000)
 - [ ] Packet too large error handling
 - [ ] Binary marshaling helpers: marshalUint32, marshalUint64, marshalString, marshalAttrs
 - [ ] Binary unmarshaling helpers: unmarshalUint32, unmarshalUint64, unmarshalString, unmarshalAttrs
 
 ### Task 44: SFTP Init/Version
-- [ ] `handleInit(payload)` — read client version
+- [ ] `handleInit(payload)` â€” read client version
 - [ ] Reply SSH_FXP_VERSION with server version (3)
 - [ ] Advertise extensions: posix-rename@openssh.com, statvfs@openssh.com, hardlink@openssh.com, fsync@openssh.com
 
 ### Task 45: SFTP Handle Management
-- [ ] `newHandle(file, path, isDir)` — generate handle string, store in map
-- [ ] `getHandle(id)` — lookup by handle string
-- [ ] `closeHandle(id)` — remove from map, close file
+- [ ] `newHandle(file, path, isDir)` â€” generate handle string, store in map
+- [ ] `getHandle(id)` â€” lookup by handle string
+- [ ] `closeHandle(id)` â€” remove from map, close file
 - [ ] Sequential handle ID generation (`h1`, `h2`, ...)
 - [ ] Mutex-protected handle map
 
-### Task 46: SFTP File Operations — Open/Close/Read/Write
-- [ ] `handleOpen(payload)` — unmarshal path + pflags + attrs, convert flags to `os.O_*`, open via VFS, return handle
-- [ ] `handleClose(payload)` — close handle, audit on write handles
-- [ ] `handleRead(payload)` — unmarshal handle + offset + length, ReadAt, return SSH_FXP_DATA or SSH_FX_EOF
-- [ ] `handleWrite(payload)` — unmarshal handle + offset + data, WriteAt, return status
-- [ ] SFTP flags → Go flags mapping: SSH_FXF_READ, SSH_FXF_WRITE, SSH_FXF_APPEND, SSH_FXF_CREAT, SSH_FXF_TRUNC, SSH_FXF_EXCL
+### Task 46: SFTP File Operations â€” Open/Close/Read/Write
+- [ ] `handleOpen(payload)` â€” unmarshal path + pflags + attrs, convert flags to `os.O_*`, open via VFS, return handle
+- [ ] `handleClose(payload)` â€” close handle, audit on write handles
+- [ ] `handleRead(payload)` â€” unmarshal handle + offset + length, ReadAt, return SSH_FXP_DATA or SSH_FX_EOF
+- [ ] `handleWrite(payload)` â€” unmarshal handle + offset + data, WriteAt, return status
+- [ ] SFTP flags â†’ Go flags mapping: SSH_FXF_READ, SSH_FXF_WRITE, SSH_FXF_APPEND, SSH_FXF_CREAT, SSH_FXF_TRUNC, SSH_FXF_EXCL
 
 ### Task 47: SFTP Stat Operations
-- [ ] `handleStat(payload)` — vfs.Stat, return SSH_FXP_ATTRS
-- [ ] `handleLstat(payload)` — vfs.Lstat, return SSH_FXP_ATTRS
-- [ ] `handleFstat(payload)` — file.Stat via handle, return SSH_FXP_ATTRS
-- [ ] `handleSetstat(payload)` — unmarshal attrs, apply chmod/chown/chtimes
-- [ ] `handleFsetstat(payload)` — same via file handle
-- [ ] `marshalFileInfo(os.FileInfo)` — convert to SFTP attrs binary format
+- [ ] `handleStat(payload)` â€” vfs.Stat, return SSH_FXP_ATTRS
+- [ ] `handleLstat(payload)` â€” vfs.Lstat, return SSH_FXP_ATTRS
+- [ ] `handleFstat(payload)` â€” file.Stat via handle, return SSH_FXP_ATTRS
+- [ ] `handleSetstat(payload)` â€” unmarshal attrs, apply chmod/chown/chtimes
+- [ ] `handleFsetstat(payload)` â€” same via file handle
+- [ ] `marshalFileInfo(os.FileInfo)` â€” convert to SFTP attrs binary format
 - [ ] Attrs flags: SSH_FILEXFER_ATTR_SIZE, SSH_FILEXFER_ATTR_UIDGID, SSH_FILEXFER_ATTR_PERMISSIONS, SSH_FILEXFER_ATTR_ACMODTIME
 
 ### Task 48: SFTP Directory Operations
-- [ ] `handleOpendir(payload)` — vfs.Open (as dir), return handle
-- [ ] `handleReaddir(payload)` — ReadDir via handle, return SSH_FXP_NAME with entries, SSH_FX_EOF when done
+- [ ] `handleOpendir(payload)` â€” vfs.Open (as dir), return handle
+- [ ] `handleReaddir(payload)` â€” ReadDir via handle, return SSH_FXP_NAME with entries, SSH_FX_EOF when done
 - [ ] Long name format for READDIR: permissions + links + owner + group + size + date + name
 - [ ] Handle dirRead state (only read once, then EOF)
-- [ ] `handleMkdir(payload)` — vfs.Mkdir, return status
-- [ ] `handleRmdir(payload)` — vfs.Remove, return status
+- [ ] `handleMkdir(payload)` â€” vfs.Mkdir, return status
+- [ ] `handleRmdir(payload)` â€” vfs.Remove, return status
 
 ### Task 49: SFTP Path Operations
-- [ ] `handleRealpath(payload)` — resolve path via VFS resolver, return SSH_FXP_NAME with single entry
-- [ ] `handleRename(payload)` — vfs.Rename + audit event
-- [ ] `handleRemove(payload)` — vfs.Remove + audit event
-- [ ] `handleReadlink(payload)` — vfs.Readlink, return SSH_FXP_NAME
-- [ ] `handleSymlink(payload)` — vfs.Symlink, return status
+- [ ] `handleRealpath(payload)` â€” resolve path via VFS resolver, return SSH_FXP_NAME with single entry
+- [ ] `handleRename(payload)` â€” vfs.Rename + audit event
+- [ ] `handleRemove(payload)` â€” vfs.Remove + audit event
+- [ ] `handleReadlink(payload)` â€” vfs.Readlink, return SSH_FXP_NAME
+- [ ] `handleSymlink(payload)` â€” vfs.Symlink, return status
 
 ### Task 50: SFTP Extensions
-- [ ] `handleExtended(payload)` — route by extension name
-- [ ] `posix-rename@openssh.com` — atomic rename via VFS + audit
-- [ ] `statvfs@openssh.com` — VFS.Statvfs, marshal StatVFS response
-- [ ] `hardlink@openssh.com` — if backend supports it
-- [ ] `fsync@openssh.com` — file.Sync via handle
+- [ ] `handleExtended(payload)` â€” route by extension name
+- [ ] `posix-rename@openssh.com` â€” atomic rename via VFS + audit
+- [ ] `statvfs@openssh.com` â€” VFS.Statvfs, marshal StatVFS response
+- [ ] `hardlink@openssh.com` â€” if backend supports it
+- [ ] `fsync@openssh.com` â€” file.Sync via handle
 - [ ] Unknown extension: SSH_FX_OP_UNSUPPORTED
 
-### Task 51: SCP Source Mode (Server → Client)
+### Task 51: SCP Source Mode (Server â†’ Client)
 - [ ] Implement `internal/protocol/scp/source.go`
 - [ ] Parse SCP command flags: `-f` (from/source), `-r` (recursive), `-p` (preserve times)
 - [ ] Single file send: `C<mode> <size> <name>\n` + data + `\0`
@@ -418,7 +418,7 @@
 - [ ] Wait for ACK (0x00) after each protocol message
 - [ ] Audit events for each file downloaded
 
-### Task 52: SCP Sink Mode (Client → Server)
+### Task 52: SCP Sink Mode (Client â†’ Server)
 - [ ] Implement `internal/protocol/scp/sink.go`
 - [ ] Parse SCP command flags: `-t` (to/sink), `-r` (recursive), `-d` (directory)
 - [ ] Receive `C` command: parse mode/size/name, read exact bytes, write to VFS
@@ -432,27 +432,27 @@
 
 ---
 
-## PHASE 4 — SECURITY & SESSION (Tasks 53–69)
+## PHASE 4 â€” SECURITY & SESSION (Tasks 53â€“69)
 
 > Auth engine, quota, throttling, brute force, audit outputs
 
-### Task 53: Password Hashing — Argon2id
+### Task 53: Password Hashing â€” Argon2id
 - [ ] Implement `internal/auth/password.go`
-- [ ] `HashPassword(password)` — Argon2id with params: time=3, memory=64MB, threads=4, keyLen=32, saltLen=16
-- [ ] `VerifyPassword(hash, password)` — parse stored params + salt, recompute, constant-time compare
+- [ ] `HashPassword(password)` â€” Argon2id with params: time=3, memory=64MB, threads=4, keyLen=32, saltLen=16
+- [ ] `VerifyPassword(hash, password)` â€” parse stored params + salt, recompute, constant-time compare
 - [ ] Encoded format: `$argon2id$v=19$m=65536,t=3,p=4$<salt>$<hash>` (PHC string format)
 - [ ] `crypto/rand` for salt generation
 
-### Task 54: Password Hashing — Bcrypt
-- [ ] `HashPasswordBcrypt(password)` — using `golang.org/x/crypto/bcrypt`
-- [ ] `VerifyPasswordBcrypt(hash, password)` — bcrypt.CompareHashAndPassword
+### Task 54: Password Hashing â€” Bcrypt
+- [ ] `HashPasswordBcrypt(password)` â€” using `golang.org/x/crypto/bcrypt`
+- [ ] `VerifyPasswordBcrypt(hash, password)` â€” bcrypt.CompareHashAndPassword
 - [ ] Auto-detect hash format (bcrypt vs argon2id) in verify
 
 ### Task 55: Auth Engine
 - [ ] Implement `internal/auth/engine.go`
-- [ ] `Authenticate(username, password)` — provider chain: local → LDAP
-- [ ] `AuthenticatePublicKey(username, key)` — public key lookup
-- [ ] `GetUserByID(id)` — from repository
+- [ ] `Authenticate(username, password)` â€” provider chain: local â†’ LDAP
+- [ ] `AuthenticatePublicKey(username, key)` â€” public key lookup
+- [ ] `GetUserByID(id)` â€” from repository
 - [ ] Provider interface: `type Provider interface { Authenticate(username, password) (*User, error) }`
 - [ ] Chain multiple providers, first success wins
 - [ ] Account status check (active only, not disabled/locked)
@@ -461,7 +461,7 @@
 
 ### Task 56: VFS Builder
 - [ ] Implement `buildUserVFS(user)` function
-- [ ] Parse user mount configs → instantiate backends
+- [ ] Parse user mount configs â†’ instantiate backends
 - [ ] Create MountTable, mount all configured paths
 - [ ] Apply group shared directories (merge group mounts)
 - [ ] Create QuotaTracker for user
@@ -469,10 +469,10 @@
 
 ### Task 57: Quota Tracker
 - [ ] Implement `internal/quota/quota.go`
-- [ ] `QuotaTracker` — track bytes used + file count per user
-- [ ] `Check(additionalBytes)` — return error if would exceed quota
-- [ ] `Add(bytes)` / `Remove(bytes)` — update usage
-- [ ] `Usage()` — return current usage stats
+- [ ] `QuotaTracker` â€” track bytes used + file count per user
+- [ ] `Check(additionalBytes)` â€” return error if would exceed quota
+- [ ] `Add(bytes)` / `Remove(bytes)` â€” update usage
+- [ ] `Usage()` â€” return current usage stats
 - [ ] Periodic recalculation (walk VFS, update stored usage)
 - [ ] Quota file wrapper: intercept Write() calls, update tracker
 
@@ -481,21 +481,21 @@
 - [ ] Token bucket algorithm (from scratch, no `golang.org/x/time/rate`)
 - [ ] Global upload/download limits
 - [ ] Per-user upload/download limits
-- [ ] `ThrottledReader` — wraps `io.Reader`, blocks when rate exceeded
-- [ ] `ThrottledWriter` — wraps `io.Writer`, blocks when rate exceeded
-- [ ] Configurable burst size (default: 2× rate)
+- [ ] `ThrottledReader` â€” wraps `io.Reader`, blocks when rate exceeded
+- [ ] `ThrottledWriter` â€” wraps `io.Writer`, blocks when rate exceeded
+- [ ] Configurable burst size (default: 2Ã— rate)
 - [ ] Apply at data connection level in FTP and at SFTP read/write
 
 ### Task 59: Session Manager
 - [ ] Implement `internal/session/manager.go`
-- [ ] `Register(session)` — add to active map
-- [ ] `Deregister(id)` — remove from active map
-- [ ] `Get(id)` — lookup by session ID
-- [ ] `List()` — return all active sessions
-- [ ] `ListByUser(username)` — filter by user
-- [ ] `ListByIP(ip)` — filter by client IP
-- [ ] `Kill(id)` — force close session (cancel context)
-- [ ] `Count()` — total active sessions
+- [ ] `Register(session)` â€” add to active map
+- [ ] `Deregister(id)` â€” remove from active map
+- [ ] `Get(id)` â€” lookup by session ID
+- [ ] `List()` â€” return all active sessions
+- [ ] `ListByUser(username)` â€” filter by user
+- [ ] `ListByIP(ip)` â€” filter by client IP
+- [ ] `Kill(id)` â€” force close session (cancel context)
+- [ ] `Count()` â€” total active sessions
 - [ ] Global connection limit enforcement
 - [ ] Per-IP connection limit enforcement
 - [ ] Per-user connection limit enforcement
@@ -515,7 +515,7 @@
 - [ ] Implement `internal/security/ipfilter.go`
 - [ ] Global allowed/denied IP lists (CIDR matching)
 - [ ] Per-user allowed IP list
-- [ ] `Check(ip, username)` → allow/deny
+- [ ] `Check(ip, username)` â†’ allow/deny
 - [ ] CIDR parsing via `net.ParseCIDR` / `net.IP.Mask`
 - [ ] Denied list takes precedence over allowed list
 - [ ] Integrate with connection accept (reject before handshake)
@@ -523,12 +523,12 @@
 ### Task 62: Audit Engine Core
 - [ ] Implement `internal/audit/engine.go`
 - [ ] Buffered event channel (configurable size, default 10000)
-- [ ] Async `processLoop()` goroutine — drain channel, write to all outputs
-- [ ] `Emit(event)` — non-blocking send (drop on full buffer with warning)
-- [ ] `Close()` — signal shutdown, drain remaining events, close outputs
-- [ ] Event struct per SPECIFICATION §6.1
+- [ ] Async `processLoop()` goroutine â€” drain channel, write to all outputs
+- [ ] `Emit(event)` â€” non-blocking send (drop on full buffer with warning)
+- [ ] `Close()` â€” signal shutdown, drain remaining events, close outputs
+- [ ] Event struct per SPECIFICATION Â§6.1
 
-### Task 63: Audit Output — JSON File
+### Task 63: Audit Output â€” JSON File
 - [ ] Implement `internal/audit/file.go`
 - [ ] JSON Lines format (one JSON object per line)
 - [ ] Log rotation: max_size, max_age, max_backups, compress
@@ -537,7 +537,7 @@
 - [ ] Gzip compression of rotated files
 - [ ] Backup cleanup (keep max_backups)
 
-### Task 64: Audit Output — Syslog
+### Task 64: Audit Output â€” Syslog
 - [ ] Implement `internal/audit/syslog.go`
 - [ ] UDP and TCP syslog client (from scratch)
 - [ ] RFC 5424 format support
@@ -545,7 +545,7 @@
 - [ ] Configurable facility and severity mapping
 - [ ] Connection retry on failure
 
-### Task 65: Audit Output — Webhook
+### Task 65: Audit Output â€” Webhook
 - [ ] Implement `internal/audit/webhook.go`
 - [ ] HTTP POST with JSON body
 - [ ] Batch mode: accumulate events, flush at batch_size or flush_interval
@@ -553,7 +553,7 @@
 - [ ] Retry with exponential backoff (up to retry_count)
 - [ ] Non-blocking: buffer events internally
 
-### Task 66: Audit Output — CobaltDB
+### Task 66: Audit Output â€” CobaltDB
 - [ ] Implement `internal/audit/db.go`
 - [ ] Write events to CobaltDB for WebUI query
 - [ ] Retention policy: auto-delete events older than configured duration
@@ -567,9 +567,9 @@
 - [ ] Verify chain integrity API endpoint
 - [ ] Detect tampering via chain break
 
-### Task 68: File Integrity — SHA-256
+### Task 68: File Integrity â€” SHA-256
 - [ ] Compute SHA-256 during file transfer (streaming, no re-read)
-- [ ] `HashingReader` / `HashingWriter` — tee data through hash
+- [ ] `HashingReader` / `HashingWriter` â€” tee data through hash
 - [ ] Store checksum in audit event
 - [ ] Store checksum in file metadata (CobaltDB)
 - [ ] Verify API: recompute and compare
@@ -580,81 +580,81 @@
 - [ ] 30-second time step, 6-digit code
 - [ ] Secret key generation (160-bit, base32 encoded)
 - [ ] QR code URL generation (`otpauth://totp/Kervan:{username}?secret={secret}&issuer=Kervan`)
-- [ ] Clock skew tolerance (±1 step)
+- [ ] Clock skew tolerance (Â±1 step)
 - [ ] Used code tracking (prevent replay within window)
 - [ ] Integrate with keyboard-interactive SSH and WebUI login
 
 ---
 
-## PHASE 5 — S3 BACKEND (Tasks 70–82)
+## PHASE 5 â€” S3 BACKEND (Tasks 70â€“82)
 
 > S3-compatible storage backend
 
-### Task 70: S3 Client — Core
+### Task 70: S3 Client â€” Core
 - [ ] Implement `internal/storage/s3/client.go`
 - [ ] HTTP client with connection pooling (`http.Transport`)
 - [ ] URL building: virtual-hosted style vs path style
-- [ ] Error response parsing (XML body → Go error)
+- [ ] Error response parsing (XML body â†’ Go error)
 - [ ] Retry logic with exponential backoff
 - [ ] Request timeout configuration
 
-### Task 71: S3 Client — SigV4 Signing
-- [ ] `signRequest(req, payload)` — full AWS Signature V4 implementation
+### Task 71: S3 Client â€” SigV4 Signing
+- [ ] `signRequest(req, payload)` â€” full AWS Signature V4 implementation
 - [ ] Step 1: Canonical request (method, path, query, headers, payload hash)
 - [ ] Step 2: String to sign (algorithm, date, credential scope, canonical hash)
-- [ ] Step 3: Signing key derivation (HMAC chain: secret → date → region → service → signing)
+- [ ] Step 3: Signing key derivation (HMAC chain: secret â†’ date â†’ region â†’ service â†’ signing)
 - [ ] Step 4: Signature (HMAC-SHA256)
 - [ ] Step 5: Authorization header construction
 - [ ] `x-amz-date` and `x-amz-content-sha256` headers
 - [ ] Test against known AWS test vectors
 
-### Task 72: S3 Client — Object Operations
-- [ ] `GetObject(bucket, key)` → response body + metadata
-- [ ] `PutObject(bucket, key, body, size, contentType)` → error
-- [ ] `HeadObject(bucket, key)` → content-length, last-modified, etag
-- [ ] `DeleteObject(bucket, key)` → error
-- [ ] `CopyObject(srcBucket, srcKey, dstBucket, dstKey)` → error
-- [ ] `DeleteObjects(bucket, keys)` → batch delete (up to 1000)
+### Task 72: S3 Client â€” Object Operations
+- [ ] `GetObject(bucket, key)` â†’ response body + metadata
+- [ ] `PutObject(bucket, key, body, size, contentType)` â†’ error
+- [ ] `HeadObject(bucket, key)` â†’ content-length, last-modified, etag
+- [ ] `DeleteObject(bucket, key)` â†’ error
+- [ ] `CopyObject(srcBucket, srcKey, dstBucket, dstKey)` â†’ error
+- [ ] `DeleteObjects(bucket, keys)` â†’ batch delete (up to 1000)
 
-### Task 73: S3 Client — Listing
-- [ ] `ListObjectsV2(bucket, prefix, delimiter, maxKeys)` → objects + common prefixes
-- [ ] `ListObjectsV2WithToken(bucket, prefix, delimiter, maxKeys, token)` → pagination
+### Task 73: S3 Client â€” Listing
+- [ ] `ListObjectsV2(bucket, prefix, delimiter, maxKeys)` â†’ objects + common prefixes
+- [ ] `ListObjectsV2WithToken(bucket, prefix, delimiter, maxKeys, token)` â†’ pagination
 - [ ] Response XML parsing: Contents (Key, Size, LastModified, ETag), CommonPrefixes, IsTruncated, NextContinuationToken
 - [ ] From-scratch XML parser for S3 responses (minimal, targeted)
 
-### Task 74: S3 Client — Multipart Upload
-- [ ] `CreateMultipartUpload(bucket, key, contentType)` → uploadID
-- [ ] `UploadPart(bucket, key, uploadID, partNumber, body)` → ETag
-- [ ] `CompleteMultipartUpload(bucket, key, uploadID, parts)` → error
-- [ ] `AbortMultipartUpload(bucket, key, uploadID)` → error
-- [ ] Part tracking: store partNumber → ETag for completion
+### Task 74: S3 Client â€” Multipart Upload
+- [ ] `CreateMultipartUpload(bucket, key, contentType)` â†’ uploadID
+- [ ] `UploadPart(bucket, key, uploadID, partNumber, body)` â†’ ETag
+- [ ] `CompleteMultipartUpload(bucket, key, uploadID, parts)` â†’ error
+- [ ] `AbortMultipartUpload(bucket, key, uploadID)` â†’ error
+- [ ] Part tracking: store partNumber â†’ ETag for completion
 
-### Task 75: S3 VFS Backend — Read Operations
-- [ ] `Open(name, O_RDONLY)` → S3ReadFile wrapping GetObject response body
-- [ ] `Stat(name)` → HeadObject, fallback to directory check via ListObjectsV2
-- [ ] `ReadDir(name)` → ListObjectsV2 with delimiter, paginate, merge files + directories
+### Task 75: S3 VFS Backend â€” Read Operations
+- [ ] `Open(name, O_RDONLY)` â†’ S3ReadFile wrapping GetObject response body
+- [ ] `Stat(name)` â†’ HeadObject, fallback to directory check via ListObjectsV2
+- [ ] `ReadDir(name)` â†’ ListObjectsV2 with delimiter, paginate, merge files + directories
 - [ ] Directory detection: trailing `/` key or has children via ListObjectsV2
 
-### Task 76: S3 VFS Backend — Write Operations
-- [ ] `Open(name, O_WRONLY|O_CREATE)` → S3WriteFile (buffer in temp → PutObject on Close)
-- [ ] `Open(name, O_APPEND)` → S3AppendFile (download existing + append + re-upload)
+### Task 76: S3 VFS Backend â€” Write Operations
+- [ ] `Open(name, O_WRONLY|O_CREATE)` â†’ S3WriteFile (buffer in temp â†’ PutObject on Close)
+- [ ] `Open(name, O_APPEND)` â†’ S3AppendFile (download existing + append + re-upload)
 - [ ] S3WriteFile: track written bytes, multipart upload if exceeds threshold
 - [ ] S3WriteFile.Close(): flush buffer to S3 (PutObject or CompleteMultipartUpload)
 - [ ] Temp file or in-memory buffer decision based on size
 
-### Task 77: S3 VFS Backend — Mutations
-- [ ] `Mkdir(name)` — PutObject with trailing `/` key (empty marker)
-- [ ] `Remove(name)` — DeleteObject
-- [ ] `RemoveAll(name)` — ListObjectsV2 + DeleteObjects (batch, paginated)
-- [ ] `Rename(old, new)` — CopyObject + DeleteObject (NOT atomic, documented)
-- [ ] `Lstat` → alias for Stat (no symlinks on S3)
-- [ ] `Symlink` → return os.ErrInvalid
-- [ ] `Chmod/Chown/Chtimes` → no-op (store in metadata layer if needed)
-- [ ] `Statvfs` → return effectively unlimited values
+### Task 77: S3 VFS Backend â€” Mutations
+- [ ] `Mkdir(name)` â€” PutObject with trailing `/` key (empty marker)
+- [ ] `Remove(name)` â€” DeleteObject
+- [ ] `RemoveAll(name)` â€” ListObjectsV2 + DeleteObjects (batch, paginated)
+- [ ] `Rename(old, new)` â€” CopyObject + DeleteObject (NOT atomic, documented)
+- [ ] `Lstat` â†’ alias for Stat (no symlinks on S3)
+- [ ] `Symlink` â†’ return os.ErrInvalid
+- [ ] `Chmod/Chown/Chtimes` â†’ no-op (store in metadata layer if needed)
+- [ ] `Statvfs` â†’ return effectively unlimited values
 
 ### Task 78: S3 File Metadata Layer
 - [ ] Store POSIX-like metadata in CobaltDB for S3-backed files
-- [ ] Key: `file_meta:{backend}:{path}` → FileMeta struct
+- [ ] Key: `file_meta:{backend}:{path}` â†’ FileMeta struct
 - [ ] Update on write: permissions, owner, group, checksum, content_type
 - [ ] Read on stat: merge S3 metadata (size, modtime) with stored metadata
 - [ ] Cleanup: remove metadata on delete
@@ -671,27 +671,27 @@
 
 ### Task 80: S3 Error Handling
 - [ ] Parse S3 XML error responses: Code, Message, RequestId
-- [ ] Map S3 errors to VFS errors: NoSuchKey → os.ErrNotExist, AccessDenied → os.ErrPermission
+- [ ] Map S3 errors to VFS errors: NoSuchKey â†’ os.ErrNotExist, AccessDenied â†’ os.ErrPermission
 - [ ] Retry on 5xx errors and throttling (503 SlowDown, 429)
 - [ ] Log S3 request IDs for debugging
 
 ### Task 81: S3 Connection Testing
-- [ ] `TestConnection(bucket)` — HeadBucket or ListObjectsV2 with maxKeys=1
+- [ ] `TestConnection(bucket)` â€” HeadBucket or ListObjectsV2 with maxKeys=1
 - [ ] Called on startup to verify S3 config
 - [ ] Called on config reload to verify new S3 config
 - [ ] Report clear error message on auth failure, bucket not found, network error
 
 ### Task 82: Multi-Backend Mount Integration
-- [ ] Wire storage backend factory: `NewBackend(type, options)` → FileSystem
+- [ ] Wire storage backend factory: `NewBackend(type, options)` â†’ FileSystem
 - [ ] Support `local`, `s3`, `memory` types
-- [ ] User mount config → instantiate backend + mount in MountTable
+- [ ] User mount config â†’ instantiate backend + mount in MountTable
 - [ ] Cross-mount rename: detect different backends, copy file stream + delete source
 - [ ] ReadDir merge: backend entries + visible child mount points
-- [ ] Test: user with `/` → local, `/archive` → S3, `/shared` → local read-only
+- [ ] Test: user with `/` â†’ local, `/archive` â†’ S3, `/shared` â†’ local read-only
 
 ---
 
-## PHASE 6 — WEBUI & API (Tasks 83–112)
+## PHASE 6 â€” WEBUI & API (Tasks 83â€“112)
 
 > REST API, WebSocket, React 19 WebUI
 
@@ -706,7 +706,7 @@
 ### Task 84: JWT Authentication Middleware
 - [ ] Implement JWT in `internal/api/jwt.go`
 - [ ] Token generation: access token (15min) + refresh token (7d)
-- [ ] HMAC-SHA256 signing (from scratch — header.payload.signature)
+- [ ] HMAC-SHA256 signing (from scratch â€” header.payload.signature)
 - [ ] Claims: sub (user ID), role, exp, iat, jti
 - [ ] Token validation middleware: extract from Authorization Bearer header
 - [ ] Refresh endpoint: validate refresh token, issue new access token
@@ -727,89 +727,89 @@
 - [ ] Content-Type enforcement (application/json)
 
 ### Task 87: User CRUD API
-- [ ] `GET /api/v1/users` — list all users (admin only), pagination
-- [ ] `POST /api/v1/users` — create user (admin only), validate input
-- [ ] `GET /api/v1/users/{id}` — get user details
-- [ ] `PUT /api/v1/users/{id}` — update user
-- [ ] `DELETE /api/v1/users/{id}` — delete user
-- [ ] `POST /api/v1/users/{id}/disable` — disable user account
-- [ ] `POST /api/v1/users/{id}/enable` — enable user account
-- [ ] `POST /api/v1/users/{id}/reset-password` — reset password
+- [ ] `GET /api/v1/users` â€” list all users (admin only), pagination
+- [ ] `POST /api/v1/users` â€” create user (admin only), validate input
+- [ ] `GET /api/v1/users/{id}` â€” get user details
+- [ ] `PUT /api/v1/users/{id}` â€” update user
+- [ ] `DELETE /api/v1/users/{id}` â€” delete user
+- [ ] `POST /api/v1/users/{id}/disable` â€” disable user account
+- [ ] `POST /api/v1/users/{id}/enable` â€” enable user account
+- [ ] `POST /api/v1/users/{id}/reset-password` â€” reset password
 - [ ] Input validation: username format, email, password strength
 - [ ] Response: JSON with appropriate HTTP status codes
 
 ### Task 88: User Bulk Operations API
-- [ ] `POST /api/v1/users/import` — bulk create from CSV or JSON upload
+- [ ] `POST /api/v1/users/import` â€” bulk create from CSV or JSON upload
 - [ ] CSV format: username, password, email, role, home_dir, quota
 - [ ] JSON format: array of user objects
 - [ ] Validation per-row, skip invalid with error report
-- [ ] `GET /api/v1/users/export` — export all users as CSV or JSON
+- [ ] `GET /api/v1/users/export` â€” export all users as CSV or JSON
 - [ ] Content-Disposition header for download
 
 ### Task 89: Group CRUD API
-- [ ] `GET /api/v1/groups` — list all groups
-- [ ] `POST /api/v1/groups` — create group
-- [ ] `GET /api/v1/groups/{id}` — get group details with member list
-- [ ] `PUT /api/v1/groups/{id}` — update group
-- [ ] `DELETE /api/v1/groups/{id}` — delete group
-- [ ] `POST /api/v1/groups/{id}/members` — add member
-- [ ] `DELETE /api/v1/groups/{id}/members/{userId}` — remove member
+- [ ] `GET /api/v1/groups` â€” list all groups
+- [ ] `POST /api/v1/groups` â€” create group
+- [ ] `GET /api/v1/groups/{id}` â€” get group details with member list
+- [ ] `PUT /api/v1/groups/{id}` â€” update group
+- [ ] `DELETE /api/v1/groups/{id}` â€” delete group
+- [ ] `POST /api/v1/groups/{id}/members` â€” add member
+- [ ] `DELETE /api/v1/groups/{id}/members/{userId}` â€” remove member
 
 ### Task 90: Session Management API
-- [ ] `GET /api/v1/sessions` — list active sessions (with filters: protocol, user, ip)
-- [ ] `GET /api/v1/sessions/{id}` — session details
-- [ ] `DELETE /api/v1/sessions/{id}` — kill session (force disconnect)
+- [ ] `GET /api/v1/sessions` â€” list active sessions (with filters: protocol, user, ip)
+- [ ] `GET /api/v1/sessions/{id}` â€” session details
+- [ ] `DELETE /api/v1/sessions/{id}` â€” kill session (force disconnect)
 - [ ] Session info: id, username, protocol, client_ip, connected_at, bytes_up/down, state
 
 ### Task 91: Transfer Tracking API
-- [ ] `GET /api/v1/transfers` — list active + recent transfers
-- [ ] `GET /api/v1/transfers/{id}` — transfer details
+- [ ] `GET /api/v1/transfers` â€” list active + recent transfers
+- [ ] `GET /api/v1/transfers/{id}` â€” transfer details
 - [ ] Filters: direction (upload/download), protocol, user, status (active/complete/failed)
 - [ ] Pagination with cursor-based approach
 - [ ] Transfer info: session_id, path, direction, size, progress, speed, duration
 
 ### Task 92: Audit Query API
-- [ ] `GET /api/v1/audit/events` — search audit events
+- [ ] `GET /api/v1/audit/events` â€” search audit events
 - [ ] Query params: event_type, username, protocol, path, date_from, date_to, client_ip
 - [ ] Pagination: offset + limit or cursor-based
 - [ ] Sort: timestamp desc (default)
-- [ ] `GET /api/v1/audit/events/{id}` — single event detail
-- [ ] `GET /api/v1/audit/export` — export as CSV or JSON with same filters
+- [ ] `GET /api/v1/audit/events/{id}` â€” single event detail
+- [ ] `GET /api/v1/audit/export` â€” export as CSV or JSON with same filters
 - [ ] Content-Disposition for download
 
 ### Task 93: File Browser API
-- [ ] `GET /api/v1/files/{user}/ls?path=/` — list directory contents
-- [ ] `GET /api/v1/files/{user}/stat?path=/file.txt` — file metadata
-- [ ] `GET /api/v1/files/{user}/download?path=/file.txt` — download file (streaming)
-- [ ] `POST /api/v1/files/{user}/upload?path=/` — upload file (multipart form)
-- [ ] `DELETE /api/v1/files/{user}/rm?path=/file.txt` — delete file/directory
-- [ ] `POST /api/v1/files/{user}/mkdir?path=/newdir` — create directory
-- [ ] `POST /api/v1/files/{user}/rename?from=/old&to=/new` — rename/move
+- [ ] `GET /api/v1/files/{user}/ls?path=/` â€” list directory contents
+- [ ] `GET /api/v1/files/{user}/stat?path=/file.txt` â€” file metadata
+- [ ] `GET /api/v1/files/{user}/download?path=/file.txt` â€” download file (streaming)
+- [ ] `POST /api/v1/files/{user}/upload?path=/` â€” upload file (multipart form)
+- [ ] `DELETE /api/v1/files/{user}/rm?path=/file.txt` â€” delete file/directory
+- [ ] `POST /api/v1/files/{user}/mkdir?path=/newdir` â€” create directory
+- [ ] `POST /api/v1/files/{user}/rename?from=/old&to=/new` â€” rename/move
 - [ ] Admin only: browse any user's VFS
 - [ ] Regular user: browse own VFS only
 
 ### Task 94: Share Link API
-- [ ] `POST /api/v1/files/{user}/share?path=/file.txt&ttl=24h` — create share link
+- [ ] `POST /api/v1/files/{user}/share?path=/file.txt&ttl=24h` â€” create share link
 - [ ] Generate random token (32 bytes, URL-safe base64)
-- [ ] Store in CobaltDB: token → {user, path, expires_at, download_count, max_downloads}
-- [ ] `GET /api/v1/share/{token}` — public download endpoint (no auth)
+- [ ] Store in CobaltDB: token â†’ {user, path, expires_at, download_count, max_downloads}
+- [ ] `GET /api/v1/share/{token}` â€” public download endpoint (no auth)
 - [ ] Expiry enforcement, max download count
 - [ ] Admin: list/revoke share links
 
 ### Task 95: Server Status API
-- [x] `GET /api/v1/server/status` — uptime, version, enabled protocols, connection counts
-- [x] `GET /api/v1/server/config` — current config (secrets redacted)
-- [x] `PUT /api/v1/server/config` — update config (partial, admin only)
-- [x] `POST /api/v1/server/reload` — trigger runtime-safe config reload
+- [x] `GET /api/v1/server/status` â€” uptime, version, enabled protocols, connection counts
+- [x] `GET /api/v1/server/config` â€” current config (secrets redacted)
+- [x] `PUT /api/v1/server/config` â€” update config (partial, admin only)
+- [x] `POST /api/v1/server/reload` â€” trigger runtime-safe config reload
 
 ### Task 96: API Keys Management API
-- [x] `GET /api/v1/apikeys` — list user's API keys
-- [x] `POST /api/v1/apikeys` — create new API key (return key once, store hash)
-- [x] `DELETE /api/v1/apikeys/{id}` — revoke key
+- [x] `GET /api/v1/apikeys` â€” list user's API keys
+- [x] `POST /api/v1/apikeys` â€” create new API key (return key once, store hash)
+- [x] `DELETE /api/v1/apikeys/{id}` â€” revoke key
 - [x] Per-key: name, permissions (read-only, read-write, admin), last_used, created_at
 
 ### Task 97: Prometheus Metrics Endpoint
-- [x] `GET /api/v1/metrics` — Prometheus text format
+- [x] `GET /api/v1/metrics` â€” Prometheus text format
 - [ ] Connection metrics: total, active, rejected (by protocol)
 - [ ] Transfer metrics: total, active, bytes total, duration histogram, errors
 - [ ] Auth metrics: attempts by result and method, locked accounts
@@ -818,7 +818,7 @@
 - [x] From-scratch Prometheus exposition format (no external lib)
 
 ### Task 98: Health Check Endpoint
-- [x] `GET /api/v1/health` — JSON health status
+- [x] `GET /api/v1/health` â€” JSON health status
 - [x] Check each protocol listener (is it accepting?)
 - [ ] Check storage backends (local: disk free, S3: connectivity)
 - [ ] Check CobaltDB (is it readable/writable?)
@@ -829,8 +829,8 @@
 - [x] Implement WebSocket upgrade handler at `/api/v1/ws`
 - [x] From-scratch WebSocket (RFC 6455): handshake, frame encoding/decoding
 - [ ] JWT auth via query parameter or first message
-- [ ] Event types per SPECIFICATION §8.5
-- [ ] Broadcast pattern: audit engine → WebSocket hub → connected clients
+- [ ] Event types per SPECIFICATION Â§8.5
+- [ ] Broadcast pattern: audit engine â†’ WebSocket hub â†’ connected clients
 - [x] Client subscription filtering (by event type)
 - [ ] Ping/pong keepalive (30s interval)
 - [x] Graceful disconnect handling
@@ -842,7 +842,7 @@
 - [x] Cache-Control headers: immutable for hashed assets, no-cache for index.html
 - [ ] Gzip compression middleware
 
-### Task 101: WebUI — React 19 Project Setup
+### Task 101: WebUI â€” React 19 Project Setup
 - [x] Initialize React 19 + TypeScript + Vite in `webui/` directory
 - [x] Tailwind CSS v4 setup
 - [x] React Router v7 for client-side routing
@@ -851,14 +851,14 @@
 - [x] Dark/light mode support
 - [x] Responsive layout (mobile-friendly)
 
-### Task 102: WebUI — Login Page
+### Task 102: WebUI â€” Login Page
 - [x] Username/password form
 - [x] TOTP prompt (conditional, after password success)
 - [x] JWT token storage (memory, not localStorage)
 - [x] Auto-redirect to dashboard on auth
 - [ ] Session timeout handling (auto-logout)
 
-### Task 103: WebUI — Dashboard Page
+### Task 103: WebUI â€” Dashboard Page
 - [ ] Active sessions count (per protocol)
 - [ ] Current transfer rates (upload/download, real-time via WebSocket)
 - [ ] Storage usage (bar chart per backend)
@@ -866,42 +866,42 @@
 - [ ] Protocol breakdown pie chart
 - [ ] Quick stats: total users, total transfers today, failed logins today
 
-### Task 104: WebUI — Users Page
+### Task 104: WebUI â€” Users Page
 - [ ] User table: username, email, role, status, last login, quota usage
 - [ ] Search/filter by name, role, status
 - [ ] Create user dialog (form with all fields)
 - [ ] Edit user dialog (inline edit)
-- [ ] Delete user (confirmation dialog)
-- [ ] Disable/enable toggle
+- [x] Delete user (confirmation dialog)
+- [x] Disable/enable toggle
 - [ ] Reset password action
 - [ ] Bulk import dialog (CSV upload)
-- [ ] Export button (CSV/JSON download)
+- [x] Export button (CSV/JSON download)
 - [ ] Permission matrix editor
 - [ ] Mount configuration editor
 - [ ] Quota settings (with visual bar)
 
-### Task 105: WebUI — Sessions Page
+### Task 105: WebUI â€” Sessions Page
 - [ ] Active sessions table: user, protocol, IP, connected time, bytes up/down, state
-- [ ] Real-time updates via WebSocket
-- [ ] Kill session button (confirmation)
-- [ ] Filter by protocol, user, IP
+- [x] Real-time updates via WebSocket
+- [x] Kill session button (confirmation)
+- [x] Filter by protocol, user, IP
 - [ ] Sort by connected time, bytes transferred
 - [ ] Session detail panel: full info, transfer history
 
-### Task 106: WebUI — File Browser Page
+### Task 106: WebUI â€” File Browser Page
 - [ ] Directory tree navigation (left panel)
 - [ ] File list (right panel): name, size, modified, permissions
 - [ ] Admin: user selector dropdown to browse any user's VFS
-- [ ] Breadcrumb navigation
+- [x] Breadcrumb navigation
 - [ ] Upload: drag-and-drop zone + file picker (chunked upload with progress)
 - [ ] Download: click to download (streaming)
 - [ ] Context menu: rename, delete, share, properties
 - [ ] Create folder dialog
 - [ ] File preview: images (inline), text (CodeMirror), PDF (iframe)
-- [ ] Generate share link dialog (TTL selector)
+- [x] Generate share link dialog (TTL selector)
 - [ ] Multi-select + bulk actions (delete, download as zip)
 
-### Task 107: WebUI — Audit Log Page
+### Task 107: WebUI â€” Audit Log Page
 - [ ] Event table: timestamp, type, user, protocol, path, IP, status
 - [ ] Date range picker
 - [ ] Event type filter (multi-select)
@@ -910,10 +910,10 @@
 - [ ] IP search
 - [ ] Live event feed toggle (WebSocket)
 - [ ] Event detail panel (all fields)
-- [ ] Export button (CSV/JSON with applied filters)
+- [x] Export button (CSV/JSON with applied filters)
 - [ ] Pagination (infinite scroll or page numbers)
 
-### Task 108: WebUI — Transfers Page
+### Task 108: WebUI â€” Transfers Page
 - [ ] Active transfers: progress bar, speed, ETA
 - [ ] Completed transfers: file, size, duration, speed, checksum
 - [ ] Failed transfers: error message, retry action
@@ -921,7 +921,7 @@
 - [ ] Real-time progress via WebSocket
 - [ ] Transfer detail: full audit trail
 
-### Task 109: WebUI — Configuration Page
+### Task 109: WebUI â€” Configuration Page
 - [x] Current config display (read-only, secrets masked)
 - [ ] Edit sections: FTP, FTPS, SFTP, SCP, WebUI, Auth, Security
 - [x] Form-based editing with validation
@@ -930,7 +930,7 @@
 - [ ] TLS certificate info display (expiry, issuer, SANs)
 - [ ] Test connection button for S3 backend
 
-### Task 110: WebUI — Monitoring Page
+### Task 110: WebUI â€” Monitoring Page
 - [ ] CPU/memory/goroutine graphs (polling /api/v1/stats)
 - [ ] Connection count over time (per protocol)
 - [ ] Transfer throughput over time
@@ -939,27 +939,27 @@
 - [ ] Storage usage breakdown
 - [ ] Configurable time range (1h, 6h, 24h, 7d)
 
-### Task 111: WebUI — API Keys Page
+### Task 111: WebUI â€” API Keys Page
 - [x] API key table: name, permissions, created, last used
 - [x] Create key dialog: name, permission level
 - [x] Show generated key once (copy button, warning: shown once only)
 - [x] Revoke key button (confirmation)
 
 ### Task 112: WebUI Build Integration
-- [x] `go run ./scripts` — run `npm ci`, build the WebUI, then sync `internal/webui/dist/`
-- [x] Copy `webui/dist/` → `internal/webui/dist/`
+- [x] `go run ./scripts` â€” run `npm ci`, build the WebUI, then sync `internal/webui/dist/`
+- [x] Copy `webui/dist/` â†’ `internal/webui/dist/`
 - [x] Makefile target: `webui` before `build`
 - [ ] Decide whether `internal/webui/dist/` should stay committed or become a CI-only artifact
 - [ ] Evaluate a `//go:generate` alternative for local developer ergonomics
 
 ---
 
-## PHASE 7 — OPERATIONS & EXTRAS (Tasks 113–127)
+## PHASE 7 â€” OPERATIONS & EXTRAS (Tasks 113â€“127)
 
 > ACME, LDAP, MCP, CLI, migration, Docker
 
 ### Task 113: ACME Client
-- [ ] Implement `internal/acme/acme.go` — RFC 8555
+- [ ] Implement `internal/acme/acme.go` â€” RFC 8555
 - [ ] Account creation with Let's Encrypt / ZeroSSL
 - [ ] HTTP-01 challenge solver (serve on /.well-known/acme-challenge/)
 - [ ] TLS-ALPN-01 challenge solver (alternative)
@@ -970,123 +970,123 @@
 - [ ] Fallback to self-signed on ACME failure
 
 ### Task 114: LDAP Client
-- [ ] Implement `internal/auth/ldap.go` — from-scratch LDAP client
+- [ ] Implement `internal/auth/ldap.go` â€” from-scratch LDAP client
 - [ ] TCP + TLS connection to LDAP server
 - [ ] LDAP Bind operation (authenticate service account)
 - [ ] LDAP Search operation (find user by filter)
 - [ ] Attribute extraction (username, email, groups)
-- [ ] Group mapping: LDAP group → Kervan role
+- [ ] Group mapping: LDAP group â†’ Kervan role
 - [ ] Connection pooling (configurable pool size)
 - [ ] Cache: authenticated user info cached for TTL
 - [ ] TLS certificate verification (skip option for self-signed)
 
-### Task 115: MCP Server — Core
-- [ ] Implement `internal/mcp/server.go` — stdio transport
-- [ ] JSON-RPC 2.0 message handling
-- [ ] `initialize` → server capabilities + info
-- [ ] `tools/list` → tool definitions
-- [ ] `tools/call` → dispatch to tool handlers
-- [ ] `resources/list` → resource definitions
-- [ ] `resources/read` → resource content
+### Task 115: MCP Server â€” Core
+- [x] Implement `internal/mcp/server.go` â€” stdio transport
+- [x] JSON-RPC 2.0 message handling
+- [x] `initialize` â†’ server capabilities + info
+- [x] `tools/list` â†’ tool definitions
+- [x] `tools/call` â†’ dispatch to tool handlers
+- [x] `resources/list` â†’ resource definitions
+- [x] `resources/read` â†’ resource content
 
-### Task 116: MCP Server — Tools
-- [ ] `kervan_list_users` — list users with status, quota usage %
-- [ ] `kervan_get_user` — user details by username
-- [ ] `kervan_create_user` — create virtual user
-- [ ] `kervan_update_user` — update user settings
-- [ ] `kervan_list_sessions` — active sessions with protocol, IP, duration
-- [ ] `kervan_kill_session` — force disconnect by session ID
-- [ ] `kervan_transfer_stats` — statistics by period and protocol
-- [ ] `kervan_audit_query` — search audit events (type, user, date range)
-- [ ] `kervan_server_status` — health, connections, version
-- [ ] `kervan_list_files` — browse user VFS (path, list)
-- [ ] `kervan_quota_report` — per-user quota usage
+### Task 116: MCP Server â€” Tools
+- [ ] `kervan_list_users` â€” list users with status, quota usage %
+- [ ] `kervan_get_user` â€” user details by username
+- [ ] `kervan_create_user` â€” create virtual user
+- [ ] `kervan_update_user` â€” update user settings
+- [ ] `kervan_list_sessions` â€” active sessions with protocol, IP, duration
+- [ ] `kervan_kill_session` â€” force disconnect by session ID
+- [ ] `kervan_transfer_stats` â€” statistics by period and protocol
+- [ ] `kervan_audit_query` â€” search audit events (type, user, date range)
+- [ ] `kervan_server_status` â€” health, connections, version
+- [ ] `kervan_list_files` â€” browse user VFS (path, list)
+- [ ] `kervan_quota_report` â€” per-user quota usage
 
-### Task 117: MCP Server — Resources
-- [ ] `kervan://server/status` — real-time server health
-- [ ] `kervan://server/config` — current config (redacted)
-- [ ] `kervan://users` — user list summary
-- [ ] `kervan://sessions` — active sessions
-- [ ] `kervan://audit/recent` — last 50 audit events
-- [ ] `kervan://transfers/active` — active transfers
+### Task 117: MCP Server â€” Resources
+- [ ] `kervan://server/status` â€” real-time server health
+- [ ] `kervan://server/config` â€” current config (redacted)
+- [ ] `kervan://users` â€” user list summary
+- [ ] `kervan://sessions` â€” active sessions
+- [ ] `kervan://audit/recent` â€” last 50 audit events
+- [ ] `kervan://transfers/active` â€” active transfers
 
-### Task 118: CLI — Init Command
-- [ ] `kervan init` — generate default config file
-- [ ] `kervan init --config /path/to/kervan.yaml` — custom path
+### Task 118: CLI â€” Init Command
+- [x] `kervan init` â€” generate default config file
+- [x] `kervan init --config /path/to/kervan.yaml` â€” custom path
 - [ ] Interactive mode: prompt for admin password, data directory, ports
-- [ ] Create data directory structure
-- [ ] Set secure file permissions on config (0600)
+- [x] Create data directory structure
+- [x] Set secure file permissions on config (0600)
 
-### Task 119: CLI — Keygen Command
-- [ ] `kervan keygen` — generate SSH host keys
-- [ ] `--type ed25519|rsa|both` — key algorithm selection
-- [ ] `--output /path/to/keys/` — output directory
-- [ ] `--force` — overwrite existing keys
-- [ ] Display key fingerprint after generation
+### Task 119: CLI â€” Keygen Command
+- [x] `kervan keygen` â€” generate SSH host keys
+- [x] `--type ed25519|rsa|both` â€” key algorithm selection
+- [x] `--output /path/to/keys/` â€” output directory
+- [x] `--force` â€” overwrite existing keys
+- [x] Display key fingerprint after generation
 
-### Task 120: CLI — Admin Commands
-- [ ] `kervan admin create` — create admin user (interactive: prompt for username/password)
-- [ ] `kervan admin create --username admin --password secret` — non-interactive
-- [ ] `kervan admin reset-password --username admin` — reset (interactive prompt)
-- [ ] `kervan admin list` — list admin users
+### Task 120: CLI â€” Admin Commands
+- [ ] `kervan admin create` â€” create admin user (interactive: prompt for username/password)
+- [x] `kervan admin create --username admin --password secret` â€” non-interactive
+- [ ] `kervan admin reset-password --username admin` â€” reset (interactive prompt)
+- [x] `kervan admin list` â€” list admin users
 
-### Task 121: CLI — User Commands
-- [ ] `kervan user list` — table output: username, role, status, last login
-- [ ] `kervan user create --username john --password pass` — create user
-- [ ] `kervan user delete --username john` — delete user (confirmation prompt)
-- [ ] `kervan user import --file users.csv` — bulk import
-- [ ] `kervan user export --format json --output users.json` — bulk export
-- [ ] `--json` flag for machine-readable output
+### Task 121: CLI â€” User Commands
+- [ ] `kervan user list` â€” table output: username, role, status, last login
+- [x] `kervan user create --username john --password pass` â€” create user
+- [ ] `kervan user delete --username john` â€” delete user (confirmation prompt)
+- [x] `kervan user import --file users.csv` â€” bulk import
+- [x] `kervan user export --format json --output users.json` â€” bulk export
+- [x] `--json` flag for machine-readable output
 
-### Task 122: CLI — Status & Check Commands
-- [ ] `kervan status` — connect to running instance API, display server status
-- [ ] `kervan check` — validate config file without starting server
-- [ ] `kervan check --config /path/to/config.yaml`
-- [ ] Exit code 0 on success, 1 on error
+### Task 122: CLI â€” Status & Check Commands
+- [x] `kervan status` â€” connect to running instance API, display server status
+- [x] `kervan check` â€” validate config file without starting server
+- [x] `kervan check --config /path/to/config.yaml`
+- [x] Exit code 0 on success, 1 on error
 
-### Task 123: Migration — vsftpd
-- [ ] `kervan migrate vsftpd --user-db /path/to/virtual_users.db`
+### Task 123: Migration â€” vsftpd
+- [x] `kervan migrate vsftpd --user-db /path/to/virtual_users.db`
 - [ ] Parse vsftpd Berkeley DB or plain text virtual user file
-- [ ] Extract username + password pairs
-- [ ] Create Kervan users with matching home directories
+- [x] Extract username + password pairs
+- [x] Create Kervan users with matching home directories
 - [ ] Map vsftpd config to Kervan config suggestions
-- [ ] Report: migrated users, skipped, errors
+- [x] Report: migrated users, skipped, errors
 
-### Task 124: Migration — ProFTPD
-- [ ] `kervan migrate proftpd --config /path/to/proftpd.conf`
-- [ ] Parse ProFTPD config format
-- [ ] Extract virtual users from AuthUserFile
+### Task 124: Migration â€” ProFTPD
+- [x] `kervan migrate proftpd --config /path/to/proftpd.conf`
+- [x] Parse ProFTPD config format
+- [x] Extract virtual users from AuthUserFile
 - [ ] Map directory limits to Kervan mount configs
 - [ ] Map permission directives to Kervan user permissions
-- [ ] Report: migrated settings, unsupported directives
+- [x] Report: migrated settings, unsupported directives
 
-### Task 125: Migration — SSH Keys
-- [ ] `kervan migrate ssh-keys --authorized-keys-dir /home/*/.ssh/`
-- [ ] Glob and parse authorized_keys files
-- [ ] Create/update Kervan users with public keys
-- [ ] Map system username to Kervan username
-- [ ] Report: imported keys per user
+### Task 125: Migration â€” SSH Keys
+- [x] `kervan migrate ssh-keys --authorized-keys-dir /home/*/.ssh/`
+- [x] Glob and parse authorized_keys files
+- [x] Create/update Kervan users with public keys
+- [x] Map system username to Kervan username
+- [x] Report: imported keys per user
 
 ### Task 126: Docker Build
-- [ ] Multi-stage Dockerfile: Go build → scratch image
-- [ ] WebUI build stage (Node.js)
-- [ ] Go build stage (CGO_ENABLED=0, static binary)
+- [ ] Multi-stage Dockerfile: Go build â†’ scratch image
+- [x] WebUI build stage (Node.js)
+- [x] Go build stage (CGO_ENABLED=0, static binary)
 - [ ] Final stage: scratch + binary + CA certs
 - [ ] EXPOSE ports: 2121, 990, 2222, 8443, 50000-50100
 - [ ] VOLUME for /data and /etc/kervan
-- [ ] docker-compose.yml with all port mappings
+- [x] docker-compose.yml with all port mappings
 - [ ] Multi-arch build (amd64 + arm64)
 - [ ] GitHub Container Registry push
 
 ### Task 127: systemd Service & Packaging
-- [ ] systemd unit file per SPECIFICATION §12.3
-- [ ] Security hardening: NoNewPrivileges, ProtectSystem, ProtectHome, ReadWritePaths
-- [ ] `CAP_NET_BIND_SERVICE` for privileged ports
-- [ ] `ExecReload=/bin/kill -HUP $MAINPID`
+- [x] systemd unit file per SPECIFICATION Â§12.3
+- [x] Security hardening: NoNewPrivileges, ProtectSystem, ProtectHome, ReadWritePaths
+- [x] `CAP_NET_BIND_SERVICE` for privileged ports
+- [x] `ExecReload=/bin/kill -HUP $MAINPID`
 - [ ] LimitNOFILE=65535
 - [ ] `kervan` user/group creation script
 - [ ] Makefile target: `install` (binary + config + service + user)
-- [ ] README.md with quick start, Docker, configuration reference
+- [x] README.md with quick start, Docker, configuration reference
 
 ---
 
@@ -1094,60 +1094,60 @@
 
 ```
 Phase 1 (Foundation)
-  ├── T1 (scaffold)
-  ├── T2-T6 (config) ← T1
-  ├── T7 (logger) ← T1
-  ├── T8 (ULID) ← T1
-  ├── T9 (CobaltDB) ← T1
-  ├── T10-T12 (users/groups) ← T8, T9
-  ├── T13-T16 (VFS) ← T10
-  └── T17-T18 (backends) ← T13
+  â”œâ”€â”€ T1 (scaffold)
+  â”œâ”€â”€ T2-T6 (config) â† T1
+  â”œâ”€â”€ T7 (logger) â† T1
+  â”œâ”€â”€ T8 (ULID) â† T1
+  â”œâ”€â”€ T9 (CobaltDB) â† T1
+  â”œâ”€â”€ T10-T12 (users/groups) â† T8, T9
+  â”œâ”€â”€ T13-T16 (VFS) â† T10
+  â””â”€â”€ T17-T18 (backends) â† T13
 
-Phase 2 (FTP) ← Phase 1
-  ├── T19-T21 (server/handler/session) ← T7, T16
-  ├── T22 (auth) ← T55
-  ├── T23-T27 (nav/listing) ← T21
-  ├── T28-T29 (transfer) ← T24/T25
-  ├── T30-T33 (file ops) ← T21
-  └── T34-T36 (FTPS) ← T19
+Phase 2 (FTP) â† Phase 1
+  â”œâ”€â”€ T19-T21 (server/handler/session) â† T7, T16
+  â”œâ”€â”€ T22 (auth) â† T55
+  â”œâ”€â”€ T23-T27 (nav/listing) â† T21
+  â”œâ”€â”€ T28-T29 (transfer) â† T24/T25
+  â”œâ”€â”€ T30-T33 (file ops) â† T21
+  â””â”€â”€ T34-T36 (FTPS) â† T19
 
-Phase 3 (SSH) ← Phase 1
-  ├── T37 (host keys) ← T1
-  ├── T38-T42 (SSH server) ← T37, T55
-  ├── T43-T50 (SFTP handler) ← T42
-  └── T51-T52 (SCP) ← T42
+Phase 3 (SSH) â† Phase 1
+  â”œâ”€â”€ T37 (host keys) â† T1
+  â”œâ”€â”€ T38-T42 (SSH server) â† T37, T55
+  â”œâ”€â”€ T43-T50 (SFTP handler) â† T42
+  â””â”€â”€ T51-T52 (SCP) â† T42
 
-Phase 4 (Security) ← Phase 1
-  ├── T53-T55 (auth engine) ← T10
-  ├── T56 (VFS builder) ← T16, T17
-  ├── T57-T58 (quota/throttle) ← T13
-  ├── T59-T61 (session/security) ← T8
-  ├── T62-T67 (audit) ← T8, T9
-  ├── T68 (integrity) ← T62
-  └── T69 (TOTP) ← T53
+Phase 4 (Security) â† Phase 1
+  â”œâ”€â”€ T53-T55 (auth engine) â† T10
+  â”œâ”€â”€ T56 (VFS builder) â† T16, T17
+  â”œâ”€â”€ T57-T58 (quota/throttle) â† T13
+  â”œâ”€â”€ T59-T61 (session/security) â† T8
+  â”œâ”€â”€ T62-T67 (audit) â† T8, T9
+  â”œâ”€â”€ T68 (integrity) â† T62
+  â””â”€â”€ T69 (TOTP) â† T53
 
-Phase 5 (S3) ← Phase 1, Phase 4
-  ├── T70-T74 (S3 client) ← T1
-  ├── T75-T77 (S3 VFS) ← T13, T70-T74
-  ├── T78 (metadata) ← T9, T75
-  ├── T79 (streaming) ← T74
-  ├── T80-T81 (error/test) ← T70
-  └── T82 (multi-mount) ← T15, T17, T75
+Phase 5 (S3) â† Phase 1, Phase 4
+  â”œâ”€â”€ T70-T74 (S3 client) â† T1
+  â”œâ”€â”€ T75-T77 (S3 VFS) â† T13, T70-T74
+  â”œâ”€â”€ T78 (metadata) â† T9, T75
+  â”œâ”€â”€ T79 (streaming) â† T74
+  â”œâ”€â”€ T80-T81 (error/test) â† T70
+  â””â”€â”€ T82 (multi-mount) â† T15, T17, T75
 
-Phase 6 (WebUI/API) ← Phase 4
-  ├── T83-T86 (HTTP infra) ← T7, T84
-  ├── T87-T98 (API endpoints) ← T83, T55, T59, T62
-  ├── T99 (WebSocket) ← T62
-  ├── T100 (embed) ← T112
-  └── T101-T112 (React WebUI) ← T87-T99
+Phase 6 (WebUI/API) â† Phase 4
+  â”œâ”€â”€ T83-T86 (HTTP infra) â† T7, T84
+  â”œâ”€â”€ T87-T98 (API endpoints) â† T83, T55, T59, T62
+  â”œâ”€â”€ T99 (WebSocket) â† T62
+  â”œâ”€â”€ T100 (embed) â† T112
+  â””â”€â”€ T101-T112 (React WebUI) â† T87-T99
 
-Phase 7 (Ops) ← Phase 2, Phase 3, Phase 6
-  ├── T113 (ACME) ← T36
-  ├── T114 (LDAP) ← T55
-  ├── T115-T117 (MCP) ← T55, T59, T62
-  ├── T118-T122 (CLI) ← T4, T11
-  ├── T123-T125 (migration) ← T11
-  └── T126-T127 (deploy) ← all
+Phase 7 (Ops) â† Phase 2, Phase 3, Phase 6
+  â”œâ”€â”€ T113 (ACME) â† T36
+  â”œâ”€â”€ T114 (LDAP) â† T55
+  â”œâ”€â”€ T115-T117 (MCP) â† T55, T59, T62
+  â”œâ”€â”€ T118-T122 (CLI) â† T4, T11
+  â”œâ”€â”€ T123-T125 (migration) â† T11
+  â””â”€â”€ T126-T127 (deploy) â† all
 ```
 
 ---
@@ -1156,13 +1156,13 @@ Phase 7 (Ops) ← Phase 2, Phase 3, Phase 6
 
 | Phase | Tasks | Estimated Duration |
 |-------|-------|--------------------|
-| Phase 1 — Foundation | T1–T18 | 1.5 weeks |
-| Phase 2 — FTP Server | T19–T36 | 2 weeks |
-| Phase 3 — SSH Protocols | T37–T52 | 2 weeks |
-| Phase 4 — Security & Session | T53–T69 | 1.5 weeks |
-| Phase 5 — S3 Backend | T70–T82 | 1.5 weeks |
-| Phase 6 — WebUI & API | T83–T112 | 3 weeks |
-| Phase 7 — Operations | T113–T127 | 1.5 weeks |
+| Phase 1 â€” Foundation | T1â€“T18 | 1.5 weeks |
+| Phase 2 â€” FTP Server | T19â€“T36 | 2 weeks |
+| Phase 3 â€” SSH Protocols | T37â€“T52 | 2 weeks |
+| Phase 4 â€” Security & Session | T53â€“T69 | 1.5 weeks |
+| Phase 5 â€” S3 Backend | T70â€“T82 | 1.5 weeks |
+| Phase 6 â€” WebUI & API | T83â€“T112 | 3 weeks |
+| Phase 7 â€” Operations | T113â€“T127 | 1.5 weeks |
 | **Total** | **127 tasks** | **~13 weeks** |
 
 ---
@@ -1171,21 +1171,21 @@ Phase 7 (Ops) ← Phase 2, Phase 3, Phase 6
 
 For fastest usable release, implement in this order:
 
-**MVP-1 (Week 1–4): FTP + SFTP with Local Backend**
+**MVP-1 (Week 1â€“4): FTP + SFTP with Local Backend**
 - Phase 1 (all)
-- Phase 4: T53–T56, T59, T62–T63 (core auth, session, file audit)
-- Phase 2: T19–T31 (FTP core, no FTPS yet)
-- Phase 3: T37–T50 (SFTP core, no SCP yet)
+- Phase 4: T53â€“T56, T59, T62â€“T63 (core auth, session, file audit)
+- Phase 2: T19â€“T31 (FTP core, no FTPS yet)
+- Phase 3: T37â€“T50 (SFTP core, no SCP yet)
 
-**MVP-2 (Week 5–7): WebUI + API**
-- Phase 6: T83–T90, T92–T93, T95, T97–T98, T100–T104, T107, T112
+**MVP-2 (Week 5â€“7): WebUI + API**
+- Phase 6: T83â€“T90, T92â€“T93, T95, T97â€“T98, T100â€“T104, T107, T112
 
-**MVP-3 (Week 8–10): Security + FTPS + SCP**
-- Phase 2: T34–T36 (FTPS)
-- Phase 3: T51–T52 (SCP)
-- Phase 4: T57–T61, T64–T69 (full security stack)
+**MVP-3 (Week 8â€“10): Security + FTPS + SCP**
+- Phase 2: T34â€“T36 (FTPS)
+- Phase 3: T51â€“T52 (SCP)
+- Phase 4: T57â€“T61, T64â€“T69 (full security stack)
 
-**MVP-4 (Week 11–13): S3 + Polish**
+**MVP-4 (Week 11â€“13): S3 + Polish**
 - Phase 5 (all)
 - Phase 6: remaining pages
-- Phase 7: T113, T118–T122, T126–T127
+- Phase 7: T113, T118â€“T122, T126â€“T127

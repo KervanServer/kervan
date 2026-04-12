@@ -2,13 +2,17 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"syscall"
+	"text/tabwriter"
 	"time"
 
 	"github.com/kervanserver/kervan/internal/auth"
@@ -16,8 +20,8 @@ import (
 	"github.com/kervanserver/kervan/internal/config"
 	icrypto "github.com/kervanserver/kervan/internal/crypto"
 	"github.com/kervanserver/kervan/internal/server"
-	"github.com/kervanserver/kervan/internal/store"
 	ilog "github.com/kervanserver/kervan/internal/util/log"
+	"golang.org/x/crypto/ssh"
 )
 
 const defaultConfigPath = "kervan.yaml"
@@ -111,122 +115,21 @@ func cmdRun(args []string) {
 }
 
 func cmdInit(args []string) {
-	fs := flag.NewFlagSet("init", flag.ExitOnError)
-	configPath := fs.String("config", defaultConfigPath, "Path to config file")
-	force := fs.Bool("force", false, "Overwrite existing config")
-	_ = fs.Parse(args)
-
-	if !*force {
-		if _, err := os.Stat(*configPath); err == nil {
-			exitf("config already exists: %s (use --force to overwrite)", *configPath)
-		}
-	}
-
-	if *force {
-		_ = os.Remove(*configPath)
-	}
-	if err := config.WriteDefault(*configPath); err != nil {
+	if err := runInitCommand(os.Stdout, args); err != nil {
 		exitf("init config: %v", err)
 	}
-	fmt.Printf("Config created: %s\n", *configPath)
 }
 
 func cmdKeygen(args []string) {
-	fs := flag.NewFlagSet("keygen", flag.ExitOnError)
-	keyType := fs.String("type", "ed25519", "ed25519|rsa")
-	outputDir := fs.String("output", "./data/host_keys", "Output directory")
-	_ = fs.Parse(args)
-
-	if err := os.MkdirAll(*outputDir, 0o700); err != nil {
-		exitf("create output dir: %v", err)
-	}
-
-	switch *keyType {
-	case "ed25519":
-		path := filepath.Join(*outputDir, "ssh_host_ed25519_key")
-		if err := icrypto.GenerateED25519HostKey(path); err != nil {
-			exitf("generate ed25519 key: %v", err)
-		}
-		fmt.Printf("Generated: %s\n", path)
-	case "rsa":
-		path := filepath.Join(*outputDir, "ssh_host_rsa_key")
-		if err := icrypto.GenerateRSAHostKey(path, 4096); err != nil {
-			exitf("generate rsa key: %v", err)
-		}
-		fmt.Printf("Generated: %s\n", path)
-	default:
-		exitf("unknown key type: %s", *keyType)
+	if err := runKeygenCommand(os.Stdout, args); err != nil {
+		exitf("keygen: %v", err)
 	}
 }
 
 func cmdAdmin(args []string) {
-	if len(args) == 0 {
-		exitf("usage: kervan admin <create|reset-password> [flags]")
+	if err := runAdminCommand(os.Stdout, args); err != nil {
+		exitf("admin: %v", err)
 	}
-	switch args[0] {
-	case "create":
-		cmdAdminCreate(args[1:])
-	case "reset-password":
-		cmdAdminReset(args[1:])
-	default:
-		exitf("unknown admin command: %s", args[0])
-	}
-}
-
-func cmdAdminCreate(args []string) {
-	fs := flag.NewFlagSet("admin create", flag.ExitOnError)
-	configPath := fs.String("config", defaultConfigPath, "Path to config file")
-	username := fs.String("username", "admin", "Admin username")
-	password := fs.String("password", "", "Admin password")
-	_ = fs.Parse(args)
-	if *password == "" {
-		exitf("--password is required")
-	}
-
-	cfg, err := config.Load(*configPath)
-	if err != nil {
-		exitf("load config: %v", err)
-	}
-	st, err := store.Open(cfg.Server.DataDir)
-	if err != nil {
-		exitf("open store: %v", err)
-	}
-	defer st.Close()
-	repo := auth.NewUserRepository(st)
-	engine := auth.NewEngine(repo, cfg.Auth.PasswordHash, cfg.Security.BruteForce.MaxAttempts, cfg.Security.BruteForce.LockoutDuration)
-	engine.SetMinPasswordLength(cfg.Auth.MinPasswordLength)
-	u, err := engine.CreateUser(*username, *password, "/", true)
-	if err != nil {
-		exitf("create admin: %v", err)
-	}
-	fmt.Printf("Admin created: %s (%s)\n", u.Username, u.ID)
-}
-
-func cmdAdminReset(args []string) {
-	fs := flag.NewFlagSet("admin reset-password", flag.ExitOnError)
-	configPath := fs.String("config", defaultConfigPath, "Path to config file")
-	username := fs.String("username", "admin", "Admin username")
-	password := fs.String("password", "", "New password")
-	_ = fs.Parse(args)
-	if *password == "" {
-		exitf("--password is required")
-	}
-	cfg, err := config.Load(*configPath)
-	if err != nil {
-		exitf("load config: %v", err)
-	}
-	st, err := store.Open(cfg.Server.DataDir)
-	if err != nil {
-		exitf("open store: %v", err)
-	}
-	defer st.Close()
-	repo := auth.NewUserRepository(st)
-	engine := auth.NewEngine(repo, cfg.Auth.PasswordHash, cfg.Security.BruteForce.MaxAttempts, cfg.Security.BruteForce.LockoutDuration)
-	engine.SetMinPasswordLength(cfg.Auth.MinPasswordLength)
-	if err := engine.ResetPassword(*username, *password); err != nil {
-		exitf("reset password: %v", err)
-	}
-	fmt.Printf("Password reset: %s\n", *username)
 }
 
 func cmdAPIKey(args []string) {
@@ -239,4 +142,279 @@ func exitf(format string, args ...any) {
 	_, _ = fmt.Fprintf(os.Stderr, format+"\n", args...)
 	time.Sleep(50 * time.Millisecond)
 	os.Exit(1)
+}
+
+func runInitCommand(stdout io.Writer, args []string) error {
+	fs := flag.NewFlagSet("init", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	configPath := fs.String("config", defaultConfigPath, "Path to config file")
+	force := fs.Bool("force", false, "Overwrite existing config")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	if !*force {
+		if _, err := os.Stat(*configPath); err == nil {
+			return fmt.Errorf("config already exists: %s (use --force to overwrite)", *configPath)
+		}
+	}
+
+	if *force {
+		_ = os.Remove(*configPath)
+	}
+	if err := config.WriteDefault(*configPath); err != nil {
+		return err
+	}
+
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		return err
+	}
+	if err := ensureInitDataDirs(cfg); err != nil {
+		return err
+	}
+
+	_, _ = fmt.Fprintf(stdout, "Config created: %s\n", *configPath)
+	return nil
+}
+
+func ensureInitDataDirs(cfg *config.Config) error {
+	dirs := []string{
+		cfg.Server.DataDir,
+		cfg.SFTP.HostKeyDir,
+	}
+	for _, backend := range cfg.Storage.Backends {
+		if backend.Type != "local" {
+			continue
+		}
+		root := ""
+		if backend.Options != nil {
+			root = backend.Options["root"]
+		}
+		if root != "" {
+			dirs = append(dirs, root)
+		}
+	}
+	for _, dir := range dirs {
+		if dir == "" {
+			continue
+		}
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func runKeygenCommand(stdout io.Writer, args []string) error {
+	fs := flag.NewFlagSet("keygen", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	keyType := fs.String("type", "ed25519", "ed25519|rsa|both")
+	outputDir := fs.String("output", "./data/host_keys", "Output directory")
+	force := fs.Bool("force", false, "Overwrite existing keys")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	if err := os.MkdirAll(*outputDir, 0o700); err != nil {
+		return err
+	}
+
+	var generated []string
+	switch *keyType {
+	case "ed25519":
+		path, err := generateHostKeyFile(*outputDir, "ed25519", *force)
+		if err != nil {
+			return err
+		}
+		generated = append(generated, path)
+	case "rsa":
+		path, err := generateHostKeyFile(*outputDir, "rsa", *force)
+		if err != nil {
+			return err
+		}
+		generated = append(generated, path)
+	case "both":
+		for _, kind := range []string{"ed25519", "rsa"} {
+			path, err := generateHostKeyFile(*outputDir, kind, *force)
+			if err != nil {
+				return err
+			}
+			generated = append(generated, path)
+		}
+	default:
+		return fmt.Errorf("unknown key type: %s", *keyType)
+	}
+
+	for _, path := range generated {
+		signer, err := icrypto.LoadSigner(path)
+		if err != nil {
+			return err
+		}
+		_, _ = fmt.Fprintf(stdout, "Generated: %s\n", path)
+		_, _ = fmt.Fprintf(stdout, "Fingerprint: %s\n", ssh.FingerprintSHA256(signer.PublicKey()))
+	}
+	return nil
+}
+
+func generateHostKeyFile(outputDir, keyType string, force bool) (string, error) {
+	var path string
+	switch keyType {
+	case "ed25519":
+		path = filepath.Join(outputDir, "ssh_host_ed25519_key")
+	case "rsa":
+		path = filepath.Join(outputDir, "ssh_host_rsa_key")
+	default:
+		return "", fmt.Errorf("unknown key type: %s", keyType)
+	}
+
+	if !force {
+		if _, err := os.Stat(path); err == nil {
+			return "", fmt.Errorf("host key already exists: %s (use --force to overwrite)", path)
+		}
+	}
+
+	switch keyType {
+	case "ed25519":
+		return path, icrypto.GenerateED25519HostKey(path)
+	case "rsa":
+		return path, icrypto.GenerateRSAHostKey(path, 4096)
+	default:
+		return "", fmt.Errorf("unknown key type: %s", keyType)
+	}
+}
+
+func runAdminCommand(stdout io.Writer, args []string) error {
+	if len(args) == 0 {
+		return errors.New("usage: kervan admin <create|reset-password|list> [flags]")
+	}
+	switch args[0] {
+	case "create":
+		return runAdminCreateCommand(stdout, args[1:])
+	case "reset-password":
+		return runAdminResetCommand(stdout, args[1:])
+	case "list":
+		return runAdminListCommand(stdout, args[1:])
+	default:
+		return fmt.Errorf("unknown admin command: %s", args[0])
+	}
+}
+
+func runAdminCreateCommand(stdout io.Writer, args []string) error {
+	fs := flag.NewFlagSet("admin create", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	configPath := fs.String("config", defaultConfigPath, "Path to config file")
+	username := fs.String("username", "admin", "Admin username")
+	password := fs.String("password", "", "Admin password")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *password == "" {
+		return errors.New("--password is required")
+	}
+
+	ctx, err := openCLIContext(*configPath)
+	if err != nil {
+		return err
+	}
+	defer ctx.close()
+
+	u, err := ctx.engine.CreateUser(*username, *password, "/", true)
+	if err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(stdout, "Admin created: %s (%s)\n", u.Username, u.ID)
+	return nil
+}
+
+func runAdminResetCommand(stdout io.Writer, args []string) error {
+	fs := flag.NewFlagSet("admin reset-password", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	configPath := fs.String("config", defaultConfigPath, "Path to config file")
+	username := fs.String("username", "admin", "Admin username")
+	password := fs.String("password", "", "New password")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *password == "" {
+		return errors.New("--password is required")
+	}
+
+	ctx, err := openCLIContext(*configPath)
+	if err != nil {
+		return err
+	}
+	defer ctx.close()
+
+	if err := ctx.engine.ResetPassword(*username, *password); err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintf(stdout, "Password reset: %s\n", *username)
+	return nil
+}
+
+func runAdminListCommand(stdout io.Writer, args []string) error {
+	fs := flag.NewFlagSet("admin list", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	configPath := fs.String("config", defaultConfigPath, "Path to config file")
+	jsonOut := fs.Bool("json", false, "Output JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	ctx, err := openCLIContext(*configPath)
+	if err != nil {
+		return err
+	}
+	defer ctx.close()
+
+	users, err := ctx.repo.List()
+	if err != nil {
+		return err
+	}
+
+	admins := make([]*auth.User, 0, len(users))
+	for _, user := range users {
+		if user != nil && user.Type == auth.UserTypeAdmin {
+			admins = append(admins, user)
+		}
+	}
+	sort.Slice(admins, func(i, j int) bool {
+		return admins[i].Username < admins[j].Username
+	})
+
+	if *jsonOut {
+		type adminListItem struct {
+			ID        string        `json:"id"`
+			Username  string        `json:"username"`
+			Enabled   bool          `json:"enabled"`
+			CreatedAt time.Time     `json:"created_at"`
+			UpdatedAt time.Time     `json:"updated_at"`
+			Type      auth.UserType `json:"type"`
+		}
+		items := make([]adminListItem, 0, len(admins))
+		for _, user := range admins {
+			items = append(items, adminListItem{
+				ID:        user.ID,
+				Username:  user.Username,
+				Enabled:   user.Enabled,
+				CreatedAt: user.CreatedAt,
+				UpdatedAt: user.UpdatedAt,
+				Type:      user.Type,
+			})
+		}
+		return json.NewEncoder(stdout).Encode(items)
+	}
+
+	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
+	_, _ = fmt.Fprintln(tw, "USERNAME\tENABLED\tCREATED\tUPDATED")
+	for _, user := range admins {
+		_, _ = fmt.Fprintf(tw, "%s\t%t\t%s\t%s\n",
+			user.Username,
+			user.Enabled,
+			user.CreatedAt.Format(time.RFC3339),
+			user.UpdatedAt.Format(time.RFC3339),
+		)
+	}
+	return tw.Flush()
 }

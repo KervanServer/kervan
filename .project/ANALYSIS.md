@@ -33,7 +33,7 @@ Top strengths:
 
 Top concerns:
 - The documented architecture and the actual architecture diverge sharply. The spec is CobaltDB-centric; the implementation uses a JSON file store in `internal/store/store.go`.
-- API keys can be created but cannot be used for authentication. `withAuth` only accepts bearer tokens (`internal/api/server.go:1593-1607`).
+- The MCP/CLI/deployment task matrix still overstates what is fully shipped. The MCP server exists, but the tool/resource surface is still a narrow MVP and several admin/packaging items remain partial.
 - Several declared config/security controls are not enforced at runtime, including IP allow/deny lists and connection limits.
 
 ## 2. Architecture Analysis
@@ -288,10 +288,10 @@ Measured directly from `.project/TASKS.md`:
 
 | Metric | Value |
 |---|---:|
-| Checked tasks | 48 |
-| Unchecked tasks | 739 |
+| Checked tasks | 104 |
+| Unchecked tasks | 683 |
 
-Literal task completion: **~6.1%**.
+Literal task completion: **~13.2%**.
 
 Observed implementation progress: **roughly 55-60%** of task themes are materially done or in progress.
 
@@ -387,5 +387,5 @@ DX problems:
 | Open TODOs/FIXMEs | 0 |
 | API Endpoints | 45 registered route patterns |
 | Spec Feature Completion | ~62% |
-| Task Completion | ~6.1% tracked / ~55-60% observed |
+| Task Completion | ~13.2% tracked / ~55-60% observed |
 | Overall Health Score | 6.5/10 |
