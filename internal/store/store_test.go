@@ -1,8 +1,10 @@
 package store
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -160,5 +162,47 @@ func TestStoreRecoversFromBackupWhenPrimaryIsMissing(t *testing.T) {
 	}
 	if got["username"] != "alice" {
 		t.Fatalf("unexpected recovered payload: %#v", got)
+	}
+}
+
+func TestStoreConcurrentPutsPersistAllEntries(t *testing.T) {
+	dir := t.TempDir()
+
+	st, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open(): %v", err)
+	}
+
+	var wg sync.WaitGroup
+	for i := 0; i < 50; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			key := fmt.Sprintf("user-%02d", i)
+			if err := st.Put("users", key, map[string]any{"username": key}); err != nil {
+				t.Errorf("Put(%s): %v", key, err)
+			}
+		}()
+	}
+	wg.Wait()
+	if err := st.Close(); err != nil {
+		t.Fatalf("Close(): %v", err)
+	}
+
+	reopened, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open() reopen: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = reopened.Close()
+	})
+
+	var users []map[string]any
+	if err := reopened.List("users", &users); err != nil {
+		t.Fatalf("List(): %v", err)
+	}
+	if len(users) != 50 {
+		t.Fatalf("expected 50 persisted users, got %d", len(users))
 	}
 }

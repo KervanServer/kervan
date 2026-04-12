@@ -46,6 +46,17 @@ func writeFileAtomically(path string, data []byte, perm os.FileMode) (err error)
 	return nil
 }
 
+func WriteFileAtomically(path string, data []byte, perm os.FileMode) error {
+	return writeFileAtomically(path, data, perm)
+}
+
+func ReplaceTempFileAtomically(tmpPath, targetPath string) error {
+	if err := replaceFile(tmpPath, targetPath); err != nil {
+		return err
+	}
+	return syncDir(filepath.Dir(targetPath))
+}
+
 func syncDir(path string) error {
 	dir, err := os.Open(path)
 	if err != nil {

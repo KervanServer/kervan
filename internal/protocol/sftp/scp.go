@@ -257,7 +257,22 @@ func parseSCPFileHeader(header string) (mode uint32, size int64, name string, er
 	if name == "" {
 		return 0, 0, "", errors.New("empty file name")
 	}
+	if err := validateSCPFileName(name); err != nil {
+		return 0, 0, "", err
+	}
 	return uint32(m), sz, name, nil
+}
+
+func validateSCPFileName(name string) error {
+	switch trimmed := strings.TrimSpace(name); trimmed {
+	case "", ".", "..":
+		return errors.New("invalid file name")
+	default:
+		if strings.Contains(trimmed, "/") || strings.Contains(trimmed, `\`) {
+			return errors.New("invalid file name")
+		}
+		return nil
+	}
 }
 
 func resolveSCPSinkPath(fsys vfs.FileSystem, target, fileName string) string {

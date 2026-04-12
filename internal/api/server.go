@@ -14,6 +14,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"mime"
 	"net"
 	"net/http"
 	"os"
@@ -1053,7 +1054,12 @@ func (s *Server) handleFilesDelete(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	p := normalizeAPIPath(r.URL.Query().Get("path"))
+	rawPath := strings.TrimSpace(r.URL.Query().Get("path"))
+	if rawPath == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "path is required"})
+		return
+	}
+	p := normalizeAPIPath(rawPath)
 	recursive := strings.EqualFold(r.URL.Query().Get("recursive"), "true")
 	if recursive {
 		err = fsys.RemoveAll(p)
@@ -1079,9 +1085,9 @@ func (s *Server) handleFilesRename(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	from := normalizeAPIPath(r.URL.Query().Get("from"))
-	to := normalizeAPIPath(r.URL.Query().Get("to"))
-	if from == "" || to == "" {
+	rawFrom := strings.TrimSpace(r.URL.Query().Get("from"))
+	rawTo := strings.TrimSpace(r.URL.Query().Get("to"))
+	if rawFrom == "" || rawTo == "" {
 		var req struct {
 			From string `json:"from"`
 			To   string `json:"to"`
@@ -1090,13 +1096,15 @@ func (s *Server) handleFilesRename(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "from and to are required"})
 			return
 		}
-		from = normalizeAPIPath(req.From)
-		to = normalizeAPIPath(req.To)
+		rawFrom = strings.TrimSpace(req.From)
+		rawTo = strings.TrimSpace(req.To)
 	}
-	if from == "" || to == "" {
+	if rawFrom == "" || rawTo == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "from and to are required"})
 		return
 	}
+	from := normalizeAPIPath(rawFrom)
+	to := normalizeAPIPath(rawTo)
 	if err := fsys.Rename(from, to); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
@@ -1197,7 +1205,12 @@ func (s *Server) handleFilesUpload(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	p := normalizeAPIPath(r.URL.Query().Get("path"))
+	rawPath := strings.TrimSpace(r.URL.Query().Get("path"))
+	if rawPath == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "path is required"})
+		return
+	}
+	p := normalizeAPIPath(rawPath)
 	f, err := fsys.Open(p, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -1226,7 +1239,12 @@ func (s *Server) handleFilesDownload(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	p := normalizeAPIPath(r.URL.Query().Get("path"))
+	rawPath := strings.TrimSpace(r.URL.Query().Get("path"))
+	if rawPath == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "path is required"})
+		return
+	}
+	p := normalizeAPIPath(rawPath)
 	f, err := fsys.Open(p, os.O_RDONLY, 0)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -1236,7 +1254,7 @@ func (s *Server) handleFilesDownload(w http.ResponseWriter, r *http.Request) {
 	info, _ := f.Stat()
 
 	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Content-Disposition", `attachment; filename="`+path.Base(p)+`"`)
+	setAttachmentDisposition(w.Header(), path.Base(p))
 	if info != nil {
 		w.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
 	}
@@ -1308,7 +1326,12 @@ func (s *Server) handleFilesStat(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	p := normalizeAPIPath(r.URL.Query().Get("path"))
+	rawPath := strings.TrimSpace(r.URL.Query().Get("path"))
+	if rawPath == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "path is required"})
+		return
+	}
+	p := normalizeAPIPath(rawPath)
 	info, err := fsys.Stat(p)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -1411,20 +1434,27 @@ func (s *Server) handleShareDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	link, err := s.shareLinks.Get(token)
-	if err != nil || link == nil {
+	link, err := s.shareLinks.ReserveDownload(token, time.Now().UTC())
+	switch {
+	case errors.Is(err, store.ErrNotFound) || (err == nil && link == nil):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "share link not found"})
 		return
-	}
-	now := time.Now().UTC()
-	if !link.ExpiresAt.IsZero() && now.After(link.ExpiresAt) {
-		writeJSON(w, http.StatusGone, map[string]string{"error": "share link expired"})
+	case errors.Is(err, ErrShareLinkExpired):
+		writeJSON(w, http.StatusGone, map[string]string{"error": err.Error()})
+		return
+	case errors.Is(err, ErrShareLinkDownloadLimitExceeded):
+		writeJSON(w, http.StatusGone, map[string]string{"error": err.Error()})
+		return
+	case err != nil:
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	if link.MaxDownloads > 0 && link.DownloadCount >= link.MaxDownloads {
-		writeJSON(w, http.StatusGone, map[string]string{"error": "share link download limit exceeded"})
-		return
-	}
+	releaseReservation := true
+	defer func() {
+		if releaseReservation {
+			_ = s.shareLinks.ReleaseDownload(token)
+		}
+	}()
 
 	if s.fsBuilder == nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "filesystem builder is not available"})
@@ -1449,12 +1479,12 @@ func (s *Server) handleShareDownload(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/octet-stream")
-	w.Header().Set("Content-Disposition", `attachment; filename="`+path.Base(link.Path)+`"`)
+	setAttachmentDisposition(w.Header(), path.Base(link.Path))
 	if info != nil {
 		w.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
 	}
 	if _, err := io.Copy(w, f); err == nil {
-		_ = s.shareLinks.Increment(token)
+		releaseReservation = false
 	}
 }
 
@@ -2082,6 +2112,19 @@ func parseInt(raw string, fallback int) int {
 		return fallback
 	}
 	return v
+}
+
+func setAttachmentDisposition(header http.Header, filename string) {
+	filename = strings.TrimSpace(filename)
+	if filename == "" {
+		header.Set("Content-Disposition", "attachment")
+		return
+	}
+	if value := mime.FormatMediaType("attachment", map[string]string{"filename": filename}); value != "" {
+		header.Set("Content-Disposition", value)
+		return
+	}
+	header.Set("Content-Disposition", "attachment")
 }
 
 func parseTTL(raw string, fallback time.Duration) (time.Duration, error) {

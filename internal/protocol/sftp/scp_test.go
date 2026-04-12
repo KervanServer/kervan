@@ -45,6 +45,20 @@ func TestParseSCPFileHeader(t *testing.T) {
 	}
 }
 
+func TestParseSCPFileHeaderRejectsPathTraversalNames(t *testing.T) {
+	tests := []string{
+		"C0644 12 ../file.txt",
+		"C0644 12 nested/file.txt",
+		`C0644 12 ..\\file.txt`,
+		"C0644 12 .",
+	}
+	for _, raw := range tests {
+		if _, _, _, err := parseSCPFileHeader(raw); err == nil {
+			t.Fatalf("expected invalid file name for %q", raw)
+		}
+	}
+}
+
 func TestReadSCPAck(t *testing.T) {
 	if err := readSCPAck(bufio.NewReader(bytes.NewReader([]byte{0}))); err != nil {
 		t.Fatalf("expected ack success: %v", err)

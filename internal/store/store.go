@@ -17,6 +17,7 @@ type Store struct {
 	path       string
 	backupPath string
 	mu         sync.RWMutex
+	persistMu  sync.Mutex
 	data       map[string]json.RawMessage
 }
 
@@ -37,6 +38,8 @@ func Open(dataDir string) (*Store, error) {
 }
 
 func (s *Store) Close() error {
+	s.persistMu.Lock()
+	defer s.persistMu.Unlock()
 	return s.flush()
 }
 
@@ -45,6 +48,8 @@ func (s *Store) Put(collection, key string, value any) error {
 	if err != nil {
 		return err
 	}
+	s.persistMu.Lock()
+	defer s.persistMu.Unlock()
 	s.mu.Lock()
 	s.data[s.composite(collection, key)] = raw
 	s.mu.Unlock()
@@ -62,6 +67,8 @@ func (s *Store) Get(collection, key string, out any) error {
 }
 
 func (s *Store) Delete(collection, key string) error {
+	s.persistMu.Lock()
+	defer s.persistMu.Unlock()
 	s.mu.Lock()
 	delete(s.data, s.composite(collection, key))
 	s.mu.Unlock()

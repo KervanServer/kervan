@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useState } from "react"
-import { Activity } from "lucide-react"
+import { Activity, RefreshCw } from "lucide-react"
 
+import { ConnectionBanner } from "@/components/shared/connection-banner"
 import { ConfirmDialog } from "@/components/shared/confirm-dialog"
 import { EmptyState } from "@/components/shared/empty-state"
 import { PageHeader } from "@/components/shared/page-header"
 import { StatusMessage } from "@/components/shared/status-message"
+import { useDebouncedValue } from "@/hooks/use-debounced-value"
 import { useKillSession, useSessions } from "@/hooks/use-sessions"
 import { useLiveSnapshot } from "@/lib/use-live-snapshot"
 import type { ApiSession } from "@/lib/types"
@@ -27,6 +29,9 @@ export function SessionsPage({ token }: Props) {
   const [query, setQuery] = useState("")
   const [protocolFilter, setProtocolFilter] = useState("")
   const [ipFilter, setIPFilter] = useState("")
+  const debouncedQuery = useDebouncedValue(query, 300)
+  const debouncedProtocolFilter = useDebouncedValue(protocolFilter, 300)
+  const debouncedIPFilter = useDebouncedValue(ipFilter, 300)
   const { snapshot, connected, error: liveError } = useLiveSnapshot(token, ["sessions"])
 
   useEffect(() => {
@@ -49,17 +54,21 @@ export function SessionsPage({ token }: Props) {
 
   const filteredSessions = useMemo(() => {
     return sessions
-      .filter((session) => (protocolFilter ? session.protocol.toLowerCase() === protocolFilter.toLowerCase() : true))
-      .filter((session) => (ipFilter ? session.remote_addr.toLowerCase().includes(ipFilter.toLowerCase()) : true))
+      .filter((session) =>
+        debouncedProtocolFilter ? session.protocol.toLowerCase() === debouncedProtocolFilter.toLowerCase() : true,
+      )
+      .filter((session) =>
+        debouncedIPFilter ? session.remote_addr.toLowerCase().includes(debouncedIPFilter.toLowerCase()) : true,
+      )
       .filter((session) => {
-        if (!query) {
+        if (!debouncedQuery) {
           return true
         }
         const haystack = [session.id, session.username, session.protocol, session.remote_addr].join(" ").toLowerCase()
-        return haystack.includes(query.toLowerCase())
+        return haystack.includes(debouncedQuery.toLowerCase())
       })
       .sort((left, right) => right.started_at.localeCompare(left.started_at))
-  }, [ipFilter, protocolFilter, query, sessions])
+  }, [debouncedIPFilter, debouncedProtocolFilter, debouncedQuery, sessions])
 
   useEffect(() => {
     if (!selectedSession && filteredSessions.length > 0) {
@@ -89,7 +98,20 @@ export function SessionsPage({ token }: Props) {
         <PageHeader
           title="Sessions"
           description="Inspect active protocol connections, filter live clients, and disconnect suspicious sessions."
+          actions={
+            <>
+              <Badge variant="outline">{connected ? "Live stream" : "Snapshot mode"}</Badge>
+              <Button variant="outline" onClick={() => void sessionsQuery.refetch()} disabled={sessionsQuery.isFetching}>
+                <RefreshCw className={`mr-2 h-4 w-4 ${sessionsQuery.isFetching ? "animate-spin motion-reduce:animate-none" : ""}`} />
+                {sessionsQuery.isFetching ? "Refreshing..." : "Refresh"}
+              </Button>
+            </>
+          }
         />
+      </div>
+
+      <div className="xl:col-span-2">
+        <ConnectionBanner message={liveError} onRetry={() => void sessionsQuery.refetch()} />
       </div>
 
       <Card>
@@ -99,7 +121,6 @@ export function SessionsPage({ token }: Props) {
         </CardHeader>
         <CardContent>
           {error ? <StatusMessage variant="error" className="mb-3">{error}</StatusMessage> : null}
-          {liveError ? <StatusMessage variant="error" className="mb-3">{liveError}</StatusMessage> : null}
           <div className="mb-4 grid gap-2 md:grid-cols-3">
             <Input placeholder="Search user, protocol, id..." value={query} onChange={(event) => setQuery(event.target.value)} />
             <Input placeholder="Filter protocol" value={protocolFilter} onChange={(event) => setProtocolFilter(event.target.value)} />

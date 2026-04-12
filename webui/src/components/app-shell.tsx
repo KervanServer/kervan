@@ -19,6 +19,7 @@ import { NavLink } from "react-router-dom"
 import { ThemeToggle } from "@/components/theme-toggle"
 import { prefetchRoute, type AppRoutePath } from "@/lib/route-modules"
 import { Button } from "@/components/ui/button"
+import { Tooltip } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
 
 type NavItem = { to: AppRoutePath; icon: LucideIcon; label: string }
@@ -40,34 +41,45 @@ type Props = {
   onLogout: () => void
 }
 
-function NavItems({ onClick }: { onClick?: () => void }) {
+function NavItems({ onClick, compact = false }: { onClick?: () => void; compact?: boolean }) {
   return (
     <>
-      {items.map((item) => (
-        <NavLink
-          key={item.to}
-          to={item.to}
-          onClick={onClick}
-          onMouseEnter={() => {
-            void prefetchRoute(item.to)
-          }}
-          onFocus={() => {
-            void prefetchRoute(item.to)
-          }}
-          end={item.to === "/"}
-          className={({ isActive }) =>
-            cn(
-              "flex min-h-11 items-center gap-3 rounded-xl px-3 py-2 text-sm font-medium transition-colors duration-150",
-              isActive
-                ? "bg-[var(--accent)] text-[var(--accent-foreground)]"
-                : "text-[var(--text-primary)] hover:bg-[var(--background-muted)]",
-            )
-          }
-        >
-          <item.icon className="h-4 w-4" />
-          <span>{item.label}</span>
-        </NavLink>
-      ))}
+      {items.map((item) => {
+        const link = (
+          <NavLink
+            key={item.to}
+            to={item.to}
+            onClick={onClick}
+            onMouseEnter={() => {
+              void prefetchRoute(item.to)
+            }}
+            onFocus={() => {
+              void prefetchRoute(item.to)
+            }}
+            end={item.to === "/"}
+            className={({ isActive }) =>
+              cn(
+                "flex min-h-11 items-center gap-3 rounded-xl px-3 py-2 text-sm font-medium transition-colors duration-150",
+                compact && "justify-center px-0 lg:justify-start lg:px-3",
+                isActive
+                  ? "bg-[var(--accent)] text-[var(--accent-foreground)]"
+                  : "text-[var(--text-primary)] hover:bg-[var(--background-muted)]",
+              )
+            }
+          >
+            <item.icon className="h-4 w-4 shrink-0" />
+            <span className={compact ? "sr-only lg:not-sr-only lg:inline" : undefined}>{item.label}</span>
+          </NavLink>
+        )
+
+        return compact ? (
+          <Tooltip key={item.to} content={item.label}>
+            {link}
+          </Tooltip>
+        ) : (
+          link
+        )
+      })}
     </>
   )
 }
@@ -84,21 +96,31 @@ export function AppShell({ currentUser, onLogout }: Props) {
         Skip to main content
       </a>
 
-      <aside className="fixed inset-y-0 left-0 z-40 hidden w-64 border-r border-[var(--border)] bg-[var(--background-subtle)] px-4 py-5 lg:block">
-        <div className="mb-5 rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-3 text-sm">
+      <aside className="fixed inset-y-0 left-0 z-40 hidden w-16 border-r border-[var(--border)] bg-[var(--background-subtle)] px-2 py-5 md:block lg:w-64 lg:px-4">
+        <div className="mb-5 flex justify-center lg:hidden">
+          <Tooltip content={`Signed in as ${currentUser}`}>
+            <div
+              className="flex h-10 w-10 items-center justify-center rounded-full border border-[var(--border)] bg-[var(--surface)] text-sm font-semibold uppercase"
+              aria-label={`Signed in as ${currentUser}`}
+            >
+              {currentUser.slice(0, 1)}
+            </div>
+          </Tooltip>
+        </div>
+        <div className="mb-5 hidden rounded-xl border border-[var(--border)] bg-[var(--surface)] px-3 py-3 text-sm lg:block">
           Signed in as <strong>{currentUser}</strong>
         </div>
-        <nav className="space-y-1">
-          <NavItems />
+        <nav className="space-y-1" aria-label="Primary navigation">
+          <NavItems compact />
         </nav>
       </aside>
 
-      <header className="sticky top-0 z-[100] flex h-16 items-center justify-between border-b border-[var(--border)] bg-[color-mix(in_srgb,var(--background)_88%,transparent)] px-4 backdrop-blur-sm transition-colors duration-150 sm:px-6 lg:px-8 lg:pl-[18rem]">
+      <header className="sticky top-0 z-[100] flex h-16 items-center justify-between border-b border-[var(--border)] bg-[color-mix(in_srgb,var(--background)_88%,transparent)] px-4 backdrop-blur-sm transition-colors duration-150 sm:px-6 md:pl-24 lg:px-8 lg:pl-[18rem]">
         <div className="flex items-center gap-2">
           <Button
             variant="outline"
             size="icon"
-            className="lg:hidden"
+            className="md:hidden"
             onClick={() => setMobileOpen((value) => !value)}
             aria-label="Toggle navigation"
             aria-expanded={mobileOpen}
@@ -121,11 +143,16 @@ export function AppShell({ currentUser, onLogout }: Props) {
       </header>
 
       {mobileOpen ? (
-        <div className="fixed inset-0 z-[200] bg-black/30 lg:hidden">
+        <div
+          className="fixed inset-0 z-[200] bg-black/30 md:hidden"
+          onClick={() => setMobileOpen(false)}
+          aria-hidden="true"
+        >
           <nav
             id="mobile-navigation"
             className="fixed inset-y-0 left-0 w-72 border-r border-[var(--border)] bg-[var(--background-subtle)] p-4 shadow-lg"
             aria-label="Mobile navigation"
+            onClick={(event) => event.stopPropagation()}
           >
             <div className="mb-4 flex items-center justify-between">
               <p className="text-sm font-semibold tracking-tight">Navigation</p>

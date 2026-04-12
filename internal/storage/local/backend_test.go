@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/kervanserver/kervan/internal/vfs"
 )
 
 func TestBackendFileLifecycleAndPathSafety(t *testing.T) {
@@ -164,5 +166,44 @@ func TestBackendAdditionalErrorAndMetadataPaths(t *testing.T) {
 	}
 	if _, err := backend.ReadDir("/missing"); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("expected readdir missing to fail with os.ErrNotExist, got %v", err)
+	}
+}
+
+func TestBackendRejectsEscapedSymlinkTargets(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "data")
+	backend, err := New(Options{Root: root, CreateRoot: true})
+	if err != nil {
+		t.Fatalf("new backend: %v", err)
+	}
+
+	outsideDir := filepath.Join(t.TempDir(), "outside")
+	if err := os.MkdirAll(outsideDir, 0o755); err != nil {
+		t.Fatalf("mkdir outside: %v", err)
+	}
+	outsideFile := filepath.Join(outsideDir, "secret.txt")
+	if err := os.WriteFile(outsideFile, []byte("secret"), 0o600); err != nil {
+		t.Fatalf("write outside file: %v", err)
+	}
+
+	linkPath := filepath.Join(root, "escape-file.txt")
+	if err := os.Symlink(outsideFile, linkPath); err != nil {
+		t.Fatalf("create outside file symlink: %v", err)
+	}
+	if _, err := backend.Open("/escape-file.txt", os.O_RDONLY, 0); !errors.Is(err, vfs.ErrPathEscape) {
+		t.Fatalf("expected symlinked file open to be blocked, got %v", err)
+	}
+	if _, err := backend.Readlink("/escape-file.txt"); !errors.Is(err, vfs.ErrPathEscape) {
+		t.Fatalf("expected readlink to reject escaped target, got %v", err)
+	}
+
+	dirLinkPath := filepath.Join(root, "escape-dir")
+	if err := os.Symlink(outsideDir, dirLinkPath); err != nil {
+		t.Fatalf("create outside dir symlink: %v", err)
+	}
+	if _, err := backend.Open("/escape-dir/pwned.txt", os.O_CREATE|os.O_WRONLY, 0); !errors.Is(err, vfs.ErrPathEscape) {
+		t.Fatalf("expected create through escaped symlink to be blocked, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(outsideDir, "pwned.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected no file to be created outside root, got err=%v", err)
 	}
 }

@@ -3,7 +3,6 @@ package api
 import (
 	"errors"
 	"net/http"
-	"sort"
 	"strings"
 )
 
@@ -310,12 +309,6 @@ func apiKeyScopeSetEquals(set apiKeyPermissionSet, scopes []string) bool {
 		}
 	}
 	return true
-}
-
-func apiKeySupportedScopes() []string {
-	out := append([]string(nil), apiKeyScopeOrder...)
-	sort.Strings(out)
-	return out
 }
 
 func apiKeySupportedScopeInfo() []APIKeyScopeInfo {

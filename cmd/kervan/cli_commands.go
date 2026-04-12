@@ -642,15 +642,26 @@ func runUserExportCommand(stdout io.Writer, args []string) error {
 
 	dest := stdout
 	writeToStdout := true
+	var outputFile *os.File
+	var outputTmpPath string
 	if trimmedOutput := strings.TrimSpace(*outputPath); trimmedOutput != "" && trimmedOutput != "-" {
 		if err := os.MkdirAll(filepath.Dir(trimmedOutput), 0o755); err != nil {
 			return err
 		}
-		file, err := os.OpenFile(trimmedOutput, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+		file, err := os.CreateTemp(filepath.Dir(trimmedOutput), filepath.Base(trimmedOutput)+".*.tmp")
 		if err != nil {
 			return err
 		}
-		defer file.Close()
+		outputFile = file
+		outputTmpPath = file.Name()
+		defer func() {
+			if outputFile != nil {
+				_ = outputFile.Close()
+			}
+			if outputTmpPath != "" {
+				_ = os.Remove(outputTmpPath)
+			}
+		}()
 		dest = file
 		writeToStdout = false
 	}
@@ -671,6 +682,20 @@ func runUserExportCommand(stdout io.Writer, args []string) error {
 	}
 
 	if !writeToStdout {
+		if err := outputFile.Chmod(0o600); err != nil {
+			return err
+		}
+		if err := outputFile.Sync(); err != nil {
+			return err
+		}
+		if err := outputFile.Close(); err != nil {
+			return err
+		}
+		outputFile = nil
+		if err := store.ReplaceTempFileAtomically(outputTmpPath, strings.TrimSpace(*outputPath)); err != nil {
+			return err
+		}
+		outputTmpPath = ""
 		_, _ = fmt.Fprintf(stdout, "Exported %d users to %s\n", len(records), strings.TrimSpace(*outputPath))
 	}
 	return nil

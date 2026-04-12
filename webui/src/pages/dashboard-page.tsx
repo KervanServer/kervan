@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react"
 import { Loader2, RefreshCw, ShieldCheck } from "lucide-react"
 
 import { Badge } from "@/components/ui/badge"
+import { ConnectionBanner } from "@/components/shared/connection-banner"
 import { EmptyState } from "@/components/shared/empty-state"
 import { PageHeader } from "@/components/shared/page-header"
 import { StatusMessage } from "@/components/shared/status-message"
@@ -149,6 +150,8 @@ export function DashboardPage({ token }: Props) {
         }
       />
 
+      <ConnectionBanner message={liveError} onRetry={() => void refreshDashboard()} />
+
       <StatsGrid {...data} />
 
       <Card className="fade-up">
@@ -215,7 +218,6 @@ export function DashboardPage({ token }: Props) {
         </CardHeader>
         <CardContent>
           {error ? <StatusMessage variant="error">{error}</StatusMessage> : null}
-          {liveError ? <StatusMessage variant="error" className="mt-3">{liveError}</StatusMessage> : null}
           <pre className="max-h-[50vh] overflow-auto rounded-xl bg-[var(--muted)] p-3 text-xs">
             {JSON.stringify(status, null, 2)}
           </pre>

@@ -1,5 +1,6 @@
 import { MemoryRouter } from "react-router-dom"
 import { screen } from "@testing-library/react"
+import type { ReactNode } from "react"
 import userEvent from "@testing-library/user-event"
 import { describe, expect, it, vi } from "vitest"
 
@@ -8,6 +9,10 @@ import { renderWithProviders } from "@/test-utils"
 
 vi.mock("@/components/theme-toggle", () => ({
   ThemeToggle: () => <div>Theme toggle</div>,
+}))
+
+vi.mock("@/components/ui/tooltip", () => ({
+  Tooltip: ({ children }: { children: ReactNode }) => <>{children}</>,
 }))
 
 vi.mock("@/lib/route-modules", () => ({

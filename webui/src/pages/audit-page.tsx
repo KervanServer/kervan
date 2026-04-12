@@ -2,6 +2,7 @@ import { useEffect, useState } from "react"
 import { ClipboardList, Download, Loader2 } from "lucide-react"
 import { toast } from "sonner"
 
+import { ConnectionBanner } from "@/components/shared/connection-banner"
 import { EmptyState } from "@/components/shared/empty-state"
 import { PageHeader } from "@/components/shared/page-header"
 import { StatusMessage } from "@/components/shared/status-message"
@@ -85,6 +86,8 @@ export function AuditPage({ token }: Props) {
         }
       />
 
+      <ConnectionBanner message={liveError} />
+
       <Card>
         <CardHeader>
           <CardTitle>Audit Log</CardTitle>
@@ -94,7 +97,6 @@ export function AuditPage({ token }: Props) {
         </CardHeader>
         <CardContent>
           {error ? <StatusMessage variant="error" className="mb-3">{error}</StatusMessage> : null}
-          {liveError ? <StatusMessage variant="error" className="mb-3">{liveError}</StatusMessage> : null}
           {auditQuery.isLoading ? (
             <div className="space-y-3">
               <Skeleton className="h-10 w-48" />

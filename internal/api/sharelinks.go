@@ -6,12 +6,18 @@ import (
 	"errors"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/kervanserver/kervan/internal/store"
 )
 
 const collShareLinks = "share_links"
+
+var (
+	ErrShareLinkExpired               = errors.New("share link expired")
+	ErrShareLinkDownloadLimitExceeded = errors.New("share link download limit exceeded")
+)
 
 type ShareLink struct {
 	Token         string    `json:"token"`
@@ -25,6 +31,7 @@ type ShareLink struct {
 
 type shareLinkRepository struct {
 	store *store.Store
+	mu    sync.Mutex
 }
 
 func newShareLinkRepository(st *store.Store) *shareLinkRepository {
@@ -48,6 +55,9 @@ func (r *shareLinkRepository) Create(username, filePath string, ttl time.Duratio
 	}
 	if ttl <= 0 {
 		return nil, errors.New("ttl must be greater than zero")
+	}
+	if maxDownloads < 0 {
+		return nil, errors.New("max_downloads cannot be negative")
 	}
 	token, err := generateShareToken()
 	if err != nil {
@@ -84,12 +94,64 @@ func (r *shareLinkRepository) Get(token string) (*ShareLink, error) {
 }
 
 func (r *shareLinkRepository) Increment(token string) error {
-	link, err := r.Get(token)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	link, err := r.getUnlocked(token)
 	if err != nil {
 		return err
 	}
 	link.DownloadCount++
 	return r.store.Put(collShareLinks, token, link)
+}
+
+func (r *shareLinkRepository) ReserveDownload(token string, now time.Time) (*ShareLink, error) {
+	if r == nil || r.store == nil {
+		return nil, errors.New("share links are not configured")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	link, err := r.getUnlocked(token)
+	if err != nil {
+		return nil, err
+	}
+	if !link.ExpiresAt.IsZero() && now.After(link.ExpiresAt) {
+		return nil, ErrShareLinkExpired
+	}
+	if link.MaxDownloads > 0 && link.DownloadCount >= link.MaxDownloads {
+		return nil, ErrShareLinkDownloadLimitExceeded
+	}
+	link.DownloadCount++
+	if err := r.store.Put(collShareLinks, token, link); err != nil {
+		return nil, err
+	}
+	return link, nil
+}
+
+func (r *shareLinkRepository) ReleaseDownload(token string) error {
+	if r == nil || r.store == nil {
+		return errors.New("share links are not configured")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	link, err := r.getUnlocked(token)
+	if err != nil {
+		return err
+	}
+	if link.DownloadCount > 0 {
+		link.DownloadCount--
+	}
+	return r.store.Put(collShareLinks, token, link)
+}
+
+func (r *shareLinkRepository) getUnlocked(token string) (*ShareLink, error) {
+	link, err := r.Get(token)
+	if err != nil {
+		return nil, err
+	}
+	return link, nil
 }
 
 func (r *shareLinkRepository) ListByUsername(username string) ([]*ShareLink, error) {

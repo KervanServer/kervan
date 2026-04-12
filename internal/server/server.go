@@ -842,7 +842,7 @@ func writeConfigFile(path string, cfg *config.Config) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, raw, 0o600)
+	return store.WriteFileAtomically(path, raw, 0o600)
 }
 
 func resolveStorageStatus(cfg *config.Config) (string, string) {

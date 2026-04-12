@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react"
 import { ArrowDownUp, RefreshCw } from "lucide-react"
 
+import { ConnectionBanner } from "@/components/shared/connection-banner"
 import { EmptyState } from "@/components/shared/empty-state"
 import { PageHeader } from "@/components/shared/page-header"
 import { StatusMessage } from "@/components/shared/status-message"
@@ -56,6 +57,8 @@ export function TransfersPage({ token }: Props) {
         }
       />
 
+      <ConnectionBanner message={liveError} onRetry={() => void transfersQuery.refetch()} />
+
       <Card>
         <CardHeader>
           <CardTitle>Transfer Activity</CardTitle>
@@ -65,7 +68,6 @@ export function TransfersPage({ token }: Props) {
         </CardHeader>
         <CardContent>
           {error ? <StatusMessage variant="error" className="mb-3">{error}</StatusMessage> : null}
-          {liveError ? <StatusMessage variant="error" className="mb-3">{liveError}</StatusMessage> : null}
           {transfersQuery.isLoading ? (
             <div className="space-y-3">
               {Array.from({ length: 4 }).map((_, index) => (

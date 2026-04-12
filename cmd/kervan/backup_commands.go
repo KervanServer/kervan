@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/kervanserver/kervan/internal/config"
+	"github.com/kervanserver/kervan/internal/store"
 )
 
 const (
@@ -122,11 +123,17 @@ func runBackupCreateCommand(stdout io.Writer, args []string) error {
 		return err
 	}
 
-	out, err := os.OpenFile(*outputPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	out, err := os.CreateTemp(filepath.Dir(*outputPath), filepath.Base(*outputPath)+".*.tmp")
 	if err != nil {
 		return err
 	}
-	defer out.Close()
+	tmpPath := out.Name()
+	defer func() {
+		_ = out.Close()
+		if tmpPath != "" {
+			_ = os.Remove(tmpPath)
+		}
+	}()
 
 	zipWriter := zip.NewWriter(out)
 	manifest := backupManifest{
@@ -175,6 +182,19 @@ func runBackupCreateCommand(stdout io.Writer, args []string) error {
 	if err := zipWriter.Close(); err != nil {
 		return err
 	}
+	if err := out.Chmod(0o600); err != nil {
+		return err
+	}
+	if err := out.Sync(); err != nil {
+		return err
+	}
+	if err := out.Close(); err != nil {
+		return err
+	}
+	if err := store.ReplaceTempFileAtomically(tmpPath, *outputPath); err != nil {
+		return err
+	}
+	tmpPath = ""
 
 	payload := map[string]any{
 		"created":        true,
@@ -388,7 +408,7 @@ func restoreBackupFile(file *zip.File, targetPath string, force bool) error {
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(targetPath, raw, 0o600)
+	return store.WriteFileAtomically(targetPath, raw, 0o600)
 }
 
 func verifyBackupManifest(entries map[string]*zip.File, manifest *backupManifest) error {

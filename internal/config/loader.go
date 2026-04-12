@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kervanserver/kervan/internal/store"
 	"gopkg.in/yaml.v3"
 )
 
@@ -107,7 +108,7 @@ func WriteDefault(path string) error {
 	if _, err := os.Stat(path); err == nil {
 		return errors.New("config already exists")
 	}
-	return os.WriteFile(path, data, 0o600)
+	return store.WriteFileAtomically(path, data, 0o600)
 }
 
 func parseInt(raw string, fallback int) int {
