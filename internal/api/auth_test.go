@@ -569,7 +569,7 @@ func newAuthTestServer(t *testing.T, totpEnabled bool) (*Server, *auth.UserRepos
 		},
 		auth:       engine,
 		users:      repo,
-		apiKeys:    newAPIKeyRepository(st),
+		apiKeys:    NewAPIKeyRepository(st),
 		secret:     []byte("0123456789abcdef0123456789abcdef"),
 		loginState: make(map[string]*loginAttempt),
 	}, repo

@@ -1,96 +1,99 @@
-import { useEffect, useState } from "react"
-import { Download, Shield, Trash2, Upload, UserPlus } from "lucide-react"
+import { useState } from "react"
+import { zodResolver } from "@hookform/resolvers/zod"
+import { Download, Loader2, RefreshCw, Shield, Trash2, Upload, UserPlus, UsersRound } from "lucide-react"
+import { useForm } from "react-hook-form"
+import { toast } from "sonner"
+import { z } from "zod"
 
+import { ConfirmDialog } from "@/components/shared/confirm-dialog"
+import { EmptyState } from "@/components/shared/empty-state"
+import { PageHeader } from "@/components/shared/page-header"
+import { StatusMessage } from "@/components/shared/status-message"
+import { useCreateUser, useDeleteUser, useImportUsers, useUpdateUser, useUsers } from "@/hooks/use-users"
+import { api } from "@/lib/api"
+import type { ApiUser, ApiUserImportReport } from "@/lib/types"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
+import { Skeleton } from "@/components/ui/skeleton"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { api } from "@/lib/api"
-import type { ApiUser, ApiUserImportReport } from "@/lib/types"
+import { Tooltip } from "@/components/ui/tooltip"
 
 type Props = { token: string }
 
+const createUserSchema = z.object({
+  username: z
+    .string()
+    .trim()
+    .min(1, "Username is required")
+    .max(64, "Username must be 64 characters or fewer"),
+  password: z.string().min(12, "Password must be at least 12 characters"),
+  home_dir: z.string().trim().min(1, "Home directory is required"),
+  admin: z.boolean(),
+})
+
+type CreateUserValues = z.infer<typeof createUserSchema>
+
 export function UsersPage({ token }: Props) {
-  const [users, setUsers] = useState<ApiUser[]>([])
-  const [error, setError] = useState<string | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [creating, setCreating] = useState(false)
-  const [importing, setImporting] = useState(false)
-  const [exporting, setExporting] = useState<"json" | "csv" | null>(null)
-  const [importFile, setImportFile] = useState<File | null>(null)
+  const usersQuery = useUsers(token)
+  const createUserMutation = useCreateUser(token)
+  const updateUserMutation = useUpdateUser(token)
+  const deleteUserMutation = useDeleteUser(token)
   const [importReport, setImportReport] = useState<ApiUserImportReport | null>(null)
-  const [newUser, setNewUser] = useState({ username: "", password: "", home_dir: "/", admin: false })
+  const importUsersMutation = useImportUsers(token, setImportReport)
 
-  const load = async () => {
-    setLoading(true)
-    try {
-      const data = await api.users(token)
-      setUsers(data.users)
-      setError(null)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to load users")
-    } finally {
-      setLoading(false)
-    }
+  const [importFile, setImportFile] = useState<File | null>(null)
+  const [exporting, setExporting] = useState<"json" | "csv" | null>(null)
+  const [userToDelete, setUserToDelete] = useState<ApiUser | null>(null)
+
+  const {
+    register,
+    handleSubmit,
+    reset,
+    formState: { errors, isValid },
+  } = useForm<CreateUserValues>({
+    resolver: zodResolver(createUserSchema),
+    mode: "onChange",
+    defaultValues: {
+      username: "",
+      password: "",
+      home_dir: "/",
+      admin: false,
+    },
+  })
+
+  const users = usersQuery.data?.users ?? []
+  const error = usersQuery.error instanceof Error ? usersQuery.error.message : null
+
+  const onCreate = async (values: CreateUserValues) => {
+    await createUserMutation.mutateAsync(values)
+    reset({
+      username: "",
+      password: "",
+      home_dir: "/",
+      admin: false,
+    })
   }
 
-  useEffect(() => {
-    void load()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token])
-
-  const onCreate = async (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
-    setCreating(true)
-    try {
-      await api.createUser(token, newUser)
-      setNewUser({ username: "", password: "", home_dir: "/", admin: false })
-      await load()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to create user")
-    } finally {
-      setCreating(false)
-    }
-  }
-
-  const onDelete = async (id: string) => {
-    if (!window.confirm("Delete this user?")) {
+  const onConfirmDelete = async () => {
+    if (!userToDelete) {
       return
     }
-    try {
-      await api.deleteUser(token, id)
-      await load()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to delete user")
-    }
+    await deleteUserMutation.mutateAsync(userToDelete.id)
+    setUserToDelete(null)
   }
 
   const onToggleEnabled = async (user: ApiUser) => {
-    try {
-      await api.updateUser(token, { id: user.id, enabled: !user.enabled })
-      await load()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to update user")
-    }
+    await updateUserMutation.mutateAsync({ id: user.id, enabled: !user.enabled })
   }
 
   const onImport = async () => {
     if (!importFile) {
-      setError("Choose a CSV or JSON file first")
+      toast.error("Choose a CSV or JSON file first")
       return
     }
-    setImporting(true)
-    try {
-      const report = await api.importUsers(token, importFile)
-      setImportReport(report)
-      setImportFile(null)
-      setError(null)
-      await load()
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to import users")
-    } finally {
-      setImporting(false)
-    }
+    await importUsersMutation.mutateAsync(importFile)
+    setImportFile(null)
   }
 
   const onExport = async (format: "json" | "csv") => {
@@ -105,9 +108,9 @@ export function UsersPage({ token }: Props) {
       link.click()
       link.remove()
       URL.revokeObjectURL(url)
-      setError(null)
+      toast.success(`Users exported as ${format.toUpperCase()}.`)
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to export users")
+      toast.error(err instanceof Error ? err.message : "Unable to export users")
     } finally {
       setExporting(null)
     }
@@ -115,50 +118,95 @@ export function UsersPage({ token }: Props) {
 
   return (
     <section className="grid gap-4 xl:grid-cols-[1fr_350px]">
+      <div className="xl:col-span-2">
+        <PageHeader
+          title="Users"
+          description="Manage virtual accounts, admin access, and bulk provisioning for protocol users."
+          actions={
+            <Button variant="outline" onClick={() => void usersQuery.refetch()} disabled={usersQuery.isFetching}>
+              <RefreshCw className={`mr-2 h-4 w-4 ${usersQuery.isFetching ? "animate-spin motion-reduce:animate-none" : ""}`} />
+              {usersQuery.isFetching ? "Refreshing..." : "Refresh"}
+            </Button>
+          }
+        />
+      </div>
+
       <Card>
         <CardHeader>
           <CardTitle>Users</CardTitle>
-          <CardDescription>{loading ? "Loading..." : `${users.length} users found`}</CardDescription>
+          <CardDescription>{usersQuery.isLoading ? "Loading..." : `${users.length} users found`}</CardDescription>
         </CardHeader>
         <CardContent>
-          {error ? <p className="mb-3 text-sm text-[var(--destructive)]">{error}</p> : null}
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Username</TableHead>
-                <TableHead>Type</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Home</TableHead>
-                <TableHead className="text-right">Action</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {users.map((user) => (
-                <TableRow key={user.id}>
-                  <TableCell>{user.username}</TableCell>
-                  <TableCell>
-                    <span className="inline-flex items-center gap-1">
-                      {user.type === "admin" ? <Shield className="h-3.5 w-3.5" /> : null}
-                      {user.type}
-                    </span>
-                  </TableCell>
-                  <TableCell>{user.enabled ? "Enabled" : "Disabled"}</TableCell>
-                  <TableCell className="max-w-[200px] truncate">{user.home_dir || "/"}</TableCell>
-                  <TableCell className="text-right">
-                    <div className="flex justify-end gap-2">
-                      <Button size="sm" variant="outline" onClick={() => void onToggleEnabled(user)}>
-                        {user.enabled ? "Disable" : "Enable"}
-                      </Button>
-                      <Button size="sm" variant="destructive" onClick={() => void onDelete(user.id)}>
-                        <Trash2 className="mr-2 h-4 w-4" />
-                        Delete
-                      </Button>
-                    </div>
-                  </TableCell>
-                </TableRow>
+          {error ? <StatusMessage variant="error" className="mb-3">{error}</StatusMessage> : null}
+
+          {usersQuery.isLoading ? (
+            <div className="space-y-3">
+              {Array.from({ length: 4 }).map((_, index) => (
+                <Skeleton key={index} className="h-12 w-full" />
               ))}
-            </TableBody>
-          </Table>
+            </div>
+          ) : users.length === 0 ? (
+            <EmptyState
+              title="No users found"
+              description="Create your first virtual account to start managing protocol access."
+              icon={UsersRound}
+            />
+          ) : (
+            <div className="overflow-x-auto rounded-xl border border-[var(--border)]">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Username</TableHead>
+                    <TableHead>Type</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead>Home</TableHead>
+                    <TableHead className="text-right">Action</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {users.map((user) => (
+                    <TableRow key={user.id}>
+                      <TableCell>{user.username}</TableCell>
+                      <TableCell>
+                        <span className="inline-flex items-center gap-1">
+                          {user.type === "admin" ? <Shield className="h-3.5 w-3.5" /> : null}
+                          {user.type}
+                        </span>
+                      </TableCell>
+                      <TableCell>{user.enabled ? "Enabled" : "Disabled"}</TableCell>
+                      <TableCell className="max-w-[200px] truncate">{user.home_dir || "/"}</TableCell>
+                      <TableCell className="text-right">
+                        <div className="flex justify-end gap-2">
+                          <Tooltip content={`${user.enabled ? "Disable" : "Enable"} ${user.username}`}>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => void onToggleEnabled(user)}
+                              disabled={updateUserMutation.isPending}
+                              aria-label={`${user.enabled ? "Disable" : "Enable"} user ${user.username}`}
+                            >
+                              {user.enabled ? "Disable" : "Enable"}
+                            </Button>
+                          </Tooltip>
+                          <Tooltip content={`Delete ${user.username}`}>
+                            <Button
+                              size="sm"
+                              variant="destructive"
+                              onClick={() => setUserToDelete(user)}
+                              aria-label={`Delete user ${user.username}`}
+                            >
+                              <Trash2 className="mr-2 h-4 w-4" />
+                              Delete
+                            </Button>
+                          </Tooltip>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -169,36 +217,35 @@ export function UsersPage({ token }: Props) {
             <CardDescription>Quick virtual account provisioning.</CardDescription>
           </CardHeader>
           <CardContent>
-            <form className="space-y-3" onSubmit={onCreate}>
-              <Input
-                placeholder="Username"
-                value={newUser.username}
-                onChange={(e) => setNewUser((prev) => ({ ...prev, username: e.target.value }))}
-                required
-              />
-              <Input
-                placeholder="Password"
-                type="password"
-                value={newUser.password}
-                onChange={(e) => setNewUser((prev) => ({ ...prev, password: e.target.value }))}
-                required
-              />
-              <Input
-                placeholder="Home directory"
-                value={newUser.home_dir}
-                onChange={(e) => setNewUser((prev) => ({ ...prev, home_dir: e.target.value }))}
-              />
-              <label className="flex items-center gap-2 text-sm">
-                <input
-                  type="checkbox"
-                  checked={newUser.admin}
-                  onChange={(e) => setNewUser((prev) => ({ ...prev, admin: e.target.checked }))}
+            <form className="space-y-3" onSubmit={handleSubmit(onCreate)}>
+              <div className="space-y-2">
+                <Input placeholder="Username" aria-invalid={errors.username ? "true" : "false"} {...register("username")} />
+                {errors.username ? <p className="text-sm text-[var(--error)]">{errors.username.message}</p> : null}
+              </div>
+              <div className="space-y-2">
+                <Input
+                  placeholder="Password"
+                  type="password"
+                  aria-invalid={errors.password ? "true" : "false"}
+                  {...register("password")}
                 />
+                {errors.password ? <p className="text-sm text-[var(--error)]">{errors.password.message}</p> : null}
+              </div>
+              <div className="space-y-2">
+                <Input
+                  placeholder="Home directory"
+                  aria-invalid={errors.home_dir ? "true" : "false"}
+                  {...register("home_dir")}
+                />
+                {errors.home_dir ? <p className="text-sm text-[var(--error)]">{errors.home_dir.message}</p> : null}
+              </div>
+              <label className="flex min-h-11 items-center gap-2 text-sm">
+                <input type="checkbox" {...register("admin")} />
                 Administrator
               </label>
-              <Button className="w-full" disabled={creating}>
-                <UserPlus className="mr-2 h-4 w-4" />
-                {creating ? "Creating..." : "Create"}
+              <Button className="w-full" disabled={createUserMutation.isPending || !isValid}>
+                {createUserMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin motion-reduce:animate-none" /> : <UserPlus className="mr-2 h-4 w-4" />}
+                {createUserMutation.isPending ? "Creating..." : "Create"}
               </Button>
             </form>
           </CardContent>
@@ -215,9 +262,9 @@ export function UsersPage({ token }: Props) {
               accept=".csv,.json,text/csv,application/json"
               onChange={(event) => setImportFile(event.target.files?.[0] ?? null)}
             />
-            <Button className="w-full" variant="secondary" disabled={importing} onClick={() => void onImport()}>
+            <Button className="w-full" variant="secondary" disabled={importUsersMutation.isPending} onClick={() => void onImport()}>
               <Upload className="mr-2 h-4 w-4" />
-              {importing ? "Importing..." : "Import Users"}
+              {importUsersMutation.isPending ? "Importing..." : "Import Users"}
             </Button>
             <div className="grid gap-2 sm:grid-cols-2">
               <Button variant="outline" disabled={exporting !== null} onClick={() => void onExport("csv")}>
@@ -231,7 +278,7 @@ export function UsersPage({ token }: Props) {
             </div>
             {importFile ? <p className="text-xs text-[var(--muted-foreground)]">Selected: {importFile.name}</p> : null}
             {importReport ? (
-              <div className="rounded-xl border border-[var(--border)] bg-[var(--muted)]/50 p-3 text-sm">
+              <div className="rounded-xl border border-[var(--border)] bg-[var(--muted)]/50 p-3 text-sm" role="status" aria-live="polite">
                 <p>
                   Imported via {importReport.format}: {importReport.created} created, {importReport.skipped} skipped.
                 </p>
@@ -250,6 +297,20 @@ export function UsersPage({ token }: Props) {
           </CardContent>
         </Card>
       </div>
+
+      <ConfirmDialog
+        open={userToDelete !== null}
+        title="Delete user"
+        description={userToDelete ? `Delete user "${userToDelete.username}"? This action cannot be undone.` : ""}
+        confirmLabel="Delete user"
+        pending={deleteUserMutation.isPending}
+        onConfirm={() => void onConfirmDelete()}
+        onOpenChange={(open) => {
+          if (!open) {
+            setUserToDelete(null)
+          }
+        }}
+      />
     </section>
   )
 }

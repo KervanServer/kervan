@@ -43,9 +43,15 @@ func cmdUser(args []string) {
 
 func runAPIKeyCommand(stdout io.Writer, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: kervan apikey <scopes|presets> [flags]")
+		return errors.New("usage: kervan apikey <list|create|revoke|scopes|presets> [flags]")
 	}
 	switch args[0] {
+	case "list":
+		return runAPIKeyListCommand(stdout, args[1:])
+	case "create":
+		return runAPIKeyCreateCommand(stdout, args[1:])
+	case "revoke":
+		return runAPIKeyRevokeCommand(stdout, args[1:])
 	case "scopes":
 		return runAPIKeyScopesCommand(stdout, args[1:])
 	case "presets":
@@ -225,6 +231,156 @@ func runAPIKeyPresetsCommand(stdout io.Writer, args []string) error {
 		_, _ = fmt.Fprintf(stdout, "  %s\n", preset.Description)
 		_, _ = fmt.Fprintf(stdout, "  scopes: %s\n", strings.Join(preset.Scopes, ", "))
 	}
+	return nil
+}
+
+func runAPIKeyListCommand(stdout io.Writer, args []string) error {
+	fs := flag.NewFlagSet("apikey list", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	configPath := fs.String("config", defaultConfigPath, "Path to config file")
+	username := fs.String("username", "", "Username")
+	jsonOut := fs.Bool("json", false, "Output JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*username) == "" {
+		return errors.New("--username is required")
+	}
+
+	ctx, user, err := openCLIAPIKeyContext(*configPath, *username)
+	if err != nil {
+		return err
+	}
+	defer ctx.close()
+
+	keys, err := ctx.apiKeys.ListByUser(user.ID)
+	if err != nil {
+		return err
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if keys[i] == nil {
+			return false
+		}
+		if keys[j] == nil {
+			return true
+		}
+		return keys[i].CreatedAt.After(keys[j].CreatedAt)
+	})
+
+	if *jsonOut {
+		return json.NewEncoder(stdout).Encode(keys)
+	}
+
+	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
+	_, _ = fmt.Fprintln(tw, "ID\tNAME\tPERMISSIONS\tPREFIX\tCREATED\tLAST_USED")
+	for _, key := range keys {
+		if key == nil {
+			continue
+		}
+		lastUsed := "never"
+		if key.LastUsedAt != nil {
+			lastUsed = key.LastUsedAt.Format(time.RFC3339)
+		}
+		_, _ = fmt.Fprintf(
+			tw,
+			"%s\t%s\t%s\t%s\t%s\t%s\n",
+			key.ID,
+			key.Name,
+			key.Permissions,
+			key.Prefix,
+			key.CreatedAt.Format(time.RFC3339),
+			lastUsed,
+		)
+	}
+	return tw.Flush()
+}
+
+func runAPIKeyCreateCommand(stdout io.Writer, args []string) error {
+	fs := flag.NewFlagSet("apikey create", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	configPath := fs.String("config", defaultConfigPath, "Path to config file")
+	username := fs.String("username", "", "Username")
+	name := fs.String("name", "", "Key name")
+	permissions := fs.String("permissions", "read-write", "Preset or comma-separated scope list")
+	jsonOut := fs.Bool("json", false, "Output JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*username) == "" {
+		return errors.New("--username is required")
+	}
+	if strings.TrimSpace(*name) == "" {
+		return errors.New("--name is required")
+	}
+
+	ctx, user, err := openCLIAPIKeyContext(*configPath, *username)
+	if err != nil {
+		return err
+	}
+	defer ctx.close()
+
+	token, record, err := ctx.apiKeys.Create(user.ID, *name, *permissions)
+	if err != nil {
+		return err
+	}
+
+	payload := map[string]any{
+		"id":          record.ID,
+		"username":    user.Username,
+		"name":        record.Name,
+		"permissions": record.Permissions,
+		"prefix":      record.Prefix,
+		"created_at":  record.CreatedAt,
+		"key":         token,
+	}
+	if *jsonOut {
+		return json.NewEncoder(stdout).Encode(payload)
+	}
+
+	_, _ = fmt.Fprintf(stdout, "API key created for %s\n", user.Username)
+	_, _ = fmt.Fprintf(stdout, "ID: %s\n", record.ID)
+	_, _ = fmt.Fprintf(stdout, "Permissions: %s\n", record.Permissions)
+	_, _ = fmt.Fprintf(stdout, "Key: %s\n", token)
+	return nil
+}
+
+func runAPIKeyRevokeCommand(stdout io.Writer, args []string) error {
+	fs := flag.NewFlagSet("apikey revoke", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	configPath := fs.String("config", defaultConfigPath, "Path to config file")
+	username := fs.String("username", "", "Username")
+	id := fs.String("id", "", "API key ID")
+	jsonOut := fs.Bool("json", false, "Output JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*username) == "" {
+		return errors.New("--username is required")
+	}
+	if strings.TrimSpace(*id) == "" {
+		return errors.New("--id is required")
+	}
+
+	ctx, user, err := openCLIAPIKeyContext(*configPath, *username)
+	if err != nil {
+		return err
+	}
+	defer ctx.close()
+
+	if err := ctx.apiKeys.Delete(user.ID, strings.TrimSpace(*id)); err != nil {
+		return err
+	}
+
+	payload := map[string]any{
+		"revoked":  true,
+		"id":       strings.TrimSpace(*id),
+		"username": user.Username,
+	}
+	if *jsonOut {
+		return json.NewEncoder(stdout).Encode(payload)
+	}
+
+	_, _ = fmt.Fprintf(stdout, "API key revoked: %s (%s)\n", strings.TrimSpace(*id), user.Username)
 	return nil
 }
 
@@ -521,10 +677,11 @@ func runUserExportCommand(stdout io.Writer, args []string) error {
 }
 
 type cliContext struct {
-	cfg    *config.Config
-	store  *store.Store
-	repo   *auth.UserRepository
-	engine *auth.Engine
+	cfg     *config.Config
+	store   *store.Store
+	repo    *auth.UserRepository
+	engine  *auth.Engine
+	apiKeys *iapi.APIKeyRepository
 }
 
 func openCLIContext(configPath string) (*cliContext, error) {
@@ -540,11 +697,29 @@ func openCLIContext(configPath string) (*cliContext, error) {
 	engine := auth.NewEngine(repo, cfg.Auth.PasswordHash, cfg.Security.BruteForce.MaxAttempts, cfg.Security.BruteForce.LockoutDuration)
 	engine.SetMinPasswordLength(cfg.Auth.MinPasswordLength)
 	return &cliContext{
-		cfg:    cfg,
-		store:  st,
-		repo:   repo,
-		engine: engine,
+		cfg:     cfg,
+		store:   st,
+		repo:    repo,
+		engine:  engine,
+		apiKeys: iapi.NewAPIKeyRepository(st),
 	}, nil
+}
+
+func openCLIAPIKeyContext(configPath, username string) (*cliContext, *auth.User, error) {
+	ctx, err := openCLIContext(configPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	user, err := ctx.repo.GetByUsername(strings.TrimSpace(username))
+	if err != nil {
+		ctx.close()
+		return nil, nil, err
+	}
+	if user == nil {
+		ctx.close()
+		return nil, nil, fmt.Errorf("user not found: %s", strings.TrimSpace(username))
+	}
+	return ctx, user, nil
 }
 
 func (c *cliContext) close() {

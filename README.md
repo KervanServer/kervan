@@ -107,15 +107,17 @@ go run ./cmd/kervan user delete --config ./kervan.yaml --username alice
 # Discover API key presets and supported scopes
 go run ./cmd/kervan apikey scopes
 go run ./cmd/kervan apikey presets
+
+# Manage API keys from the local store
+go run ./cmd/kervan apikey list   --config ./kervan.yaml --username alice
+go run ./cmd/kervan apikey create --config ./kervan.yaml --username alice --name "Automation key" --permissions files:read,files:write
+go run ./cmd/kervan apikey revoke --config ./kervan.yaml --username alice --id <key-id>
 ```
 
 API key scopes currently include surfaces such as `server:read`,
 `files:read`, `files:write`, `share:write`, `audit:read`,
 `sessions:write`, and `transfers:read`. Presets (`read-only`,
 `automation`, `operations`, `read-write`) expand to curated scope sets.
-
-> Additional CLI management for API key create/list/revoke is not yet exposed;
-> the WebUI/API remains the primary management surface.
 
 ---
 
@@ -128,6 +130,9 @@ go test ./...
 # Run the same backend checks enforced in CI
 go vet ./...
 staticcheck ./...
+
+# Run the WebUI behavior tests
+cd webui && npm test
 
 # Build the React WebUI and copy it to internal/webui/dist
 ./scripts/generate-webui.sh

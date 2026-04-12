@@ -17,7 +17,7 @@ func TestAPIKeyRepositoryCreateListDelete(t *testing.T) {
 		_ = st.Close()
 	})
 
-	repo := newAPIKeyRepository(st)
+	repo := NewAPIKeyRepository(st)
 	token, created, err := repo.Create("user-1", "CI key", "read-only")
 	if err != nil {
 		t.Fatalf("create api key: %v", err)
@@ -103,7 +103,7 @@ func TestAPIKeyRepositoryRejectsUnknownPermissions(t *testing.T) {
 		_ = st.Close()
 	})
 
-	repo := newAPIKeyRepository(st)
+	repo := NewAPIKeyRepository(st)
 	if _, _, err := repo.Create("user-1", "bad key", "admin"); err == nil {
 		t.Fatal("expected invalid permissions to be rejected")
 	}
@@ -118,7 +118,7 @@ func TestAPIKeyRepositoryCanonicalizesScopedPermissions(t *testing.T) {
 		_ = st.Close()
 	})
 
-	repo := newAPIKeyRepository(st)
+	repo := NewAPIKeyRepository(st)
 	_, created, err := repo.Create("user-1", "scoped", "files:write, files:read, share:*")
 	if err != nil {
 		t.Fatalf("create scoped api key: %v", err)

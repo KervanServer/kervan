@@ -69,6 +69,63 @@ func TestRunAPIKeyPresetsCommandJSON(t *testing.T) {
 	}
 }
 
+func TestRunAPIKeyLifecycleCommands(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "data")
+	configPath := writeTestConfig(t, func(cfg *config.Config) {
+		cfg.Server.DataDir = dataDir
+	})
+
+	if err := runUserCreateCommand(io.Discard, []string{
+		"--config", configPath,
+		"--username", "alice",
+		"--password", "StrongPass123!",
+		"--home-dir", "/alice",
+	}); err != nil {
+		t.Fatalf("create alice: %v", err)
+	}
+
+	var createOut bytes.Buffer
+	if err := runAPIKeyCreateCommand(&createOut, []string{
+		"--config", configPath,
+		"--username", "alice",
+		"--name", "Automation key",
+		"--permissions", "files:read,files:write",
+		"--json",
+	}); err != nil {
+		t.Fatalf("runAPIKeyCreateCommand: %v", err)
+	}
+	var created map[string]any
+	if err := json.Unmarshal(createOut.Bytes(), &created); err != nil {
+		t.Fatalf("decode created key payload: %v", err)
+	}
+	if created["id"] == "" || created["key"] == "" {
+		t.Fatalf("unexpected create payload: %#v", created)
+	}
+
+	var listOut bytes.Buffer
+	if err := runAPIKeyListCommand(&listOut, []string{
+		"--config", configPath,
+		"--username", "alice",
+	}); err != nil {
+		t.Fatalf("runAPIKeyListCommand: %v", err)
+	}
+	if !strings.Contains(listOut.String(), "Automation key") || !strings.Contains(listOut.String(), "files:read,files:write") {
+		t.Fatalf("unexpected list output: %s", listOut.String())
+	}
+
+	var revokeOut bytes.Buffer
+	if err := runAPIKeyRevokeCommand(&revokeOut, []string{
+		"--config", configPath,
+		"--username", "alice",
+		"--id", created["id"].(string),
+	}); err != nil {
+		t.Fatalf("runAPIKeyRevokeCommand: %v", err)
+	}
+	if !strings.Contains(revokeOut.String(), "API key revoked") {
+		t.Fatalf("unexpected revoke output: %s", revokeOut.String())
+	}
+}
+
 func TestRunUserLifecycleCommands(t *testing.T) {
 	dataDir := filepath.Join(t.TempDir(), "data")
 	configPath := writeTestConfig(t, func(cfg *config.Config) {

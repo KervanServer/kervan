@@ -1,10 +1,22 @@
 import { useEffect, useMemo, useState } from "react"
+import { Loader2, RefreshCw, ShieldCheck } from "lucide-react"
 
+import { Badge } from "@/components/ui/badge"
+import { EmptyState } from "@/components/shared/empty-state"
+import { PageHeader } from "@/components/shared/page-header"
+import { StatusMessage } from "@/components/shared/status-message"
+import {
+  useDashboardStatus,
+  useDisableTOTP,
+  useEnableTOTP,
+  usePrepareTOTPSetup,
+  useTOTPStatus,
+} from "@/hooks/use-dashboard"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
+import { Skeleton } from "@/components/ui/skeleton"
 import { StatsGrid } from "@/components/stats-grid"
-import { api } from "@/lib/api"
 import type { TOTPSetupResponse, TOTPStatus } from "@/lib/types"
 import { useLiveSnapshot } from "@/lib/use-live-snapshot"
 
@@ -13,43 +25,33 @@ type Props = {
 }
 
 export function DashboardPage({ token }: Props) {
+  const serverStatusQuery = useDashboardStatus(token)
+  const totpStatusQuery = useTOTPStatus(token)
+  const prepareTOTPSetupMutation = usePrepareTOTPSetup(token)
+  const enableTOTPMutation = useEnableTOTP(token)
+  const disableTOTPMutation = useDisableTOTP(token)
+
   const [status, setStatus] = useState<Record<string, unknown>>({})
-  const [error, setError] = useState<string | null>(null)
   const [totpStatus, setTotpStatus] = useState<TOTPStatus | null>(null)
   const [totpSetup, setTotpSetup] = useState<TOTPSetupResponse | null>(null)
   const [totpCode, setTotpCode] = useState("")
-  const [totpBusy, setTotpBusy] = useState<string | null>(null)
-  const [totpError, setTotpError] = useState<string | null>(null)
   const { snapshot, connected, error: liveError } = useLiveSnapshot(token, ["server", "sessions", "transfers"])
 
   useEffect(() => {
-    let cancelled = false
-
-    const load = async () => {
-      try {
-        const [nextStatus, nextTOTP] = await Promise.all([api.status(token), api.totpStatus(token)])
-        if (!cancelled) {
-          setStatus(nextStatus)
-          setTotpStatus(nextTOTP)
-          setError(null)
-        }
-      } catch (err) {
-        if (!cancelled) {
-          setError(err instanceof Error ? err.message : "Failed to load status")
-        }
-      }
+    if (serverStatusQuery.data) {
+      setStatus(serverStatusQuery.data)
     }
+  }, [serverStatusQuery.data])
 
-    void load()
-    return () => {
-      cancelled = true
+  useEffect(() => {
+    if (totpStatusQuery.data) {
+      setTotpStatus(totpStatusQuery.data)
     }
-  }, [token])
+  }, [totpStatusQuery.data])
 
   useEffect(() => {
     if (snapshot?.server) {
       setStatus(snapshot.server)
-      setError(null)
     }
   }, [snapshot])
 
@@ -62,74 +64,108 @@ export function DashboardPage({ token }: Props) {
     return { activeSessions, activeTransfers, uploadBytes, downloadBytes }
   }, [snapshot, status])
 
-  const refreshTOTPStatus = async () => {
-    const next = await api.totpStatus(token)
-    setTotpStatus(next)
-    return next
-  }
-
   const beginTOTPSetup = async () => {
-    setTotpBusy("setup")
     try {
-      const setup = await api.totpSetup(token)
+      const setup = await prepareTOTPSetupMutation.mutateAsync()
       setTotpSetup(setup)
       setTotpStatus({ enabled: setup.enabled, pending: setup.pending })
       setTotpCode("")
-      setTotpError(null)
-    } catch (err) {
-      setTotpError(err instanceof Error ? err.message : "Unable to prepare two-factor setup")
-    } finally {
-      setTotpBusy(null)
+    } catch {
+      // Mutation toasts already surface the error.
     }
   }
 
   const enableTOTP = async () => {
-    setTotpBusy("enable")
     try {
-      const next = await api.totpEnable(token, totpCode)
+      const next = await enableTOTPMutation.mutateAsync(totpCode)
       setTotpStatus(next)
       setTotpSetup(null)
       setTotpCode("")
-      setTotpError(null)
-    } catch (err) {
-      setTotpError(err instanceof Error ? err.message : "Unable to enable two-factor auth")
-    } finally {
-      setTotpBusy(null)
+    } catch {
+      // Mutation toasts already surface the error.
     }
   }
 
   const disableTOTP = async () => {
-    setTotpBusy("disable")
     try {
-      await api.totpDisable(token, totpCode)
+      await disableTOTPMutation.mutateAsync(totpCode)
       setTotpSetup(null)
       setTotpCode("")
-      setTotpError(null)
-      await refreshTOTPStatus()
-    } catch (err) {
-      setTotpError(err instanceof Error ? err.message : "Unable to disable two-factor auth")
-    } finally {
-      setTotpBusy(null)
+      setTotpStatus({ enabled: false, pending: false })
+    } catch {
+      // Mutation toasts already surface the error.
     }
+  }
+
+  const isLoading = serverStatusQuery.isLoading || totpStatusQuery.isLoading
+  const isBusy =
+    prepareTOTPSetupMutation.isPending || enableTOTPMutation.isPending || disableTOTPMutation.isPending
+  const error =
+    (serverStatusQuery.error instanceof Error ? serverStatusQuery.error.message : null) ??
+    (totpStatusQuery.error instanceof Error ? totpStatusQuery.error.message : null)
+  const isRefreshing = serverStatusQuery.isFetching || totpStatusQuery.isFetching
+
+  const refreshDashboard = async () => {
+    await Promise.all([serverStatusQuery.refetch(), totpStatusQuery.refetch()])
+  }
+
+  if (isLoading) {
+    return (
+      <section className="space-y-4">
+        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          {Array.from({ length: 4 }).map((_, index) => (
+            <Skeleton key={index} className="h-28 w-full" />
+          ))}
+        </div>
+        <Skeleton className="h-80 w-full" />
+        <Skeleton className="h-96 w-full" />
+      </section>
+    )
+  }
+
+  if (Object.keys(status).length === 0) {
+    return (
+      <EmptyState
+        title="No dashboard snapshot"
+        description="The server did not return a runtime status snapshot yet."
+        icon={ShieldCheck}
+      />
+    )
   }
 
   return (
     <section className="space-y-4">
+      <PageHeader
+        title="Dashboard"
+        description="Review live service health, transfer activity, and account security controls from one place."
+        actions={
+          <>
+            <Badge variant="outline">{connected ? "Live stream" : "Snapshot mode"}</Badge>
+            <Button variant="outline" onClick={() => void refreshDashboard()} disabled={isRefreshing}>
+              <RefreshCw className={`mr-2 h-4 w-4 ${isRefreshing ? "animate-spin motion-reduce:animate-none" : ""}`} />
+              {isRefreshing ? "Refreshing..." : "Refresh"}
+            </Button>
+          </>
+        }
+      />
+
       <StatsGrid {...data} />
 
-      <Card className="fade-up" style={{ animationDelay: "100ms" }}>
+      <Card className="fade-up">
         <CardHeader>
           <CardTitle>Two-Factor Authentication</CardTitle>
           <CardDescription>Protect the Web UI login with a time-based one-time password.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
-          <p className="text-sm text-[var(--muted-foreground)]">
+          <StatusMessage variant="info">
             Status: {totpStatus?.enabled ? "Enabled" : totpStatus?.pending ? "Setup pending" : "Disabled"}
-          </p>
-          {totpError ? <p className="text-sm text-[var(--destructive)]">{totpError}</p> : null}
+          </StatusMessage>
           {!totpStatus?.enabled ? (
-            <Button variant="outline" onClick={() => void beginTOTPSetup()} disabled={totpBusy !== null}>
-              {totpBusy === "setup" ? "Preparing..." : "Prepare TOTP setup"}
+            <Button variant="outline" onClick={() => void beginTOTPSetup()} disabled={isBusy}>
+              {prepareTOTPSetupMutation.isPending ? (
+                <Loader2 className="mr-2 h-4 w-4 animate-spin motion-reduce:animate-none" />
+              ) : null}
+              {prepareTOTPSetupMutation.isPending ? "Preparing..." : "Prepare TOTP setup"}
             </Button>
           ) : null}
           {totpSetup ? (
@@ -153,12 +189,18 @@ export function DashboardPage({ token }: Props) {
                 inputMode="numeric"
               />
               {totpStatus.enabled ? (
-                <Button variant="destructive" onClick={() => void disableTOTP()} disabled={totpBusy !== null}>
-                  {totpBusy === "disable" ? "Disabling..." : "Disable TOTP"}
+                <Button variant="destructive" onClick={() => void disableTOTP()} disabled={isBusy || totpCode.trim() === ""}>
+                  {disableTOTPMutation.isPending ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin motion-reduce:animate-none" />
+                  ) : null}
+                  {disableTOTPMutation.isPending ? "Disabling..." : "Disable TOTP"}
                 </Button>
               ) : (
-                <Button onClick={() => void enableTOTP()} disabled={totpBusy !== null}>
-                  {totpBusy === "enable" ? "Enabling..." : "Enable TOTP"}
+                <Button onClick={() => void enableTOTP()} disabled={isBusy || totpCode.trim() === ""}>
+                  {enableTOTPMutation.isPending ? (
+                    <Loader2 className="mr-2 h-4 w-4 animate-spin motion-reduce:animate-none" />
+                  ) : null}
+                  {enableTOTPMutation.isPending ? "Enabling..." : "Enable TOTP"}
                 </Button>
               )}
             </div>
@@ -166,14 +208,14 @@ export function DashboardPage({ token }: Props) {
         </CardContent>
       </Card>
 
-      <Card className="fade-up" style={{ animationDelay: "140ms" }}>
+      <Card className="fade-up">
         <CardHeader>
           <CardTitle>Server Snapshot</CardTitle>
           <CardDescription>{connected ? "Live via WebSocket /api/v1/ws." : "Fallback snapshot mode."}</CardDescription>
         </CardHeader>
         <CardContent>
-          {error ? <p className="text-sm text-[var(--destructive)]">{error}</p> : null}
-          {liveError ? <p className="text-sm text-[var(--destructive)]">{liveError}</p> : null}
+          {error ? <StatusMessage variant="error">{error}</StatusMessage> : null}
+          {liveError ? <StatusMessage variant="error" className="mt-3">{liveError}</StatusMessage> : null}
           <pre className="max-h-[50vh] overflow-auto rounded-xl bg-[var(--muted)] p-3 text-xs">
             {JSON.stringify(status, null, 2)}
           </pre>

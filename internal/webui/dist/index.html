@@ -4,8 +4,28 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Kervan Control Center</title>
-    <script type="module" crossorigin src="/assets/index-CdN4JVXw.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/index-CrO6FDg9.css">
+    <script>
+      (() => {
+        const storageKey = "kervan-theme";
+        const root = document.documentElement;
+        const persisted = window.localStorage.getItem(storageKey) || "system";
+        const systemDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+        const resolved = persisted === "system" ? (systemDark ? "dark" : "light") : persisted;
+        root.classList.remove("light", "dark");
+        root.classList.add(resolved);
+        root.dataset.theme = resolved;
+      })();
+    </script>
+    <script type="module" crossorigin src="/assets/index-TK4m31Wf.js"></script>
+    <link rel="modulepreload" crossorigin href="/assets/rolldown-runtime-DF2fYuay.js">
+    <link rel="modulepreload" crossorigin href="/assets/ui-D1a7y9UO.js">
+    <link rel="modulepreload" crossorigin href="/assets/vendor-VJ9BO2hq.js">
+    <link rel="modulepreload" crossorigin href="/assets/schemas-B1UGXVbc.js">
+    <link rel="modulepreload" crossorigin href="/assets/api-DYPAEEM8.js">
+    <link rel="modulepreload" crossorigin href="/assets/dist-Cb4HF9oZ.js">
+    <link rel="modulepreload" crossorigin href="/assets/input-C4d4adnL.js">
+    <link rel="modulepreload" crossorigin href="/assets/tooltip-gLwmp8K0.js">
+    <link rel="stylesheet" crossorigin href="/assets/index-DWIqWxrD.css">
   </head>
   <body>
     <div id="root"></div>

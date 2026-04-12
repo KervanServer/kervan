@@ -4,6 +4,18 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Kervan Control Center</title>
+    <script>
+      (() => {
+        const storageKey = "kervan-theme";
+        const root = document.documentElement;
+        const persisted = window.localStorage.getItem(storageKey) || "system";
+        const systemDark = window.matchMedia("(prefers-color-scheme: dark)").matches;
+        const resolved = persisted === "system" ? (systemDark ? "dark" : "light") : persisted;
+        root.classList.remove("light", "dark");
+        root.classList.add(resolved);
+        root.dataset.theme = resolved;
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

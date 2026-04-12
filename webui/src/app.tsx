@@ -1,80 +1,52 @@
-﻿import { Navigate, Route, Routes } from "react-router-dom"
-import { useState } from "react"
+import { Suspense, lazy } from "react"
+import { Navigate, Route, Routes } from "react-router-dom"
 
 import { AppShell } from "@/components/app-shell"
+import { PageSkeleton } from "@/components/shared/page-skeleton"
+import { RouteAnnouncer } from "@/components/shared/route-announcer"
 import { LoginForm } from "@/components/login-form"
-import { DashboardPage } from "@/pages/dashboard-page"
-import { UsersPage } from "@/pages/users-page"
-import { SessionsPage } from "@/pages/sessions-page"
-import { FilesPage } from "@/pages/files-page"
-import { TransfersPage } from "@/pages/transfers-page"
-import { AuditPage } from "@/pages/audit-page"
-import { ConfigurationPage } from "@/pages/configuration-page"
-import { MonitoringPage } from "@/pages/monitoring-page"
-import { ApiKeysPage } from "@/pages/apikeys-page"
-import { api, RequestError } from "@/lib/api"
-import type { AuthUser } from "@/lib/types"
+import { routeModules } from "@/lib/route-modules"
+import { useAuthStore } from "@/stores/auth-store"
 
-type AuthState = {
-  token: string
-  user: AuthUser
-}
+const DashboardPage = lazy(routeModules["/"])
+const UsersPage = lazy(routeModules["/users"])
+const SessionsPage = lazy(routeModules["/sessions"])
+const FilesPage = lazy(routeModules["/files"])
+const TransfersPage = lazy(routeModules["/transfers"])
+const AuditPage = lazy(routeModules["/audit"])
+const ConfigurationPage = lazy(routeModules["/configuration"])
+const MonitoringPage = lazy(routeModules["/monitoring"])
+const ApiKeysPage = lazy(routeModules["/apikeys"])
 
 export function App() {
-  const [auth, setAuth] = useState<AuthState | null>(null)
-  const [authError, setAuthError] = useState<string | null>(null)
-  const [authLoading, setAuthLoading] = useState(false)
-  const [requiresOTP, setRequiresOTP] = useState(false)
-
-  const login = async (username: string, password: string, otp?: string) => {
-    setAuthLoading(true)
-    try {
-      const result = await api.login(username, password, otp)
-      setAuth(result)
-      setAuthError(null)
-      setRequiresOTP(false)
-    } catch (err) {
-      if (err instanceof RequestError && err.code === "totp_required") {
-        setRequiresOTP(true)
-      } else {
-        setRequiresOTP(false)
-      }
-      setAuthError(err instanceof Error ? err.message : "Login failed")
-    } finally {
-      setAuthLoading(false)
-    }
-  }
+  const { auth, authError, authLoading, requiresOTP, login, logout } = useAuthStore()
 
   if (!auth) {
     return <LoginForm onSubmit={login} loading={authLoading} error={authError} requiresOTP={requiresOTP} />
   }
 
   return (
-    <div className="min-h-screen pb-6">
-      <AppShell
-        currentUser={auth.user.username}
-        onLogout={() => {
-          setAuth(null)
-          setRequiresOTP(false)
-          setAuthError(null)
-        }}
-      />
-      <main className="mx-auto mt-4 w-full max-w-[1320px] px-3 md:px-5">
-        <Routes>
-          <Route path="/" element={<DashboardPage token={auth.token} />} />
-          <Route path="/users" element={<UsersPage token={auth.token} />} />
-          <Route path="/sessions" element={<SessionsPage token={auth.token} />} />
-          <Route path="/files" element={<FilesPage token={auth.token} />} />
-          <Route path="/transfers" element={<TransfersPage token={auth.token} />} />
-          <Route path="/audit" element={<AuditPage token={auth.token} />} />
-          <Route path="/configuration" element={<ConfigurationPage token={auth.token} />} />
-          <Route path="/monitoring" element={<MonitoringPage token={auth.token} />} />
-          <Route path="/apikeys" element={<ApiKeysPage token={auth.token} />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
+    <Suspense fallback={<div className="min-h-screen bg-[var(--background)] p-4 sm:p-6 lg:p-8"><PageSkeleton /></div>}>
+      <RouteAnnouncer />
+      <AppShell currentUser={auth.user.username} onLogout={logout} />
+      <main id="main-content" className="lg:pl-64">
+        <div className="p-4 sm:p-6 lg:p-8">
+          <Suspense fallback={<PageSkeleton />}>
+            <Routes>
+              <Route path="/" element={<DashboardPage token={auth.token} />} />
+              <Route path="/users" element={<UsersPage token={auth.token} />} />
+              <Route path="/sessions" element={<SessionsPage token={auth.token} />} />
+              <Route path="/files" element={<FilesPage token={auth.token} />} />
+              <Route path="/transfers" element={<TransfersPage token={auth.token} />} />
+              <Route path="/audit" element={<AuditPage token={auth.token} />} />
+              <Route path="/configuration" element={<ConfigurationPage token={auth.token} />} />
+              <Route path="/monitoring" element={<MonitoringPage token={auth.token} />} />
+              <Route path="/apikeys" element={<ApiKeysPage token={auth.token} />} />
+              <Route path="*" element={<Navigate to="/" replace />} />
+            </Routes>
+          </Suspense>
+        </div>
       </main>
-    </div>
+    </Suspense>
   )
 }
-
-

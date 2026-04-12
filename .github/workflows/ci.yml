@@ -52,7 +52,7 @@ jobs:
         run: go build ./cmd/kervan
 
   webui:
-    name: WebUI Embed Sync
+    name: WebUI Checks
     runs-on: ubuntu-latest
 
     steps:
@@ -68,6 +68,14 @@ jobs:
 
       - name: Ensure build scripts are executable
         run: chmod +x scripts/generate-webui.sh
+
+      - name: Install WebUI dependencies
+        working-directory: webui
+        run: npm ci
+
+      - name: Run WebUI tests
+        working-directory: webui
+        run: npm test
 
       - name: Build WebUI and refresh embedded assets
         run: ./scripts/generate-webui.sh

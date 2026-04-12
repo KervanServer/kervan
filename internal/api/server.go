@@ -73,7 +73,7 @@ type Server struct {
 	reload       ReloadProvider
 	configUpdate ConfigUpdateProvider
 	configCheck  ConfigValidateProvider
-	apiKeys      *apiKeyRepository
+	apiKeys      *APIKeyRepository
 	shareLinks   *shareLinkRepository
 	fsBuilder    UserFSBuilder
 	store        *store.Store
@@ -186,7 +186,7 @@ func NewServer(
 		reload:       reloadProvider,
 		configUpdate: updateProvider,
 		configCheck:  validateProvider,
-		apiKeys:      newAPIKeyRepository(keyStore),
+		apiKeys:      NewAPIKeyRepository(keyStore),
 		shareLinks:   newShareLinkRepository(keyStore),
 		fsBuilder:    fsBuilder,
 		store:        keyStore,

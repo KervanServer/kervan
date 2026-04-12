@@ -3,7 +3,7 @@
     "target": "ES2023",
     "module": "ESNext",
     "lib": ["ES2023", "DOM", "DOM.Iterable"],
-    "types": ["vite/client"],
+    "types": ["vite/client", "vitest/globals"],
     "skipLibCheck": true,
     "moduleResolution": "Bundler",
     "allowImportingTsExtensions": true,
@@ -11,6 +11,7 @@
     "moduleDetection": "force",
     "noEmit": true,
     "strict": true,
+    "noUncheckedIndexedAccess": true,
     "ignoreDeprecations": "6.0",
     "noUnusedLocals": true,
     "noUnusedParameters": true,
@@ -21,5 +22,5 @@
       "@/*": ["./src/*"]
     }
   },
-  "include": ["src"]
+  "include": ["src", "vitest.setup.ts"]
 }

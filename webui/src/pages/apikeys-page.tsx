@@ -1,15 +1,35 @@
-import { useEffect, useState, type FormEvent } from "react"
-import { Copy, KeyRound, ShieldCheck, Trash2 } from "lucide-react"
+import { useEffect, useState } from "react"
+import { zodResolver } from "@hookform/resolvers/zod"
+import { Copy, KeyRound, Loader2, ShieldCheck, Trash2 } from "lucide-react"
+import { useForm } from "react-hook-form"
+import { toast } from "sonner"
+import { z } from "zod"
 
+import { ConfirmDialog } from "@/components/shared/confirm-dialog"
+import { EmptyState } from "@/components/shared/empty-state"
+import { PageHeader } from "@/components/shared/page-header"
+import { StatusMessage } from "@/components/shared/status-message"
+import { useAPIKeys, useCreateAPIKey, useDeleteAPIKey } from "@/hooks/use-api-keys"
+import type { ApiKey, ApiKeyPreset, ApiKeyScopeInfo } from "@/lib/types"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
+import { Skeleton } from "@/components/ui/skeleton"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
-import { api } from "@/lib/api"
-import type { ApiKey, ApiKeyPreset, ApiKeyScopeInfo } from "@/lib/types"
+import { Tooltip } from "@/components/ui/tooltip"
 
 type Props = { token: string }
+
+const createAPIKeySchema = z.object({
+  name: z
+    .string()
+    .trim()
+    .min(1, "Key name is required")
+    .max(80, "Key name must be 80 characters or fewer"),
+})
+
+type CreateAPIKeyValues = z.infer<typeof createAPIKeySchema>
 
 function sortScopes(scopes: string[], supportedScopes: ApiKeyScopeInfo[]): string[] {
   const order = new Map(supportedScopes.map((scope, index) => [scope.name, index]))
@@ -35,44 +55,52 @@ function formatLastUsed(value?: string): string {
 }
 
 export function ApiKeysPage({ token }: Props) {
-  const [keys, setKeys] = useState<ApiKey[]>([])
-  const [supportedScopes, setSupportedScopes] = useState<ApiKeyScopeInfo[]>([])
-  const [presets, setPresets] = useState<ApiKeyPreset[]>([])
-  const [name, setName] = useState("")
+  const apiKeysQuery = useAPIKeys(token)
+  const createAPIKeyMutation = useCreateAPIKey(token)
+  const deleteAPIKeyMutation = useDeleteAPIKey(token)
+
+  const keys = apiKeysQuery.data?.keys ?? []
+  const supportedScopes = apiKeysQuery.data?.supported_scopes ?? []
+  const presets = apiKeysQuery.data?.presets ?? []
+  const error = apiKeysQuery.error instanceof Error ? apiKeysQuery.error.message : null
+
   const [selectedPreset, setSelectedPreset] = useState("read-write")
   const [selectedScopes, setSelectedScopes] = useState<string[]>([])
   const [generatedKey, setGeneratedKey] = useState<string | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [loading, setLoading] = useState(false)
-  const [creating, setCreating] = useState(false)
+  const [keyToDelete, setKeyToDelete] = useState<ApiKey | null>(null)
 
-  const load = async () => {
-    setLoading(true)
-    try {
-      const response = await api.apiKeys(token)
-      setKeys(response.keys)
-      setSupportedScopes(response.supported_scopes)
-      setPresets(response.presets)
-      if (response.presets.length > 0 && selectedScopes.length === 0) {
-        const preferredPreset =
-          response.presets.find((preset) => preset.id === selectedPreset) ?? response.presets[response.presets.length - 1]
-        setSelectedPreset(preferredPreset.id)
-        setSelectedScopes(sortScopes(preferredPreset.scopes, response.supported_scopes))
-      } else {
-        setSelectedScopes((current) => sortScopes(current, response.supported_scopes))
-      }
-      setError(null)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to load API keys")
-    } finally {
-      setLoading(false)
-    }
-  }
+  const {
+    register,
+    handleSubmit,
+    reset,
+    formState: { errors, isValid },
+  } = useForm<CreateAPIKeyValues>({
+    resolver: zodResolver(createAPIKeySchema),
+    mode: "onChange",
+    defaultValues: {
+      name: "",
+    },
+  })
 
   useEffect(() => {
-    void load()
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [token])
+    if (supportedScopes.length === 0) {
+      return
+    }
+
+    if (presets.length > 0 && selectedScopes.length === 0) {
+      const preferredPreset = presets.find((preset) => preset.id === selectedPreset) ?? presets.at(-1)
+      if (preferredPreset) {
+        setSelectedPreset(preferredPreset.id)
+        setSelectedScopes(sortScopes(preferredPreset.scopes, supportedScopes))
+      }
+      return
+    }
+
+    setSelectedScopes((current) => {
+      const sorted = sortScopes(current, supportedScopes)
+      return sameScopes(current, sorted) ? current : sorted
+    })
+  }, [presets, selectedPreset, selectedScopes.length, supportedScopes])
 
   const applyPreset = (preset: ApiKeyPreset) => {
     setSelectedPreset(preset.id)
@@ -90,40 +118,27 @@ export function ApiKeysPage({ token }: Props) {
     })
   }
 
-  const create = async (event: FormEvent) => {
-    event.preventDefault()
-    if (!name.trim() || selectedScopes.length === 0) {
+  const create = async (values: CreateAPIKeyValues) => {
+    if (selectedScopes.length === 0) {
       return
     }
-    setCreating(true)
-    try {
-      const permissions =
-        selectedPreset !== "custom" && presets.some((preset) => preset.id === selectedPreset)
-          ? selectedPreset
-          : selectedScopes.join(",")
-      const response = await api.createApiKey(token, { name: name.trim(), permissions })
-      setGeneratedKey(response.key)
-      setName("")
-      await load()
-      setError(null)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to create API key")
-    } finally {
-      setCreating(false)
-    }
+
+    const permissions =
+      selectedPreset !== "custom" && presets.some((preset) => preset.id === selectedPreset)
+        ? selectedPreset
+        : selectedScopes.join(",")
+
+    const response = await createAPIKeyMutation.mutateAsync({ name: values.name.trim(), permissions })
+    setGeneratedKey(response.key)
+    reset({ name: "" })
   }
 
-  const revoke = async (id: string) => {
-    if (!window.confirm("Revoke this API key?")) {
+  const revoke = async () => {
+    if (!keyToDelete) {
       return
     }
-    try {
-      await api.deleteApiKey(token, id)
-      await load()
-      setError(null)
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to revoke API key")
-    }
+    await deleteAPIKeyMutation.mutateAsync(keyToDelete.id)
+    setKeyToDelete(null)
   }
 
   const copyGeneratedKey = async () => {
@@ -132,22 +147,31 @@ export function ApiKeysPage({ token }: Props) {
     }
     try {
       await navigator.clipboard.writeText(generatedKey)
+      toast.success("API key copied to clipboard.")
     } catch {
-      // no-op
+      toast.error("Unable to copy API key")
     }
   }
 
   return (
     <section className="space-y-4">
+      <PageHeader
+        title="API Keys"
+        description="Issue scoped personal keys for automation, integrations, and read-only operational access."
+      />
+
       <Card>
         <CardHeader>
           <CardTitle>API Keys</CardTitle>
           <CardDescription>Create scoped personal API keys with only the access an integration needs.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-5">
-          <form className="space-y-4" onSubmit={create}>
+          <form className="space-y-4" onSubmit={handleSubmit(create)}>
             <div className="grid gap-2 md:grid-cols-[1.2fr_0.8fr]">
-              <Input placeholder="Key name" value={name} onChange={(event) => setName(event.target.value)} />
+              <div className="space-y-2">
+                <Input placeholder="Key name" aria-invalid={errors.name ? "true" : "false"} {...register("name")} />
+                {errors.name ? <p className="text-sm text-[var(--error)]">{errors.name.message}</p> : null}
+              </div>
               <div className="rounded-xl border border-[var(--border)] bg-[var(--muted)]/40 px-3 py-2 text-sm text-[var(--muted-foreground)]">
                 Selected scopes: <span className="font-medium text-[var(--foreground)]">{selectedScopes.length}</span>
               </div>
@@ -219,76 +243,108 @@ export function ApiKeysPage({ token }: Props) {
             </div>
 
             <div className="flex justify-end">
-              <Button type="submit" disabled={creating || !name.trim() || selectedScopes.length === 0}>
-                <KeyRound className="mr-2 h-4 w-4" />
-                {creating ? "Creating..." : "Create key"}
+              <Button type="submit" disabled={createAPIKeyMutation.isPending || !isValid || selectedScopes.length === 0}>
+                {createAPIKeyMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin motion-reduce:animate-none" /> : <KeyRound className="mr-2 h-4 w-4" />}
+                {createAPIKeyMutation.isPending ? "Creating..." : "Create key"}
               </Button>
             </div>
           </form>
 
           {generatedKey ? (
-            <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-3">
+            <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-3" role="status" aria-live="polite">
               <p className="text-sm font-medium">New API key (shown once)</p>
               <p className="mt-1 break-all font-mono text-xs">{generatedKey}</p>
               <div className="mt-2">
-                <Button size="sm" variant="outline" onClick={() => void copyGeneratedKey()}>
-                  <Copy className="mr-2 h-3.5 w-3.5" />
-                  Copy
-                </Button>
+                <Tooltip content="Copy the generated API key">
+                  <Button size="sm" variant="outline" onClick={() => void copyGeneratedKey()} aria-label="Copy generated API key">
+                    <Copy className="mr-2 h-3.5 w-3.5" />
+                    Copy
+                  </Button>
+                </Tooltip>
               </div>
             </div>
           ) : null}
 
-          {error ? <p className="text-sm text-[var(--destructive)]">{error}</p> : null}
+          {error ? <StatusMessage variant="error">{error}</StatusMessage> : null}
 
-          <div className="rounded-xl border border-[var(--border)]">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Name</TableHead>
-                  <TableHead>Permissions</TableHead>
-                  <TableHead>Prefix</TableHead>
-                  <TableHead>Created</TableHead>
-                  <TableHead>Last used</TableHead>
-                  <TableHead className="text-right">Action</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {keys.map((key) => (
-                  <TableRow key={key.id}>
-                    <TableCell>{key.name}</TableCell>
-                    <TableCell className="max-w-[28rem]">
-                      <div className="flex flex-wrap gap-1">
-                        {key.permissions.split(",").map((permission) => (
-                          <Badge key={permission} variant="outline" className="font-mono text-[11px]">
-                            {permission}
-                          </Badge>
-                        ))}
-                      </div>
-                    </TableCell>
-                    <TableCell className="font-mono text-xs">{key.prefix}</TableCell>
-                    <TableCell>{new Date(key.created_at).toLocaleString()}</TableCell>
-                    <TableCell>{formatLastUsed(key.last_used)}</TableCell>
-                    <TableCell className="text-right">
-                      <Button variant="destructive" size="sm" onClick={() => void revoke(key.id)}>
-                        <Trash2 className="mr-2 h-3.5 w-3.5" />
-                        Revoke
-                      </Button>
-                    </TableCell>
-                  </TableRow>
-                ))}
-                {!loading && keys.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={6} className="text-center text-sm text-[var(--muted-foreground)]">
-                      No API keys yet.
-                    </TableCell>
-                  </TableRow>
-                ) : null}
-              </TableBody>
-            </Table>
-          </div>
+          {apiKeysQuery.isLoading ? (
+            <div className="space-y-3">
+              {Array.from({ length: 3 }).map((_, index) => (
+                <Skeleton key={index} className="h-12 w-full" />
+              ))}
+            </div>
+          ) : keys.length === 0 ? (
+            <EmptyState
+              title="No API keys yet"
+              description="Create a scoped API key for automation or service integrations."
+              icon={KeyRound}
+            />
+          ) : (
+            <div className="rounded-xl border border-[var(--border)]">
+              <div className="overflow-x-auto">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Name</TableHead>
+                      <TableHead>Permissions</TableHead>
+                      <TableHead>Prefix</TableHead>
+                      <TableHead>Created</TableHead>
+                      <TableHead>Last used</TableHead>
+                      <TableHead className="text-right">Action</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {keys.map((key) => (
+                      <TableRow key={key.id}>
+                        <TableCell>{key.name}</TableCell>
+                        <TableCell className="max-w-[28rem]">
+                          <div className="flex flex-wrap gap-1">
+                            {key.permissions.split(",").map((permission) => (
+                              <Badge key={permission} variant="outline" className="font-mono text-[11px]">
+                                {permission}
+                              </Badge>
+                            ))}
+                          </div>
+                        </TableCell>
+                        <TableCell className="font-mono text-xs">{key.prefix}</TableCell>
+                        <TableCell>{new Date(key.created_at).toLocaleString()}</TableCell>
+                        <TableCell>{formatLastUsed(key.last_used)}</TableCell>
+                        <TableCell className="text-right">
+                          <Tooltip content={`Revoke ${key.name}`}>
+                            <Button
+                              variant="destructive"
+                              size="sm"
+                              onClick={() => setKeyToDelete(key)}
+                              aria-label={`Revoke API key ${key.name}`}
+                            >
+                              <Trash2 className="mr-2 h-3.5 w-3.5" />
+                              Revoke
+                            </Button>
+                          </Tooltip>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </div>
+          )}
         </CardContent>
       </Card>
+
+      <ConfirmDialog
+        open={keyToDelete !== null}
+        title="Revoke API key"
+        description={keyToDelete ? `Revoke API key "${keyToDelete.name}"? Integrations using it will stop working immediately.` : ""}
+        confirmLabel="Revoke key"
+        pending={deleteAPIKeyMutation.isPending}
+        onConfirm={() => void revoke()}
+        onOpenChange={(open) => {
+          if (!open) {
+            setKeyToDelete(null)
+          }
+        }}
+      />
     </section>
   )
 }

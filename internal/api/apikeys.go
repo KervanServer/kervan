@@ -26,18 +26,18 @@ type APIKeyRecord struct {
 	LastUsedAt  *time.Time `json:"last_used_at,omitempty"`
 }
 
-type apiKeyRepository struct {
+type APIKeyRepository struct {
 	store *store.Store
 }
 
-func newAPIKeyRepository(st *store.Store) *apiKeyRepository {
+func NewAPIKeyRepository(st *store.Store) *APIKeyRepository {
 	if st == nil {
 		return nil
 	}
-	return &apiKeyRepository{store: st}
+	return &APIKeyRepository{store: st}
 }
 
-func (r *apiKeyRepository) ListByUser(userID string) ([]*APIKeyRecord, error) {
+func (r *APIKeyRepository) ListByUser(userID string) ([]*APIKeyRecord, error) {
 	if r == nil || r.store == nil {
 		return nil, errors.New("api key repository is not configured")
 	}
@@ -55,7 +55,7 @@ func (r *apiKeyRepository) ListByUser(userID string) ([]*APIKeyRecord, error) {
 	return out, nil
 }
 
-func (r *apiKeyRepository) Create(userID, name, permissions string) (string, *APIKeyRecord, error) {
+func (r *APIKeyRepository) Create(userID, name, permissions string) (string, *APIKeyRecord, error) {
 	if r == nil || r.store == nil {
 		return "", nil, errors.New("api key repository is not configured")
 	}
@@ -89,7 +89,7 @@ func (r *apiKeyRepository) Create(userID, name, permissions string) (string, *AP
 	return token, record, nil
 }
 
-func (r *apiKeyRepository) Delete(userID, id string) error {
+func (r *APIKeyRepository) Delete(userID, id string) error {
 	if r == nil || r.store == nil {
 		return errors.New("api key repository is not configured")
 	}
@@ -103,7 +103,7 @@ func (r *apiKeyRepository) Delete(userID, id string) error {
 	return r.store.Delete(collAPIKeys, id)
 }
 
-func (r *apiKeyRepository) GetByToken(token string) (*APIKeyRecord, error) {
+func (r *APIKeyRepository) GetByToken(token string) (*APIKeyRecord, error) {
 	if r == nil || r.store == nil {
 		return nil, errors.New("api key repository is not configured")
 	}
@@ -125,7 +125,7 @@ func (r *apiKeyRepository) GetByToken(token string) (*APIKeyRecord, error) {
 	return nil, nil
 }
 
-func (r *apiKeyRepository) UpdateLastUsed(id string, usedAt time.Time) error {
+func (r *APIKeyRepository) UpdateLastUsed(id string, usedAt time.Time) error {
 	if r == nil || r.store == nil {
 		return errors.New("api key repository is not configured")
 	}
