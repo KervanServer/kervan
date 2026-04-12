@@ -433,10 +433,6 @@ func (a *App) Start(ctx context.Context) error {
 	return nil
 }
 
-func (a *App) WaitForContext(ctx context.Context) {
-	<-ctx.Done()
-}
-
 func (a *App) Close() error {
 	if a.cancel != nil {
 		a.cancel()

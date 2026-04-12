@@ -137,7 +137,7 @@ Modern file transfer infrastructure is fragmented:
 | `quota` | Per-user/group disk quota enforcement |
 | `webui` | Embedded React 19 dashboard |
 | `api` | REST API for management |
-| `config` | YAML configuration + env override + hot reload |
+| `config` | YAML configuration + env override + runtime-safe reload |
 | `mcp` | MCP server for AI/LLM integration |
 | `cobalt` | CobaltDB integration for metadata persistence |
 
@@ -756,7 +756,7 @@ Token bucket algorithm, configurable burst size. Rate limits apply across all pr
 | **Transfers** | Active/completed/failed transfers, search/filter, retry failed, checksum verify |
 | **File Browser** | Browse VFS per-user, upload/download via browser, preview (images/text), share links |
 | **Audit Log** | Searchable audit trail, date range filter, export CSV/JSON, event type filter |
-| **Configuration** | Edit server config, protocol settings, TLS certs, storage backends (hot reload) |
+| **Configuration** | Edit server config, validate patches, and trigger runtime-safe reloads |
 | **Monitoring** | CPU/memory/disk/network graphs, protocol stats, error rates, connection graph |
 | **API Keys** | Manage API keys for automation, per-key permissions, usage stats |
 
@@ -1049,18 +1049,26 @@ KERVAN_STORAGE_S3_ACCESS_KEY=AKIAIOSFODNN7EXAMPLE
 
 Pattern: `KERVAN_{SECTION}_{KEY}` (uppercase, underscores).
 
-### 10.3 Hot Reload
+### 10.3 Runtime Config Reload
 
-`SIGHUP` or `POST /api/v1/server/reload` triggers hot reload of:
+`POST /api/v1/server/reload` reloads the config file from disk, validates it,
+and applies only runtime-safe settings immediately.
 
-- User database
-- TLS certificates
-- IP whitelist/blacklist
-- Quota settings
-- Rate limits
-- Audit outputs
+Currently reloadable without restart:
 
-**Not hot-reloadable** (require restart): Port changes, storage backend changes, protocol enable/disable.
+- `auth.min_password_length`
+- `webui.session_timeout`
+- `webui.totp_enabled`
+- `webui.cors_origins`
+- `security.brute_force.enabled`
+- `security.brute_force.max_attempts`
+- `security.brute_force.lockout_duration`
+
+The response reports `applied_paths` and `restart_paths` so operators can see
+which edits took effect immediately and which still require a restart.
+
+**Restart required:** listener/port changes, storage backend changes, protocol
+enable/disable, TLS material changes, and other server bootstrap settings.
 
 ---
 
@@ -1350,7 +1358,7 @@ kervan/
 │   └── vite.config.ts
 ├── scripts/
 │   ├── build.sh                    # Cross-compile for all platforms
-│   └── generate-webui.sh           # Build React + embed
+│   └── generate_webui.go           # Build React + embed
 ├── kervan.example.yaml             # Example configuration
 ├── go.mod
 ├── go.sum

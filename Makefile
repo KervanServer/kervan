@@ -12,9 +12,7 @@ build: webui
 	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/kervan ./cmd/kervan
 
 webui:
-	cd webui && npm ci && npm run build
-	rm -rf internal/webui/dist
-	cp -r webui/dist internal/webui/dist
+	go run ./scripts
 
 test:
 	go test ./...

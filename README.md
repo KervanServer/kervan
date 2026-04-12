@@ -26,7 +26,7 @@ marks aspirational items from the spec as *planned*.
 - **JSONL audit log** — every significant action is appended to a structured
   audit file (`data/audit.jsonl` by default).
 - **Config system** — YAML file + environment overlay + defaults + validation,
-  with a `reload` hook wired for future hot-reload.
+  plus runtime-safe reload support for selected WebUI and security settings.
 - **Embedded WebUI** — React 19 + Tailwind CSS 4.1 + shadcn/ui + lucide-react
   admin panel with dark/light theme and responsive layout, embedded from
   `internal/webui/dist`.
@@ -135,7 +135,7 @@ staticcheck ./...
 cd webui && npm test
 
 # Build the React WebUI and copy it to internal/webui/dist
-./scripts/generate-webui.sh
+go run ./scripts
 
 # Build a static binary
 go build -o kervan ./cmd/kervan
@@ -413,8 +413,8 @@ audit:
       flush_interval: 5s
       retry_count: 3
 ```
-*Still planned:* syslog (RFC 5424 / CEF), CobaltDB-backed
-  queryable store, HMAC-chained immutable mode (Spec §6).
+*Still planned:* syslog (RFC 5424 / CEF), queryable audit storage,
+  HMAC-chained immutable mode.
 
 ---
 
@@ -479,7 +479,7 @@ The binary embeds a React 19 WebUI from [webui](webui) at runtime through
 
 - Tailwind CSS 4.1 design system with shadcn/ui component patterns
 - lucide-react icon set
-- Dark/light theme switch via `next-themes`
+- Dark/light theme switch via the built-in React theme context
 - Responsive navigation and page layouts for desktop/mobile
 - API-integrated pages: dashboard, users, sessions, files, transfers, audit, monitoring, API keys
 
@@ -530,7 +530,7 @@ internal/
   audit/                 # Event schema + JSONL file sink
   auth/                  # Auth engine, user repo, Argon2id/bcrypt hashing
   build/                 # Version & build metadata
-  config/                # Loader, defaults, env overlay, validation, reload hook
+  config/                # Loader, defaults, env overlay and validation
   crypto/                # TLS config builder, SSH host-key generation
   protocol/
     ftp/                 # FTP (and FTPS wrapper) server
@@ -559,15 +559,15 @@ Tracked against [.project/SPECIFICATION.md](.project/SPECIFICATION.md):
 - **Auth:** LDAP/AD, OIDC WebUI SSO, SSH public-key auth, TOTP 2FA, groups,
   per-user quotas, rate limiting, IP allow/deny, geo-blocking.
 - **Protocols:** ACME auto-TLS (Let's Encrypt), MLSD/MLST, virtual hosting
-  (`HOST` command), keyboard-interactive SFTP auth, SSH certificate auth.
+  (`HOST` command), FTP/FTPS and SFTP/SCP support.
 - **WebUI:** React 19 dashboard, live WebSocket events, file-share links,
   chunked resumable uploads, inline editor.
-- **API:** Full `/api/v1/...` surface (groups, API keys, bulk import/export,
-  hot-reload endpoint, WebSocket stream).
-- **Audit:** Syslog (CEF), CobaltDB-backed queryable store, HMAC-chained
-  immutable logs, session recording.
-- **Ops:** Hot reload on `SIGHUP`, Prometheus metrics parity with Spec §18.1,
-  migration tools
+- **API:** Broad `/api/v1/...` surface for users, files, sessions, transfers,
+  audit, API keys, bulk import/export, and config operations.
+- **Audit:** File + HTTP/webhook sinks today; queryable storage, syslog/CEF,
+  HMAC-chained immutable logs and session recording remain planned.
+- **Ops:** Runtime-safe config reload via `/api/v1/server/reload`,
+  Prometheus metrics parity with the spec goals, migration tools
   (`migrate vsftpd|proftpd|ssh-keys`).
 - **MCP server:** `stdio` MCP server exposing users, sessions, transfers and
   audit queries for AI/LLM integration.

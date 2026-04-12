@@ -47,14 +47,6 @@ func (m *Manager) Start(username, protocol, remoteAddr string) *Session {
 	return s
 }
 
-func (m *Manager) Touch(id string) {
-	m.mu.Lock()
-	if s, ok := m.sessions[id]; ok {
-		s.LastSeenAt = time.Now().UTC()
-	}
-	m.mu.Unlock()
-}
-
 func (m *Manager) End(id string) {
 	m.mu.Lock()
 	delete(m.sessions, id)

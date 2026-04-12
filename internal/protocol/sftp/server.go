@@ -244,10 +244,3 @@ func (s *Server) emitAudit(t audit.EventType, username, protocol, p, ip, status,
 		Message:  msg,
 	})
 }
-
-func (s *Server) Addr() string {
-	if s.listener == nil {
-		return ""
-	}
-	return s.listener.Addr().String()
-}

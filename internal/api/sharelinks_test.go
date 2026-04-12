@@ -14,7 +14,7 @@ import (
 	"github.com/kervanserver/kervan/internal/vfs"
 )
 
-func TestShareLinkRepositoryCreateGetIncrement(t *testing.T) {
+func TestShareLinkRepositoryCreateGetReserveDownload(t *testing.T) {
 	st, err := store.Open(t.TempDir())
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -46,15 +46,19 @@ func TestShareLinkRepositoryCreateGetIncrement(t *testing.T) {
 		t.Fatalf("unexpected stored path: %s", saved.Path)
 	}
 
-	if err := repo.Increment(link.Token); err != nil {
-		t.Fatalf("increment download count: %v", err)
+	reserved, err := repo.ReserveDownload(link.Token, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("reserve download: %v", err)
+	}
+	if reserved.DownloadCount != 1 {
+		t.Fatalf("expected reserved download count 1, got %d", reserved.DownloadCount)
 	}
 	updated, err := repo.Get(link.Token)
 	if err != nil {
-		t.Fatalf("get share link after increment: %v", err)
+		t.Fatalf("get share link after reservation: %v", err)
 	}
 	if updated.DownloadCount != 1 {
-		t.Fatalf("expected download count 1, got %d", updated.DownloadCount)
+		t.Fatalf("expected persisted download count 1, got %d", updated.DownloadCount)
 	}
 
 	list, err := repo.ListByUsername("alice")

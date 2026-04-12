@@ -33,7 +33,7 @@ export type ApiUser = {
   updated_at: string
 }
 
-export type ApiUserImportError = {
+type ApiUserImportError = {
   row: number
   username?: string
   error: string

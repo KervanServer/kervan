@@ -1,1 +1,0 @@
-import{bt as e}from"./vendor-BKYyCFoD.js";import{u as t}from"./api-CQxzvr5D.js";var n=e();function r({className:e}){return(0,n.jsx)(`div`,{className:t(`animate-pulse rounded-xl bg-[var(--background-muted)] motion-reduce:animate-none`,e)})}export{r as t};

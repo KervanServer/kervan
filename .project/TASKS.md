@@ -51,13 +51,12 @@
 - [ ] Validate log_level enum (debug|info|warn|error)
 - [ ] Return aggregated error list (not fail-fast)
 
-### Task 6: Config Hot Reload
-- [ ] Implement `LiveConfig` with `atomic.Pointer[Config]`
-- [ ] `Get()` — lock-free config read
-- [ ] `Reload()` — mutex-protected re-parse + validation + swap
-- [ ] `OnReload(fn)` — register callback for config change notification
-- [ ] `WatchSignals()` — `SIGHUP` listener goroutine
-- [ ] Test: concurrent Get() during Reload()
+### Task 6: Runtime Config Reload
+- [x] Expose `POST /api/v1/server/reload` for admin-triggered config reload
+- [x] Return `applied_paths` / `restart_paths` to distinguish safe runtime changes
+- [x] Apply runtime-safe settings without restart (`webui.*`, `auth.min_password_length`, `security.brute_force.*`)
+- [x] Validate config from disk before applying updates
+- [ ] Expand reload coverage to more subsystems without reintroducing startup-only state
 
 ### Task 7: Structured Logger
 - [ ] Implement structured logger in `internal/logger/logger.go`
@@ -798,65 +797,65 @@
 - [ ] Admin: list/revoke share links
 
 ### Task 95: Server Status API
-- [ ] `GET /api/v1/server/status` — uptime, version, enabled protocols, connection counts
-- [ ] `GET /api/v1/server/config` — current config (secrets redacted)
-- [ ] `PUT /api/v1/server/config` — update config (partial, admin only)
-- [ ] `POST /api/v1/server/reload` — trigger hot reload
+- [x] `GET /api/v1/server/status` — uptime, version, enabled protocols, connection counts
+- [x] `GET /api/v1/server/config` — current config (secrets redacted)
+- [x] `PUT /api/v1/server/config` — update config (partial, admin only)
+- [x] `POST /api/v1/server/reload` — trigger runtime-safe config reload
 
 ### Task 96: API Keys Management API
-- [ ] `GET /api/v1/apikeys` — list user's API keys
-- [ ] `POST /api/v1/apikeys` — create new API key (return key once, store hash)
-- [ ] `DELETE /api/v1/apikeys/{id}` — revoke key
-- [ ] Per-key: name, permissions (read-only, read-write, admin), last_used, created_at
+- [x] `GET /api/v1/apikeys` — list user's API keys
+- [x] `POST /api/v1/apikeys` — create new API key (return key once, store hash)
+- [x] `DELETE /api/v1/apikeys/{id}` — revoke key
+- [x] Per-key: name, permissions (read-only, read-write, admin), last_used, created_at
 
 ### Task 97: Prometheus Metrics Endpoint
-- [ ] `GET /api/v1/metrics` — Prometheus text format
+- [x] `GET /api/v1/metrics` — Prometheus text format
 - [ ] Connection metrics: total, active, rejected (by protocol)
 - [ ] Transfer metrics: total, active, bytes total, duration histogram, errors
 - [ ] Auth metrics: attempts by result and method, locked accounts
 - [ ] Storage metrics: bytes used, files total, quota usage ratio
-- [ ] System metrics: uptime, goroutines, memory
-- [ ] From-scratch Prometheus exposition format (no external lib)
+- [x] System metrics: uptime, goroutines, memory
+- [x] From-scratch Prometheus exposition format (no external lib)
 
 ### Task 98: Health Check Endpoint
-- [ ] `GET /api/v1/health` — JSON health status
-- [ ] Check each protocol listener (is it accepting?)
+- [x] `GET /api/v1/health` — JSON health status
+- [x] Check each protocol listener (is it accepting?)
 - [ ] Check storage backends (local: disk free, S3: connectivity)
 - [ ] Check CobaltDB (is it readable/writable?)
-- [ ] Overall status: healthy / degraded / unhealthy
-- [ ] Include version and uptime
+- [x] Overall status: healthy / degraded / unhealthy
+- [x] Include version and uptime
 
 ### Task 99: WebSocket Event Stream
-- [ ] Implement WebSocket upgrade handler at `/api/v1/ws`
-- [ ] From-scratch WebSocket (RFC 6455): handshake, frame encoding/decoding
+- [x] Implement WebSocket upgrade handler at `/api/v1/ws`
+- [x] From-scratch WebSocket (RFC 6455): handshake, frame encoding/decoding
 - [ ] JWT auth via query parameter or first message
 - [ ] Event types per SPECIFICATION §8.5
 - [ ] Broadcast pattern: audit engine → WebSocket hub → connected clients
-- [ ] Client subscription filtering (by event type)
+- [x] Client subscription filtering (by event type)
 - [ ] Ping/pong keepalive (30s interval)
-- [ ] Graceful disconnect handling
+- [x] Graceful disconnect handling
 
 ### Task 100: WebUI Embedding
-- [ ] `embed.FS` for React build output in `internal/webui/embed.go`
-- [ ] SPA handler: serve static files, fallback to index.html for client routes
-- [ ] Correct Content-Type headers for JS/CSS/images
-- [ ] Cache-Control headers: immutable for hashed assets, no-cache for index.html
+- [x] `embed.FS` for React build output in `internal/webui/embed.go`
+- [x] SPA handler: serve static files, fallback to index.html for client routes
+- [x] Correct Content-Type headers for JS/CSS/images
+- [x] Cache-Control headers: immutable for hashed assets, no-cache for index.html
 - [ ] Gzip compression middleware
 
 ### Task 101: WebUI — React 19 Project Setup
-- [ ] Initialize React 19 + TypeScript + Vite in `webui/` directory
-- [ ] Tailwind CSS v4 setup
-- [ ] React Router v7 for client-side routing
+- [x] Initialize React 19 + TypeScript + Vite in `webui/` directory
+- [x] Tailwind CSS v4 setup
+- [x] React Router v7 for client-side routing
 - [ ] API client layer (fetch wrapper with JWT, auto-refresh)
-- [ ] WebSocket client hook
-- [ ] Dark/light mode support
-- [ ] Responsive layout (mobile-friendly)
+- [x] WebSocket client hook
+- [x] Dark/light mode support
+- [x] Responsive layout (mobile-friendly)
 
 ### Task 102: WebUI — Login Page
-- [ ] Username/password form
-- [ ] TOTP prompt (conditional, after password success)
-- [ ] JWT token storage (memory, not localStorage)
-- [ ] Auto-redirect to dashboard on auth
+- [x] Username/password form
+- [x] TOTP prompt (conditional, after password success)
+- [x] JWT token storage (memory, not localStorage)
+- [x] Auto-redirect to dashboard on auth
 - [ ] Session timeout handling (auto-logout)
 
 ### Task 103: WebUI — Dashboard Page
@@ -923,11 +922,11 @@
 - [ ] Transfer detail: full audit trail
 
 ### Task 109: WebUI — Configuration Page
-- [ ] Current config display (read-only, secrets masked)
+- [x] Current config display (read-only, secrets masked)
 - [ ] Edit sections: FTP, FTPS, SFTP, SCP, WebUI, Auth, Security
-- [ ] Form-based editing with validation
-- [ ] Hot reload button (POST /api/v1/server/reload)
-- [ ] Restart required indicator for non-hot-reloadable settings
+- [x] Form-based editing with validation
+- [x] Reload button (POST /api/v1/server/reload)
+- [x] Restart required indicator for non-hot-reloadable settings
 - [ ] TLS certificate info display (expiry, issuer, SANs)
 - [ ] Test connection button for S3 backend
 
@@ -941,17 +940,17 @@
 - [ ] Configurable time range (1h, 6h, 24h, 7d)
 
 ### Task 111: WebUI — API Keys Page
-- [ ] API key table: name, permissions, created, last used
-- [ ] Create key dialog: name, permission level
-- [ ] Show generated key once (copy button, warning: shown once only)
-- [ ] Revoke key button (confirmation)
+- [x] API key table: name, permissions, created, last used
+- [x] Create key dialog: name, permission level
+- [x] Show generated key once (copy button, warning: shown once only)
+- [x] Revoke key button (confirmation)
 
 ### Task 112: WebUI Build Integration
-- [ ] `scripts/generate-webui.sh` — cd webui && npm ci && npm run build
-- [ ] Copy `webui/dist/` → `internal/webui/dist/`
-- [ ] Makefile target: `webui` before `build`
-- [ ] Gitignore `internal/webui/dist/` (generated)
-- [ ] `//go:generate` tag alternative for `go generate`
+- [x] `go run ./scripts` — run `npm ci`, build the WebUI, then sync `internal/webui/dist/`
+- [x] Copy `webui/dist/` → `internal/webui/dist/`
+- [x] Makefile target: `webui` before `build`
+- [ ] Decide whether `internal/webui/dist/` should stay committed or become a CI-only artifact
+- [ ] Evaluate a `//go:generate` alternative for local developer ergonomics
 
 ---
 

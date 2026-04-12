@@ -521,79 +521,32 @@ func validatePortRange(s string) error {
 }
 ```
 
-### 2.5 Hot Reload
+### 2.5 Runtime Config Reload
+
+The original `LiveConfig` + `SIGHUP` design has been retired. The current
+runtime reload path is intentionally narrower and is driven through the admin
+API.
 
 ```go
-// internal/config/reload.go
-package config
-
-import (
-    "os"
-    "os/signal"
-    "sync"
-    "sync/atomic"
-    "syscall"
-)
-
-type LiveConfig struct {
-    current atomic.Pointer[Config]
-    path    string
-    mu      sync.Mutex
-    onReload []func(*Config)
-}
-
-func NewLiveConfig(path string) (*LiveConfig, error) {
-    cfg, err := Load(path)
+// internal/api/server.go + internal/server/server.go
+func reloadFromDisk(configPath string) (map[string]any, error) {
+    nextCfg, err := config.Load(configPath)
     if err != nil {
         return nil, err
     }
 
-    lc := &LiveConfig{path: path}
-    lc.current.Store(cfg)
-    return lc, nil
-}
-
-func (lc *LiveConfig) Get() *Config {
-    return lc.current.Load()
-}
-
-func (lc *LiveConfig) OnReload(fn func(*Config)) {
-    lc.mu.Lock()
-    defer lc.mu.Unlock()
-    lc.onReload = append(lc.onReload, fn)
-}
-
-func (lc *LiveConfig) Reload() error {
-    lc.mu.Lock()
-    defer lc.mu.Unlock()
-
-    cfg, err := Load(lc.path)
-    if err != nil {
-        return err
-    }
-
-    lc.current.Store(cfg)
-
-    for _, fn := range lc.onReload {
-        fn(cfg)
-    }
-    return nil
-}
-
-func (lc *LiveConfig) WatchSignals() {
-    ch := make(chan os.Signal, 1)
-    signal.Notify(ch, syscall.SIGHUP)
-    go func() {
-        for range ch {
-            if err := lc.Reload(); err != nil {
-                // Log error but don't crash
-                _ = err
-            }
-        }
-    }()
+    appliedPaths, restartPaths := app.applyRuntimeConfig(nextCfg)
+    return map[string]any{
+        "validated":        true,
+        "requires_restart": len(restartPaths) > 0,
+        "applied_paths":    appliedPaths,
+        "restart_paths":    restartPaths,
+    }, nil
 }
 ```
 
+Only runtime-safe settings are applied immediately. Startup-only settings stay
+in `restart_paths` so operators can see when a restart is still required.
 ---
 
 ## 3. COBALTDB INTEGRATION
@@ -3784,248 +3737,93 @@ func Handler() http.Handler {
 
 ```go
 // cmd/kervan/main.go
-package main
-
-import (
-    "context"
-    "fmt"
-    "os"
-    "os/signal"
-    "syscall"
-
-    "github.com/kervanserver/kervan/internal/build"
-    "github.com/kervanserver/kervan/internal/config"
-    "github.com/kervanserver/kervan/internal/server"
-)
-
 func main() {
-    if len(os.Args) < 2 {
-        runServer()
-        return
-    }
-
-    switch os.Args[1] {
-    case "version":
-        fmt.Println(build.Info())
-    case "init":
-        cmdInit()
-    case "keygen":
-        cmdKeygen()
-    case "admin":
-        cmdAdmin()
-    case "user":
-        cmdUser()
-    case "check":
-        cmdCheck()
-    case "migrate":
-        cmdMigrate()
-    case "status":
-        cmdStatus()
-    default:
-        // Might be --config flag
-        runServer()
-    }
-}
-
-func runServer() {
-    cfgPath := "kervan.yaml"
-    for i, arg := range os.Args {
-        if arg == "--config" && i+1 < len(os.Args) {
-            cfgPath = os.Args[i+1]
+    if len(os.Args) > 1 {
+        switch os.Args[1] {
+        case "version", "--version", "-v":
+            fmt.Println(build.Info())
+            return
+        case "init", "keygen", "admin", "user", "apikey", "backup", "check", "migrate", "mcp", "status":
+            dispatchSubcommand(os.Args[1:])
+            return
         }
     }
+    cmdRun(os.Args[1:])
+}
 
-    liveCfg, err := config.NewLiveConfig(cfgPath)
+func cmdRun(args []string) {
+    cfgPath := resolveConfigPath(args)
+    cfg, err := config.Load(cfgPath)
     if err != nil {
-        fmt.Fprintf(os.Stderr, "Error loading config: %v\n", err)
-        os.Exit(1)
+        exitf("load config: %v", err)
     }
 
-    srv, err := server.New(liveCfg)
+    logger := buildLogger(cfg)
+    app, err := server.New(cfg, cfgPath, logger)
     if err != nil {
-        fmt.Fprintf(os.Stderr, "Error creating server: %v\n", err)
-        os.Exit(1)
+        exitf("create app: %v", err)
     }
+    defer app.Close()
 
-    if err := srv.Start(); err != nil {
-        fmt.Fprintf(os.Stderr, "Error starting server: %v\n", err)
-        os.Exit(1)
-    }
-
-    // Watch for SIGHUP (config reload)
-    liveCfg.WatchSignals()
-
-    // Wait for shutdown signal
-    ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+    ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
     defer stop()
-    <-ctx.Done()
 
-    fmt.Println("\nShutting down...")
-    cfg := liveCfg.Get()
-    shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Server.GracefulShutdownTimeout)
-    defer cancel()
-
-    if err := srv.Shutdown(shutdownCtx); err != nil {
-        fmt.Fprintf(os.Stderr, "Shutdown error: %v\n", err)
-        os.Exit(1)
+    if err := app.Start(ctx); err != nil {
+        exitf("start: %v", err)
     }
-    fmt.Println("Server stopped.")
+
+    <-ctx.Done()
 }
 ```
-
 ### 9.2 Server Orchestrator
 
 ```go
 // internal/server/server.go
-package server
+type App struct {
+    cfg       *config.Config
+    logger    *slog.Logger
+    store     *store.Store
+    authRepo  *auth.UserRepository
+    auth      *auth.Engine
+    sessions  *session.Manager
+    transfers *transfer.Manager
 
-import (
-    "context"
-    "crypto/tls"
-    "fmt"
-    "net/http"
-
-    "github.com/kervanserver/kervan/internal/api"
-    "github.com/kervanserver/kervan/internal/audit"
-    "github.com/kervanserver/kervan/internal/auth"
-    "github.com/kervanserver/kervan/internal/cobalt"
-    "github.com/kervanserver/kervan/internal/config"
-    "github.com/kervanserver/kervan/internal/protocol/ftp"
-    "github.com/kervanserver/kervan/internal/protocol/sftp"
-    "github.com/kervanserver/kervan/internal/session"
-    "github.com/kervanserver/kervan/internal/webui"
-)
-
-type Server struct {
-    cfg         *config.LiveConfig
-    store       *cobalt.Store
-    authEngine  *auth.Engine
-    sessionMgr  *session.Manager
-    auditEngine *audit.Engine
-    ftpServer   *ftp.Server
-    sftpServer  *sftp.Server
-    httpServer  *http.Server
+    ftpServer  *ftp.Server
+    sftpServer *sftp.Server
+    apiServer  *api.Server
 }
 
-func New(cfg *config.LiveConfig) (*Server, error) {
-    c := cfg.Get()
-
-    // Open CobaltDB
-    store, err := cobalt.Open(c.Server.DataDir)
+func New(cfg *config.Config, configPath string, logger *slog.Logger) (*App, error) {
+    st, err := store.Open(cfg.Server.DataDir)
     if err != nil {
-        return nil, fmt.Errorf("opening database: %w", err)
+        return nil, err
     }
 
-    // Initialize audit engine
-    auditEngine := audit.NewEngine(10000)
-    // Add configured outputs...
+    repo := auth.NewUserRepository(st)
+    engine := auth.NewEngine(
+        repo,
+        cfg.Auth.PasswordHash,
+        cfg.Security.BruteForce.MaxAttempts,
+        cfg.Security.BruteForce.LockoutDuration,
+    )
+    engine.SetMinPasswordLength(cfg.Auth.MinPasswordLength)
 
-    // Initialize auth engine
-    userRepo := auth.NewUserRepository(store)
-    authEngine := auth.NewEngine(userRepo, c.Auth)
-
-    // Session manager
-    sessionMgr := session.NewManager()
-
-    // TLS config for FTPS
-    var tlsConfig *tls.Config
-    if c.FTPS.Enabled {
-        tlsConfig, err = buildTLSConfig(c.FTPS)
-        if err != nil {
-            return nil, fmt.Errorf("TLS config: %w", err)
-        }
+    app := &App{
+        cfg:       cfg,
+        logger:    logger,
+        store:     st,
+        authRepo:  repo,
+        auth:      engine,
+        sessions:  session.NewManager(),
+        transfers: transfer.NewManager(2000),
     }
 
-    // SSH host keys
-    hostKeys, err := loadOrGenerateHostKeys(c.SFTP.HostKeyDir, c.SFTP.HostKeyAlgorithms)
-    if err != nil {
-        return nil, fmt.Errorf("host keys: %w", err)
-    }
-
-    s := &Server{
-        cfg:         cfg,
-        store:       store,
-        authEngine:  authEngine,
-        sessionMgr:  sessionMgr,
-        auditEngine: auditEngine,
-    }
-
-    // FTP Server
-    if c.FTP.Enabled {
-        s.ftpServer = ftp.NewServer(&c.FTP, &c.FTPS, authEngine, sessionMgr, auditEngine, tlsConfig)
-    }
-
-    // SFTP/SCP Server
-    if c.SFTP.Enabled {
-        s.sftpServer = sftp.NewServer(&c.SFTP, &c.SCP, authEngine, sessionMgr, auditEngine, hostKeys)
-    }
-
-    // WebUI + API HTTP Server
-    if c.WebUI.Enabled {
-        mux := http.NewServeMux()
-
-        // API routes
-        apiRouter := api.NewRouter(authEngine, sessionMgr, auditEngine, store)
-        mux.Handle("/api/", apiRouter)
-
-        // WebSocket
-        mux.HandleFunc("/api/v1/ws", api.WebSocketHandler(auditEngine, sessionMgr))
-
-        // WebUI (SPA)
-        mux.Handle("/", webui.Handler())
-
-        s.httpServer = &http.Server{
-            Addr:    fmt.Sprintf("%s:%d", c.WebUI.BindAddress, c.WebUI.Port),
-            Handler: mux,
-        }
-    }
-
-    return s, nil
-}
-
-func (s *Server) Start() error {
-    if s.ftpServer != nil {
-        if err := s.ftpServer.Start(); err != nil {
-            return fmt.Errorf("FTP server: %w", err)
-        }
-    }
-
-    if s.sftpServer != nil {
-        if err := s.sftpServer.Start(); err != nil {
-            return fmt.Errorf("SFTP server: %w", err)
-        }
-    }
-
-    if s.httpServer != nil {
-        go func() {
-            c := s.cfg.Get()
-            if c.WebUI.TLS {
-                s.httpServer.ListenAndServeTLS(c.FTPS.CertFile, c.FTPS.KeyFile)
-            } else {
-                s.httpServer.ListenAndServe()
-            }
-        }()
-    }
-
-    return nil
-}
-
-func (s *Server) Shutdown(ctx context.Context) error {
-    if s.httpServer != nil {
-        s.httpServer.Shutdown(ctx)
-    }
-    if s.ftpServer != nil {
-        s.ftpServer.Stop()
-    }
-    if s.sftpServer != nil {
-        s.sftpServer.Stop()
-    }
-    s.auditEngine.Close()
-    s.store.Close()
-    return nil
+    // FTP, SFTP and WebUI/API services are built from cfg here.
+    // Runtime-safe config updates are pushed into the running API layer
+    // instead of rebuilding the whole process around a LiveConfig wrapper.
+    return app, nil
 }
 ```
-
 ---
 
 ## 10. IMPLEMENTATION SEQUENCE

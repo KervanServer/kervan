@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query"
 
 import { api } from "@/lib/api"
 
-export type MonitoringSnapshot = {
+type MonitoringSnapshot = {
   status: Record<string, unknown>
   metrics: Record<string, number>
   updatedAt: string

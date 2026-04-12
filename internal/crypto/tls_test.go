@@ -21,7 +21,7 @@ func TestParseTLSVersion(t *testing.T) {
 		{"1.1", true},
 	}
 	for _, tc := range tests {
-		_, err := parseTLSVersion(tc.in)
+		_, err := ParseTLSVersion(tc.in)
 		if tc.wantErr && err == nil {
 			t.Fatalf("expected error for %q", tc.in)
 		}

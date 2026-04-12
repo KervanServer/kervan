@@ -195,6 +195,46 @@ func (s *fakeLDAPServer) handleConn(conn net.Conn) {
 	}
 }
 
+func bindResponseMessage(messageID int, resultCode int, diagnostic string) []byte {
+	body := append(encodeEnumerated(resultCode), encodeOctetString("")...)
+	body = append(body, encodeOctetString(diagnostic)...)
+	return encodeLDAPMessage(messageID, encodeTLV(0x61, body))
+}
+
+func searchResultEntryMessage(messageID int, dn string, attributes map[string][]string) []byte {
+	attrBody := make([]byte, 0)
+	for name, values := range attributes {
+		valuesBody := make([]byte, 0)
+		for _, value := range values {
+			valuesBody = append(valuesBody, encodeOctetString(value)...)
+		}
+		attr := append(encodeOctetString(name), encodeTLV(0x31, valuesBody)...)
+		attrBody = append(attrBody, encodeTLV(0x30, attr)...)
+	}
+	body := append(encodeOctetString(dn), encodeTLV(0x30, attrBody)...)
+	return encodeLDAPMessage(messageID, encodeTLV(0x64, body))
+}
+
+func searchResultDoneMessage(messageID int, resultCode int, diagnostic string) []byte {
+	body := append(encodeEnumerated(resultCode), encodeOctetString("")...)
+	body = append(body, encodeOctetString(diagnostic)...)
+	return encodeLDAPMessage(messageID, encodeTLV(0x65, body))
+}
+
+func parseBindRequest(op berValue) (string, string, error) {
+	if op.tag != 0x60 {
+		return "", "", errors.New("not a bind request")
+	}
+	children, err := parseBERChildren(op.value)
+	if err != nil {
+		return "", "", err
+	}
+	if len(children) < 3 {
+		return "", "", errors.New("bind request missing fields")
+	}
+	return string(children[1].value), string(children[2].value), nil
+}
+
 func TestParseLDAPFilterEscapesUsername(t *testing.T) {
 	filter, err := parseLDAPFilter("(&(objectClass=person)(uid=alice\\2a))")
 	if err != nil {

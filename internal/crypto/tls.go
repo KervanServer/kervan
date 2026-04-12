@@ -55,7 +55,3 @@ func ParseTLSVersion(v string) (uint16, error) {
 		return 0, fmt.Errorf("unsupported tls version: %s", v)
 	}
 }
-
-func parseTLSVersion(v string) (uint16, error) {
-	return ParseTLSVersion(v)
-}

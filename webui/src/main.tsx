@@ -5,7 +5,7 @@ import { BrowserRouter } from "react-router-dom"
 import { Toaster } from "sonner"
 
 import { App } from "@/app"
-import { ThemeProvider } from "@/components/theme-provider"
+import { ThemeProvider } from "@/hooks/use-theme"
 import { createQueryClient } from "@/lib/query-client"
 import "@/index.css"
 

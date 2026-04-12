@@ -32,9 +32,6 @@ jobs:
           cache: npm
           cache-dependency-path: webui/package-lock.json
 
-      - name: Ensure release scripts are executable
-        run: chmod +x scripts/generate-webui.sh scripts/docker-entrypoint.sh
-
       - name: Set up GoReleaser
         uses: goreleaser/goreleaser-action@v6
         with:

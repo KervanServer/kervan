@@ -27,9 +27,9 @@ This is a conditional-ready system, not a clean-ready system. The code works, th
 ### 1.1 Feature Completeness
 
 - ✅ **Working** — local auth, LDAP auth, TOTP, SSH public-key auth, local/memory/S3 storage backends, share links, user import/export, backup/restore, metrics/health, embedded WebUI, MCP basics
-- ⚠️ **Partial** — FTP/FTPS, SFTP/SCP, quotas, WebSocket live updates, API surface completeness, audit sinks, API keys
-- ❌ **Missing** — groups, OIDC, API-key authentication, keyboard-interactive SSH auth, SSH certificate auth, syslog/CobaltDB audit backends, several declared security controls
-- 🐛 **Misleading** — docs and health labels still imply a CobaltDB-backed design even though the runtime uses `kervan-store.json`
+- ⚠️ **Partial** — FTP/FTPS, SFTP/SCP, quotas, WebSocket live updates, API surface completeness, audit sinks
+- ❌ **Missing** — groups, OIDC, keyboard-interactive SSH auth, SSH certificate auth, syslog/CobaltDB audit backends, several declared security controls
+- 🐛 **Misleading** — some planning docs and health labels still imply a CobaltDB-backed design even though the runtime uses `kervan-store.json`
 
 Estimated feature completeness against the full specification: **~62%**.
 
@@ -47,9 +47,8 @@ The main happy path is viable:
 That is enough for a constrained production deployment.
 
 Where confidence drops:
-- API-key-based automation is not actually possible
-- frontend behavior is untested
 - some protocol claims exceed actual support
+- frontend coverage is focused rather than end-to-end
 - some config/security controls are decorative rather than real
 
 ### 1.3 Data Integrity
@@ -108,7 +107,7 @@ Limitations:
 - [x] TOTP exists for WebUI/API login
 - [x] SSH public-key auth exists
 - [x] Admin/self scoping exists on key endpoints
-- [ ] API-key authentication exists
+- [x] API-key authentication exists
 - [ ] OIDC exists
 - [ ] Keyboard-interactive SSH MFA exists
 - [ ] SSH certificate auth exists
@@ -129,7 +128,7 @@ Limitations:
 - [x] Basic secure headers exist
 - [ ] HSTS is configured
 - [ ] CSP is configured
-- [ ] API-key auth exists for automation consumers
+- [x] API-key auth exists for automation consumers
 
 ### 3.4 Secrets & Configuration
 
@@ -142,23 +141,19 @@ Limitations:
 
 Specific issues:
 
-1. **API-key auth missing**
-   Severity: High
-   Why it matters: the feature appears complete from the outside but is unusable for real automation.
-
-2. **Dead security/config knobs**
+1. **Dead security/config knobs**
    Severity: High
    Examples: IP allow/deny lists, connection limits, some spec-level network controls.
 
-3. **CLI status command disables TLS verification**
+2. **`kervan status --insecure` disables TLS verification**
    Severity: Medium
-   File: `cmd/kervan/cli_commands.go:97-101`
+   File: `cmd/kervan/cli_commands.go:118-126`
 
-4. **No CSP/HSTS**
+3. **No CSP/HSTS**
    Severity: Medium
    File: `internal/api/server.go:1623-1630`
 
-5. **S3 uploads buffer entire bodies in memory**
+4. **S3 uploads buffer entire bodies in memory**
    Severity: Medium
    File: `internal/storage/s3/client.go:139-153`
 
@@ -173,7 +168,7 @@ Positive validation:
 - S3 uploads buffer full request bodies in memory before PUT.
 - WebSocket “live” updates are repeated snapshots every 2 seconds.
 - Audit queries are flat-file scans, not indexed queries.
-- Frontend bundle is monolithic and eagerly imported.
+- Frontend still ships a moderate client bundle even after route-level lazy loading.
 
 ### 4.2 Resource Management
 
@@ -188,7 +183,7 @@ Positive validation:
 - JS bundle: 338.85 kB
 - CSS bundle: 20.99 kB
 
-No route-level code splitting is present.
+Route-level lazy loading is present, but the initial shell and vendor chunks are still substantial.
 
 ## 5. Testing Assessment
 
@@ -204,7 +199,7 @@ No route-level code splitting is present.
 - [x] Unit tests
 - [x] API tests
 - [x] Repository/storage/auth integration-style tests
-- [ ] Frontend component tests
+- [x] Frontend component tests
 - [ ] E2E tests
 - [ ] Benchmark tests
 - [ ] Fuzz tests
@@ -216,7 +211,7 @@ No route-level code splitting is present.
 - [x] CI runs tests and static analysis
 - [x] Backend tests are mostly self-contained
 - [ ] Race-detector coverage exists
-- [ ] Frontend tests exist
+- [x] Frontend tests exist
 
 ## 6. Observability
 
@@ -291,24 +286,22 @@ Documentation volume is good. Documentation trustworthiness is poor.
 
 ### 🚫 Production Blockers (MUST fix before any official/public deployment)
 
-1. API-key authentication is missing even though API-key management exists.
-2. Security-related config and docs overpromise support for controls that runtime does not enforce.
-3. Persistence/health/docs still imply a CobaltDB-backed system when the runtime is JSON-file-backed.
+1. Security-related config and docs overpromise support for controls that runtime does not enforce.
+2. Persistence/health/docs still imply a CobaltDB-backed system when the runtime is JSON-file-backed.
+3. Security defaults are still lighter than a public-facing deployment should tolerate.
 
 ### ⚠️ High Priority (Should fix within first week of production)
 
-1. Enforce password policy on create/import/reset flows.
-2. Remove TLS verification bypass from `kervan status` or make it explicitly unsafe.
-3. Add request size limits and fuller security headers.
-4. Add frontend smoke tests and deeper protocol integration tests.
-5. Rewrite docs around the implemented scope immediately.
+1. Remove TLS verification bypass from `kervan status` or make it explicitly unsafe.
+2. Add request size limits and fuller security headers.
+3. Add deeper protocol integration tests and at least one browser-level smoke flow.
+4. Rewrite docs around the implemented scope immediately.
 
 ### 💡 Recommendations (Improve over time)
 
 1. Replace WebSocket polling snapshots with event-driven updates.
-2. Add route-level code splitting in the WebUI.
-3. Decide whether the long-term persistence story is “simple JSON store” or “embedded DB”, then align code and docs.
-4. Add race-detector coverage in CI on a CGO-capable runner.
+2. Decide whether the long-term persistence story is “simple JSON store” or “embedded DB”, then align code and docs.
+3. Add race-detector coverage in CI on a CGO-capable runner.
 
 ### Estimated Time to Production Ready
 

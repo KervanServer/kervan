@@ -93,18 +93,6 @@ func (r *shareLinkRepository) Get(token string) (*ShareLink, error) {
 	return &link, nil
 }
 
-func (r *shareLinkRepository) Increment(token string) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	link, err := r.getUnlocked(token)
-	if err != nil {
-		return err
-	}
-	link.DownloadCount++
-	return r.store.Put(collShareLinks, token, link)
-}
-
 func (r *shareLinkRepository) ReserveDownload(token string, now time.Time) (*ShareLink, error) {
 	if r == nil || r.store == nil {
 		return nil, errors.New("share links are not configured")

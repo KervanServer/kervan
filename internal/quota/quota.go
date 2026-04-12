@@ -116,38 +116,3 @@ func joinPath(parent, name string) string {
 	}
 	return parent + "/" + name
 }
-
-func MeasureDirEntries(fsys vfs.FileSystem, root string) (int64, error) {
-	info, err := fsys.Stat(root)
-	if err != nil {
-		return 0, err
-	}
-	if !info.IsDir() {
-		return 1, nil
-	}
-	return measureDirEntries(fsys, root)
-}
-
-func measureDirEntries(fsys vfs.FileSystem, dir string) (int64, error) {
-	entries, err := fsys.ReadDir(dir)
-	if err != nil {
-		return 0, err
-	}
-	var total int64
-	for _, entry := range entries {
-		if entry == nil {
-			continue
-		}
-		childPath := joinPath(dir, entry.Name())
-		if entry.IsDir() {
-			count, err := measureDirEntries(fsys, childPath)
-			if err != nil && !errors.Is(err, os.ErrNotExist) {
-				return total, err
-			}
-			total += count
-			continue
-		}
-		total++
-	}
-	return total, nil
-}

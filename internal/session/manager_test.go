@@ -1,9 +1,6 @@
 package session
 
-import (
-	"testing"
-	"time"
-)
+import "testing"
 
 func TestManagerLifecycleAndStats(t *testing.T) {
 	mgr := NewManager()
@@ -14,15 +11,12 @@ func TestManagerLifecycleAndStats(t *testing.T) {
 		t.Fatal("expected sessions to be created")
 	}
 
-	beforeTouch := ftp.LastSeenAt
-	time.Sleep(5 * time.Millisecond)
-	mgr.Touch(ftp.ID)
 	got := mgr.Get(ftp.ID)
 	if got == nil {
 		t.Fatal("expected session to be retrievable")
 	}
-	if !got.LastSeenAt.After(beforeTouch) {
-		t.Fatalf("expected touch to advance last seen: before=%s after=%s", beforeTouch, got.LastSeenAt)
+	if !got.LastSeenAt.Equal(ftp.LastSeenAt) {
+		t.Fatalf("expected copied session to preserve last seen timestamp: start=%s got=%s", ftp.LastSeenAt, got.LastSeenAt)
 	}
 	if got.terminate != nil {
 		t.Fatal("expected copied session to omit terminator")

@@ -146,7 +146,7 @@ Assessment:
 - The API is practical and usable.
 - Legacy `/api/...` and newer `/api/v1/...` routes coexist, which adds surface-area clutter.
 - Files endpoints are split between legacy query-driven routes and a newer path-driven v1 route family.
-- The spec promised “Bearer token or API key”; the implementation only supports bearer tokens.
+- The API supports bearer tokens and API keys, but the auth surface is still narrower than the full original spec.
 
 ## 3. Code Quality Assessment
 
@@ -164,9 +164,7 @@ Weaknesses:
 - Environment overrides are much narrower than documented. `internal/config/loader.go:48-95` supports only a small subset of keys.
 
 Concrete issues:
-- `internal/auth/repo.go:39-41` forces `user.Enabled = true` on create, which is a risky default and easy to misread.
-- `internal/auth/engine.go:123-143` does not enforce `auth.min_password_length` during user creation.
-- `cmd/kervan/cli_commands.go:97-101` disables TLS verification for the `status` command.
+- `cmd/kervan/cli_commands.go:118-126` can disable TLS verification for the `status` command when `--insecure` is supplied.
 
 ### 3.2 Frontend Code Quality
 
@@ -176,8 +174,8 @@ Strengths:
 - Modern React functional components and TypeScript.
 
 Weaknesses:
-- No frontend tests at all.
-- No route-level code splitting; every page is eagerly imported in `webui/src/app.tsx:4-14`.
+- The frontend test suite is focused on page/component flows and still lacks browser-level E2E coverage.
+- Route-level code splitting exists, but the shared shell/vendor chunks still dominate the bundle.
 - Transfer typing drifts from backend reality:
   - backend: `bytes_done`, `error_message` in `internal/transfer/manager.go:24-36`
   - frontend: `bytes_transferred`, `speed_bps`, `error` in `webui/src/lib/types.ts:69-81`
@@ -194,7 +192,6 @@ Good:
 - Audit batching is isolated and asynchronous.
 
 Risks:
-- Session `LastSeenAt` is never updated in runtime code; only tests call `session.Manager.Touch`.
 - WebSocket updates are polling snapshots, not event-based.
 - S3 `PutObject` reads the full body into memory (`internal/storage/s3/client.go:139-153`).
 - `go test -race` could not be run here because the environment lacked CGO support.
@@ -210,7 +207,6 @@ Positive:
 - Zero findings from `govulncheck` and `npm audit --omit=dev`
 
 Important gaps:
-- API keys are CRUD-only, not usable for authentication.
 - `security.allowed_ips` / `security.denied_ips` are validated but not enforced anywhere.
 - `max_connections` config fields are present but unused.
 - No CSP or HSTS headers.
@@ -247,7 +243,6 @@ Strengths:
 - CI runs formatting, vet, staticcheck, tests, frontend build, and Docker build.
 
 Weaknesses:
-- No frontend component tests.
 - No Playwright/Cypress.
 - No benchmarks or fuzzing.
 - `go test -race` is not currently executable in this environment.
@@ -267,7 +262,7 @@ Weaknesses:
 | SSH public-key auth | ✅ Complete | Implemented. |
 | TOTP MFA | ✅ Complete | Implemented for WebUI/API login. |
 | Keyboard-interactive SSH MFA | ❌ Missing | Not implemented. |
-| API keys for automation auth | ⚠️ Partial | Keys exist, auth path does not. |
+| API keys for automation auth | ⚠️ Partial | API key auth exists for the HTTP API, but the broader automation story is still narrower than the original spec. |
 | Groups/group API | ❌ Missing | Not implemented. |
 | Quotas | ⚠️ Partial | Byte quota + file size limit only. |
 | S3 backend + metadata sidecar | ⚠️ Partial | Backend exists; planned metadata DB layer does not. |
@@ -293,10 +288,10 @@ Measured directly from `.project/TASKS.md`:
 
 | Metric | Value |
 |---|---:|
-| Checked tasks | 0 |
-| Unchecked tasks | 788 |
+| Checked tasks | 48 |
+| Unchecked tasks | 739 |
 
-Literal task completion: **0%**.
+Literal task completion: **~6.1%**.
 
 Observed implementation progress: **roughly 55-60%** of task themes are materially done or in progress.
 
@@ -317,13 +312,12 @@ This is mostly good scope creep. It improves operability.
 ### 5.5 Missing Critical Components
 
 Highest-impact missing or partial components:
-1. API-key auth
-2. group model + group API
-3. OIDC
-4. enforced IP/network security controls
-5. CobaltDB/queryable audit layer promised by docs
-6. richer FTP RFC support
-7. frontend tests
+1. group model + group API
+2. OIDC
+3. enforced IP/network security controls
+4. CobaltDB/queryable audit layer promised by docs
+5. richer FTP RFC support
+6. browser-level frontend E2E coverage
 
 ## 6. Performance & Scalability
 
@@ -331,7 +325,7 @@ Performance observations:
 - S3 uploads buffer full bodies in memory.
 - WebSocket snapshots are rebuilt every 2 seconds per client.
 - Audit reads are file scans, not indexed queries.
-- Frontend bundle has no route splitting.
+- Frontend uses route-level lazy loading, but the shared chunks are still fairly large.
 
 Scalability observations:
 - Good fit for a single-node deployment.
@@ -350,34 +344,22 @@ DX problems:
 
 ### 🔴 Critical
 
-1. `internal/api/server.go:1593-1607`
-   API-key auth is missing.
-
-2. `internal/config/loader.go:48-95` plus runtime code
+1. `internal/config/loader.go:48-95` plus runtime code
    Config advertises knobs that do not do anything.
 
-3. `internal/store/store.go:23-36` vs docs/health payloads
+2. `internal/store/store.go:23-36` vs docs/health payloads
    Persistence architecture is mislabeled and under-documented.
 
-4. `internal/storage/s3/client.go:139-153`
+3. `internal/storage/s3/client.go:139-153`
    Large uploads are buffered in memory.
 
 ### 🟡 Important
 
-1. `internal/auth/repo.go:39-41`
-   Forced enable-on-create behavior.
+1. `cmd/kervan/cli_commands.go:118-126`
+   TLS verification can be bypassed in the status command via `--insecure`.
 
-2. `internal/auth/engine.go:123-143`
-   Password policy not enforced.
-
-3. `cmd/kervan/cli_commands.go:97-101`
-   TLS verification bypass in status command.
-
-4. `internal/session/manager.go:50-56`
-   `LastSeenAt` exists but is unused in runtime.
-
-5. `webui/`
-   No automated tests.
+2. `webui/`
+   The test suite is now real, but it still stops at component/page scope.
 
 ### 🟢 Minor
 
@@ -405,5 +387,5 @@ DX problems:
 | Open TODOs/FIXMEs | 0 |
 | API Endpoints | 45 registered route patterns |
 | Spec Feature Completion | ~62% |
-| Task Completion | 0% tracked / ~55-60% observed |
+| Task Completion | ~6.1% tracked / ~55-60% observed |
 | Overall Health Score | 6.5/10 |
