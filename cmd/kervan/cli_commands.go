@@ -67,12 +67,12 @@ func runCheckCommand(stdout io.Writer, args []string) error {
 	configPath := fs.String("config", defaultConfigPath, "Path to config file")
 	jsonOut := fs.Bool("json", false, "Output JSON")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return fmt.Errorf("parse check flags: %w", err)
 	}
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("load config %s: %w", *configPath, err)
 	}
 
 	payload := map[string]any{
@@ -85,7 +85,10 @@ func runCheckCommand(stdout io.Writer, args []string) error {
 		"webui_enabled": cfg.WebUI.Enabled,
 	}
 	if *jsonOut {
-		return json.NewEncoder(stdout).Encode(payload)
+		if err := json.NewEncoder(stdout).Encode(payload); err != nil {
+			return fmt.Errorf("encode check output: %w", err)
+		}
+		return nil
 	}
 
 	_, _ = fmt.Fprintf(stdout, "Config valid: %s\n", *configPath)
@@ -102,12 +105,12 @@ func runStatusCommand(stdout io.Writer, args []string) error {
 	insecure := fs.Bool("insecure", false, "Skip TLS certificate verification")
 	jsonOut := fs.Bool("json", false, "Output JSON")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return fmt.Errorf("parse status flags: %w", err)
 	}
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("load config %s: %w", *configPath, err)
 	}
 	if !cfg.WebUI.Enabled {
 		return errors.New("webui/api is disabled in config")
@@ -120,6 +123,7 @@ func runStatusCommand(stdout io.Writer, args []string) error {
 		scheme = "https"
 		if *insecure {
 			client.Transport = &http.Transport{
+				// #nosec G402 -- explicit `--insecure` flag for local diagnostics.
 				TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 			}
 		}
@@ -127,7 +131,7 @@ func runStatusCommand(stdout io.Writer, args []string) error {
 
 	resp, err := client.Get(scheme + "://" + address + "/health")
 	if err != nil {
-		return err
+		return fmt.Errorf("query health endpoint: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
@@ -136,11 +140,14 @@ func runStatusCommand(stdout io.Writer, args []string) error {
 
 	var payload map[string]any
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return err
+		return fmt.Errorf("decode health response: %w", err)
 	}
 
 	if *jsonOut {
-		return json.NewEncoder(stdout).Encode(payload)
+		if err := json.NewEncoder(stdout).Encode(payload); err != nil {
+			return fmt.Errorf("encode status output: %w", err)
+		}
+		return nil
 	}
 
 	_, _ = fmt.Fprintf(stdout, "Server status: %v\n", payload["status"])
@@ -197,12 +204,15 @@ func runAPIKeyScopesCommand(stdout io.Writer, args []string) error {
 	fs.SetOutput(io.Discard)
 	jsonOut := fs.Bool("json", false, "Output JSON")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return fmt.Errorf("parse apikey scopes flags: %w", err)
 	}
 
 	scopes := iapi.SupportedAPIKeyScopes()
 	if *jsonOut {
-		return json.NewEncoder(stdout).Encode(scopes)
+		if err := json.NewEncoder(stdout).Encode(scopes); err != nil {
+			return fmt.Errorf("encode API key scopes output: %w", err)
+		}
+		return nil
 	}
 
 	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
@@ -210,7 +220,10 @@ func runAPIKeyScopesCommand(stdout io.Writer, args []string) error {
 	for _, scope := range scopes {
 		_, _ = fmt.Fprintf(tw, "%s\t%s\t%s\t%s\n", scope.Name, scope.Resource, scope.Access, scope.Description)
 	}
-	return tw.Flush()
+	if err := tw.Flush(); err != nil {
+		return fmt.Errorf("flush API key scopes output: %w", err)
+	}
+	return nil
 }
 
 func runAPIKeyPresetsCommand(stdout io.Writer, args []string) error {
@@ -218,12 +231,15 @@ func runAPIKeyPresetsCommand(stdout io.Writer, args []string) error {
 	fs.SetOutput(io.Discard)
 	jsonOut := fs.Bool("json", false, "Output JSON")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return fmt.Errorf("parse apikey presets flags: %w", err)
 	}
 
 	presets := iapi.APIKeyPresets()
 	if *jsonOut {
-		return json.NewEncoder(stdout).Encode(presets)
+		if err := json.NewEncoder(stdout).Encode(presets); err != nil {
+			return fmt.Errorf("encode API key presets output: %w", err)
+		}
+		return nil
 	}
 
 	for _, preset := range presets {
@@ -241,7 +257,7 @@ func runAPIKeyListCommand(stdout io.Writer, args []string) error {
 	username := fs.String("username", "", "Username")
 	jsonOut := fs.Bool("json", false, "Output JSON")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return fmt.Errorf("parse apikey list flags: %w", err)
 	}
 	if strings.TrimSpace(*username) == "" {
 		return errors.New("--username is required")
@@ -249,13 +265,13 @@ func runAPIKeyListCommand(stdout io.Writer, args []string) error {
 
 	ctx, user, err := openCLIAPIKeyContext(*configPath, *username)
 	if err != nil {
-		return err
+		return fmt.Errorf("open API key context for user %s: %w", strings.TrimSpace(*username), err)
 	}
 	defer ctx.close()
 
 	keys, err := ctx.apiKeys.ListByUser(user.ID)
 	if err != nil {
-		return err
+		return fmt.Errorf("list API keys for user %s: %w", user.Username, err)
 	}
 	sort.Slice(keys, func(i, j int) bool {
 		if keys[i] == nil {
@@ -268,7 +284,10 @@ func runAPIKeyListCommand(stdout io.Writer, args []string) error {
 	})
 
 	if *jsonOut {
-		return json.NewEncoder(stdout).Encode(keys)
+		if err := json.NewEncoder(stdout).Encode(keys); err != nil {
+			return fmt.Errorf("encode API key list output: %w", err)
+		}
+		return nil
 	}
 
 	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
@@ -292,7 +311,10 @@ func runAPIKeyListCommand(stdout io.Writer, args []string) error {
 			lastUsed,
 		)
 	}
-	return tw.Flush()
+	if err := tw.Flush(); err != nil {
+		return fmt.Errorf("flush API key list output: %w", err)
+	}
+	return nil
 }
 
 func runAPIKeyCreateCommand(stdout io.Writer, args []string) error {
@@ -304,7 +326,7 @@ func runAPIKeyCreateCommand(stdout io.Writer, args []string) error {
 	permissions := fs.String("permissions", "read-write", "Preset or comma-separated scope list")
 	jsonOut := fs.Bool("json", false, "Output JSON")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return fmt.Errorf("parse apikey create flags: %w", err)
 	}
 	if strings.TrimSpace(*username) == "" {
 		return errors.New("--username is required")
@@ -315,13 +337,13 @@ func runAPIKeyCreateCommand(stdout io.Writer, args []string) error {
 
 	ctx, user, err := openCLIAPIKeyContext(*configPath, *username)
 	if err != nil {
-		return err
+		return fmt.Errorf("open API key context for user %s: %w", strings.TrimSpace(*username), err)
 	}
 	defer ctx.close()
 
 	token, record, err := ctx.apiKeys.Create(user.ID, *name, *permissions)
 	if err != nil {
-		return err
+		return fmt.Errorf("create API key for user %s: %w", user.Username, err)
 	}
 
 	payload := map[string]any{
@@ -334,7 +356,10 @@ func runAPIKeyCreateCommand(stdout io.Writer, args []string) error {
 		"key":         token,
 	}
 	if *jsonOut {
-		return json.NewEncoder(stdout).Encode(payload)
+		if err := json.NewEncoder(stdout).Encode(payload); err != nil {
+			return fmt.Errorf("encode API key create output: %w", err)
+		}
+		return nil
 	}
 
 	_, _ = fmt.Fprintf(stdout, "API key created for %s\n", user.Username)
@@ -352,7 +377,7 @@ func runAPIKeyRevokeCommand(stdout io.Writer, args []string) error {
 	id := fs.String("id", "", "API key ID")
 	jsonOut := fs.Bool("json", false, "Output JSON")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return fmt.Errorf("parse apikey revoke flags: %w", err)
 	}
 	if strings.TrimSpace(*username) == "" {
 		return errors.New("--username is required")
@@ -363,12 +388,12 @@ func runAPIKeyRevokeCommand(stdout io.Writer, args []string) error {
 
 	ctx, user, err := openCLIAPIKeyContext(*configPath, *username)
 	if err != nil {
-		return err
+		return fmt.Errorf("open API key context for user %s: %w", strings.TrimSpace(*username), err)
 	}
 	defer ctx.close()
 
 	if err := ctx.apiKeys.Delete(user.ID, strings.TrimSpace(*id)); err != nil {
-		return err
+		return fmt.Errorf("revoke API key %s for user %s: %w", strings.TrimSpace(*id), user.Username, err)
 	}
 
 	payload := map[string]any{
@@ -377,7 +402,10 @@ func runAPIKeyRevokeCommand(stdout io.Writer, args []string) error {
 		"username": user.Username,
 	}
 	if *jsonOut {
-		return json.NewEncoder(stdout).Encode(payload)
+		if err := json.NewEncoder(stdout).Encode(payload); err != nil {
+			return fmt.Errorf("encode API key revoke output: %w", err)
+		}
+		return nil
 	}
 
 	_, _ = fmt.Fprintf(stdout, "API key revoked: %s (%s)\n", strings.TrimSpace(*id), user.Username)
@@ -390,18 +418,18 @@ func runUserListCommand(stdout io.Writer, args []string) error {
 	configPath := fs.String("config", defaultConfigPath, "Path to config file")
 	jsonOut := fs.Bool("json", false, "Output JSON")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return fmt.Errorf("parse user list flags: %w", err)
 	}
 
 	ctx, err := openCLIContext(*configPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("open CLI context: %w", err)
 	}
 	defer ctx.close()
 
 	users, err := ctx.repo.List()
 	if err != nil {
-		return err
+		return fmt.Errorf("list users: %w", err)
 	}
 	sort.Slice(users, func(i, j int) bool {
 		if users[i] == nil {
@@ -414,7 +442,10 @@ func runUserListCommand(stdout io.Writer, args []string) error {
 	})
 
 	if *jsonOut {
-		return json.NewEncoder(stdout).Encode(users)
+		if err := json.NewEncoder(stdout).Encode(users); err != nil {
+			return fmt.Errorf("encode user list output: %w", err)
+		}
+		return nil
 	}
 
 	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
@@ -431,7 +462,10 @@ func runUserListCommand(stdout io.Writer, args []string) error {
 			user.UpdatedAt.Format(time.RFC3339),
 		)
 	}
-	return tw.Flush()
+	if err := tw.Flush(); err != nil {
+		return fmt.Errorf("flush user list output: %w", err)
+	}
+	return nil
 }
 
 func runUserCreateCommand(stdout io.Writer, args []string) error {
@@ -444,7 +478,7 @@ func runUserCreateCommand(stdout io.Writer, args []string) error {
 	admin := fs.Bool("admin", false, "Create as admin user")
 	jsonOut := fs.Bool("json", false, "Output JSON")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return fmt.Errorf("parse user create flags: %w", err)
 	}
 	if strings.TrimSpace(*username) == "" {
 		return errors.New("--username is required")
@@ -455,17 +489,20 @@ func runUserCreateCommand(stdout io.Writer, args []string) error {
 
 	ctx, err := openCLIContext(*configPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("open CLI context: %w", err)
 	}
 	defer ctx.close()
 
 	user, err := ctx.engine.CreateUser(strings.TrimSpace(*username), *password, *homeDir, *admin)
 	if err != nil {
-		return err
+		return fmt.Errorf("create user %s: %w", strings.TrimSpace(*username), err)
 	}
 
 	if *jsonOut {
-		return json.NewEncoder(stdout).Encode(user)
+		if err := json.NewEncoder(stdout).Encode(user); err != nil {
+			return fmt.Errorf("encode user create output: %w", err)
+		}
+		return nil
 	}
 
 	_, _ = fmt.Fprintf(stdout, "User created: %s (%s)\n", user.Username, user.ID)
@@ -479,7 +516,7 @@ func runUserDeleteCommand(stdout io.Writer, args []string) error {
 	username := fs.String("username", "", "Username")
 	jsonOut := fs.Bool("json", false, "Output JSON")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return fmt.Errorf("parse user delete flags: %w", err)
 	}
 	if strings.TrimSpace(*username) == "" {
 		return errors.New("--username is required")
@@ -487,19 +524,19 @@ func runUserDeleteCommand(stdout io.Writer, args []string) error {
 
 	ctx, err := openCLIContext(*configPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("open CLI context: %w", err)
 	}
 	defer ctx.close()
 
 	user, err := ctx.repo.GetByUsername(strings.TrimSpace(*username))
 	if err != nil {
-		return err
+		return fmt.Errorf("find user %s: %w", strings.TrimSpace(*username), err)
 	}
 	if user == nil {
 		return fmt.Errorf("user not found: %s", *username)
 	}
 	if err := ctx.repo.Delete(user.ID); err != nil {
-		return err
+		return fmt.Errorf("delete user %s (%s): %w", user.Username, user.ID, err)
 	}
 
 	payload := map[string]any{
@@ -508,7 +545,10 @@ func runUserDeleteCommand(stdout io.Writer, args []string) error {
 		"id":       user.ID,
 	}
 	if *jsonOut {
-		return json.NewEncoder(stdout).Encode(payload)
+		if err := json.NewEncoder(stdout).Encode(payload); err != nil {
+			return fmt.Errorf("encode user delete output: %w", err)
+		}
+		return nil
 	}
 
 	_, _ = fmt.Fprintf(stdout, "User deleted: %s (%s)\n", user.Username, user.ID)
@@ -523,7 +563,7 @@ func runUserImportCommand(stdout io.Writer, args []string) error {
 	formatFlag := fs.String("format", "auto", "Import format: auto|json|csv")
 	jsonOut := fs.Bool("json", false, "Output JSON")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return fmt.Errorf("parse user import flags: %w", err)
 	}
 	if strings.TrimSpace(*filePath) == "" {
 		return errors.New("--file is required")
@@ -531,16 +571,16 @@ func runUserImportCommand(stdout io.Writer, args []string) error {
 
 	format, err := normalizeUserDataFormat(*formatFlag, *filePath)
 	if err != nil {
-		return err
+		return fmt.Errorf("resolve import format: %w", err)
 	}
 	records, err := loadUserImportRecords(*filePath, format)
 	if err != nil {
-		return err
+		return fmt.Errorf("load import records from %s: %w", *filePath, err)
 	}
 
 	ctx, err := openCLIContext(*configPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("open CLI context: %w", err)
 	}
 	defer ctx.close()
 
@@ -565,7 +605,10 @@ func runUserImportCommand(stdout io.Writer, args []string) error {
 	}
 
 	if *jsonOut {
-		return json.NewEncoder(stdout).Encode(report)
+		if err := json.NewEncoder(stdout).Encode(report); err != nil {
+			return fmt.Errorf("encode user import output: %w", err)
+		}
+		return nil
 	}
 
 	_, _ = fmt.Fprintf(stdout, "Imported users from %s\n", *filePath)
@@ -593,23 +636,23 @@ func runUserExportCommand(stdout io.Writer, args []string) error {
 	outputPath := fs.String("output", "", "Output file path, or '-' for stdout")
 	includePasswordHashes := fs.Bool("include-password-hashes", false, "Include password hashes in export output")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return fmt.Errorf("parse user export flags: %w", err)
 	}
 
 	format, err := normalizeUserDataFormat(*formatFlag, *outputPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("resolve export format: %w", err)
 	}
 
 	ctx, err := openCLIContext(*configPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("open CLI context: %w", err)
 	}
 	defer ctx.close()
 
 	users, err := ctx.repo.List()
 	if err != nil {
-		return err
+		return fmt.Errorf("list users: %w", err)
 	}
 	sort.Slice(users, func(i, j int) bool {
 		if users[i] == nil {
@@ -645,12 +688,12 @@ func runUserExportCommand(stdout io.Writer, args []string) error {
 	var outputFile *os.File
 	var outputTmpPath string
 	if trimmedOutput := strings.TrimSpace(*outputPath); trimmedOutput != "" && trimmedOutput != "-" {
-		if err := os.MkdirAll(filepath.Dir(trimmedOutput), 0o755); err != nil {
-			return err
+		if err := os.MkdirAll(filepath.Dir(trimmedOutput), 0o750); err != nil {
+			return fmt.Errorf("create output directory for %s: %w", trimmedOutput, err)
 		}
 		file, err := os.CreateTemp(filepath.Dir(trimmedOutput), filepath.Base(trimmedOutput)+".*.tmp")
 		if err != nil {
-			return err
+			return fmt.Errorf("create temporary export file for %s: %w", trimmedOutput, err)
 		}
 		outputFile = file
 		outputTmpPath = file.Name()
@@ -671,11 +714,11 @@ func runUserExportCommand(stdout io.Writer, args []string) error {
 		encoder := json.NewEncoder(dest)
 		encoder.SetIndent("", "  ")
 		if err := encoder.Encode(records); err != nil {
-			return err
+			return fmt.Errorf("encode user export JSON: %w", err)
 		}
 	case "csv":
 		if err := writeUserExportCSV(dest, records, *includePasswordHashes); err != nil {
-			return err
+			return fmt.Errorf("encode user export CSV: %w", err)
 		}
 	default:
 		return fmt.Errorf("unsupported export format: %s", format)
@@ -683,17 +726,17 @@ func runUserExportCommand(stdout io.Writer, args []string) error {
 
 	if !writeToStdout {
 		if err := outputFile.Chmod(0o600); err != nil {
-			return err
+			return fmt.Errorf("set export file permissions: %w", err)
 		}
 		if err := outputFile.Sync(); err != nil {
-			return err
+			return fmt.Errorf("sync export file: %w", err)
 		}
 		if err := outputFile.Close(); err != nil {
-			return err
+			return fmt.Errorf("close export file: %w", err)
 		}
 		outputFile = nil
 		if err := store.ReplaceTempFileAtomically(outputTmpPath, strings.TrimSpace(*outputPath)); err != nil {
-			return err
+			return fmt.Errorf("move export file into place: %w", err)
 		}
 		outputTmpPath = ""
 		_, _ = fmt.Fprintf(stdout, "Exported %d users to %s\n", len(records), strings.TrimSpace(*outputPath))
@@ -712,11 +755,11 @@ type cliContext struct {
 func openCLIContext(configPath string) (*cliContext, error) {
 	cfg, err := config.Load(configPath)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("load config %s: %w", configPath, err)
 	}
 	st, err := store.Open(cfg.Server.DataDir)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("open store in %s: %w", cfg.Server.DataDir, err)
 	}
 	repo := auth.NewUserRepository(st)
 	engine := auth.NewEngine(repo, cfg.Auth.PasswordHash, cfg.Security.BruteForce.MaxAttempts, cfg.Security.BruteForce.LockoutDuration)
@@ -733,12 +776,12 @@ func openCLIContext(configPath string) (*cliContext, error) {
 func openCLIAPIKeyContext(configPath, username string) (*cliContext, *auth.User, error) {
 	ctx, err := openCLIContext(configPath)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("open CLI context: %w", err)
 	}
 	user, err := ctx.repo.GetByUsername(strings.TrimSpace(username))
 	if err != nil {
 		ctx.close()
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("load user %s: %w", strings.TrimSpace(username), err)
 	}
 	if user == nil {
 		ctx.close()
@@ -826,9 +869,10 @@ func normalizeUserDataFormat(formatFlag, filePath string) (string, error) {
 }
 
 func loadUserImportRecords(filePath, format string) ([]userImportRecord, error) {
+	// #nosec G304 -- import file path is explicit operator-provided CLI input.
 	file, err := os.Open(filePath)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("open import file %s: %w", filePath, err)
 	}
 	defer file.Close()
 
@@ -837,7 +881,7 @@ func loadUserImportRecords(filePath, format string) ([]userImportRecord, error) 
 		var records []userImportRecord
 		decoder := json.NewDecoder(file)
 		if err := decoder.Decode(&records); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("decode JSON import file %s: %w", filePath, err)
 		}
 		for index := range records {
 			records[index].Row = index + 1
@@ -852,7 +896,7 @@ func loadUserImportRecords(filePath, format string) ([]userImportRecord, error) 
 		reader := csv.NewReader(file)
 		rows, err := reader.ReadAll()
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("decode CSV import file %s: %w", filePath, err)
 		}
 		if len(rows) == 0 {
 			return nil, errors.New("csv file is empty")
@@ -896,16 +940,23 @@ func createImportedUser(ctx *cliContext, record userImportRecord) (*auth.User, e
 
 	userType, err := resolveImportedUserType(record.Role, record.Type)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("resolve user type for %s: %w", username, err)
 	}
 	homeDir := strings.TrimSpace(record.HomeDir)
 	if homeDir == "" {
 		homeDir = "/"
 	}
+	homeDir, err = auth.NormalizeHomeDir(homeDir)
+	if err != nil {
+		return nil, fmt.Errorf("normalize home directory for %s: %w", username, err)
+	}
 
 	var user *auth.User
 	switch {
 	case strings.TrimSpace(record.PasswordHash) != "":
+		if err := auth.ValidatePasswordHash(record.PasswordHash); err != nil {
+			return nil, fmt.Errorf("password_hash is invalid: %w", err)
+		}
 		user = &auth.User{
 			Username:     username,
 			PasswordHash: strings.TrimSpace(record.PasswordHash),
@@ -916,12 +967,12 @@ func createImportedUser(ctx *cliContext, record userImportRecord) (*auth.User, e
 			Permissions:  auth.DefaultUserPermissions(),
 		}
 		if err := ctx.repo.Create(user); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("create imported user %s: %w", username, err)
 		}
 	case record.Password != "":
 		user, err = ctx.engine.CreateUser(username, record.Password, homeDir, userType == auth.UserTypeAdmin)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("create imported user %s: %w", username, err)
 		}
 	default:
 		return nil, errors.New("password or password_hash is required")
@@ -946,7 +997,7 @@ func createImportedUser(ctx *cliContext, record userImportRecord) (*auth.User, e
 	}
 	if needsUpdate {
 		if err := ctx.repo.Update(user); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("update imported user %s: %w", username, err)
 		}
 	}
 	return user, nil
@@ -981,7 +1032,7 @@ func writeUserExportCSV(w io.Writer, records []userExportRecord, includePassword
 		header = append(header, "password_hash")
 	}
 	if err := writer.Write(header); err != nil {
-		return err
+		return fmt.Errorf("write CSV header: %w", err)
 	}
 	for _, record := range records {
 		row := []string{
@@ -996,11 +1047,14 @@ func writeUserExportCSV(w io.Writer, records []userExportRecord, includePassword
 			row = append(row, record.PasswordHash)
 		}
 		if err := writer.Write(row); err != nil {
-			return err
+			return fmt.Errorf("write CSV row for user %s: %w", record.Username, err)
 		}
 	}
 	writer.Flush()
-	return writer.Error()
+	if err := writer.Error(); err != nil {
+		return fmt.Errorf("flush CSV output: %w", err)
+	}
+	return nil
 }
 
 func csvValue(row []string, header map[string]int, column string) string {

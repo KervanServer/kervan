@@ -36,6 +36,7 @@ import (
 const (
 	collSystemSecrets       = "system_secrets"
 	keySessionSigningSecret = "session_signing_secret"
+	maxJSONBodyBytes        = 1 << 20
 )
 
 type Config struct {
@@ -342,6 +343,7 @@ func (s *Server) Start(ctx context.Context) error {
 		IdleTimeout:       cfg.IdleTimeout,
 	}
 
+	// #nosec G118 -- server shutdown intentionally uses a detached context.
 	go func() {
 		<-ctx.Done()
 		_ = s.Stop(context.Background())
@@ -406,7 +408,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		Password string `json:"password"`
 		OTP      string `json:"otp"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONBody(w, r, &req, false); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
 		return
 	}
@@ -418,6 +420,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	if cfg.TOTPEnabled && user.TOTPEnabled {
 		if !auth.ValidateTOTP(user.TOTPSecret, req.OTP, time.Now().UTC(), 1) {
+			_ = s.auth.RecordFailedLogin(user.ID)
 			s.recordLoginFailure(clientIP, time.Now().UTC())
 			writeJSON(w, http.StatusUnauthorized, map[string]string{
 				"error": "two-factor code required",
@@ -432,6 +435,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "token generation failed"})
 		return
 	}
+	_ = s.auth.RecordSuccessfulLogin(user.ID)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"token": token,
 		"user": map[string]any{
@@ -473,7 +477,7 @@ func (s *Server) handleTOTP(w http.ResponseWriter, r *http.Request) {
 			var req struct {
 				Code string `json:"code"`
 			}
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+			if err := decodeJSONBody(w, r, &req, true); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
 				return
 			}
@@ -512,6 +516,19 @@ func (s *Server) handleTOTPSetup(w http.ResponseWriter, r *http.Request) {
 	if user == nil {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "user not found"})
 		return
+	}
+	if user.TOTPEnabled {
+		var req struct {
+			Code string `json:"code"`
+		}
+		if err := decodeJSONBody(w, r, &req, false); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "current two-factor code is required"})
+			return
+		}
+		if !auth.ValidateTOTP(user.TOTPSecret, req.Code, time.Now().UTC(), 1) {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid current two-factor code"})
+			return
+		}
 	}
 
 	secret, err := auth.GenerateTOTPSecret()
@@ -563,7 +580,7 @@ func (s *Server) handleTOTPEnable(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Code string `json:"code"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONBody(w, r, &req, false); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
 		return
 	}
@@ -582,7 +599,11 @@ func (s *Server) handleTOTPEnable(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func (s *Server) handleServerStatus(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleServerStatus(w http.ResponseWriter, r *http.Request) {
+	if !s.isAdminUser(currentUser(r)) {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "admin access required"})
+		return
+	}
 	resp := map[string]any{
 		"time": time.Now().UTC(),
 	}
@@ -614,7 +635,7 @@ func (s *Server) handleServerConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		var patch map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
+		if err := decodeJSONBody(w, r, &patch, false); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
 			return
 		}
@@ -672,7 +693,7 @@ func (s *Server) handleServerConfigValidate(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	var patch map[string]any
-	if err := json.NewDecoder(r.Body).Decode(&patch); err != nil {
+	if err := decodeJSONBody(w, r, &patch, false); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
 		return
 	}
@@ -730,7 +751,7 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 			HomeDir  string `json:"home_dir"`
 			Admin    bool   `json:"admin"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := decodeJSONBody(w, r, &req, false); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
 			return
 		}
@@ -754,7 +775,7 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 			Enabled *bool  `json:"enabled"`
 			Admin   *bool  `json:"admin"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := decodeJSONBody(w, r, &req, false); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
 			return
 		}
@@ -772,7 +793,12 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if strings.TrimSpace(req.HomeDir) != "" {
-			user.HomeDir = req.HomeDir
+			homeDir, err := auth.NormalizeHomeDir(req.HomeDir)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			user.HomeDir = homeDir
 		}
 		if req.Enabled != nil {
 			user.Enabled = *req.Enabled
@@ -931,7 +957,7 @@ func (s *Server) handleAPIKeys(w http.ResponseWriter, r *http.Request) {
 			Name        string `json:"name"`
 			Permissions string `json:"permissions"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := decodeJSONBody(w, r, &req, false); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
 			return
 		}
@@ -1031,7 +1057,7 @@ func (s *Server) handleFilesMkdir(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Path string `json:"path"`
 	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	if err := decodeJSONBody(w, r, &req, false); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
 		return
 	}
@@ -1092,7 +1118,7 @@ func (s *Server) handleFilesRename(w http.ResponseWriter, r *http.Request) {
 			From string `json:"from"`
 			To   string `json:"to"`
 		}
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := decodeJSONBody(w, r, &req, false); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "from and to are required"})
 			return
 		}
@@ -1132,7 +1158,7 @@ func (s *Server) handleFilesShare(w http.ResponseWriter, r *http.Request) {
 		MaxDownloads int    `json:"max_downloads"`
 	}
 	if !isBodyEmpty(r) {
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := decodeJSONBody(w, r, &req, false); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
 			return
 		}
@@ -1216,9 +1242,13 @@ func (s *Server) handleFilesUpload(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	defer f.Close()
 	n, err := io.Copy(f, r.Body)
 	if err != nil {
+		_ = f.Close()
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	if err := f.Close(); err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
@@ -1873,6 +1903,31 @@ func normalizeAPIPath(p string) string {
 		return "/"
 	}
 	return clean
+}
+
+func decodeJSONBody(w http.ResponseWriter, r *http.Request, dst any, allowEmpty bool) error {
+	if r == nil || r.Body == nil {
+		if allowEmpty {
+			return nil
+		}
+		return io.EOF
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxJSONBodyBytes)
+	decoder := json.NewDecoder(r.Body)
+	if err := decoder.Decode(dst); err != nil {
+		if allowEmpty && errors.Is(err, io.EOF) {
+			return nil
+		}
+		return err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != nil && !errors.Is(err, io.EOF) {
+		return errors.New("invalid json payload")
+	}
+	if err := r.Body.Close(); err != nil {
+		return err
+	}
+	return nil
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

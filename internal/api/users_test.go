@@ -79,6 +79,36 @@ func TestHandleUsersUpdateByAdmin(t *testing.T) {
 	}
 }
 
+func TestHandleUsersUpdateRejectsInvalidHomeDir(t *testing.T) {
+	srv, repo := newUserTestServer(t)
+
+	target, err := repo.GetByUsername("alice")
+	if err != nil {
+		t.Fatalf("get alice: %v", err)
+	}
+	if target == nil {
+		t.Fatal("expected alice to exist")
+	}
+
+	body, err := json.Marshal(map[string]any{
+		"id":       target.ID,
+		"home_dir": "/../../escape",
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/users", bytes.NewReader(body))
+	req.Header.Set("X-Auth-User", "admin")
+	rec := httptest.NewRecorder()
+
+	srv.handleUsers(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
 func TestHandleUsersDeleteByAdminTerminatesSessions(t *testing.T) {
 	srv, repo := newUserTestServer(t)
 	aliceSession := srv.sessions.Start("alice", "ftp", "10.0.0.1:1000")
@@ -161,6 +191,52 @@ func TestHandleUsersImportByAdmin(t *testing.T) {
 	}
 	if ops.Type != auth.UserTypeAdmin || ops.Enabled {
 		t.Fatalf("unexpected ops user: %#v", ops)
+	}
+}
+
+func TestHandleUsersImportRejectsOversizedBody(t *testing.T) {
+	srv, _ := newUserTestServer(t)
+
+	oversizedJSON := `[{"username":"alice","password":"` + strings.Repeat("a", int(maxUserImportBytes)) + `"}]`
+	body := strings.NewReader(oversizedJSON)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/users/import?format=json", body)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Auth-User", "admin")
+	rec := httptest.NewRecorder()
+
+	srv.handleUsersImport(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for oversized import, got %d: %s", rec.Code, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "request body too large") {
+		t.Fatalf("expected request body too large error, got %s", rec.Body.String())
+	}
+}
+
+func TestHandleUsersImportRejectsInvalidPasswordHash(t *testing.T) {
+	srv, _ := newUserTestServer(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/users/import?format=json", strings.NewReader(`[{"username":"bob","password_hash":"not-a-hash"}]`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Auth-User", "admin")
+	rec := httptest.NewRecorder()
+
+	srv.handleUsersImport(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	var report userImportReport
+	if err := json.Unmarshal(rec.Body.Bytes(), &report); err != nil {
+		t.Fatalf("decode import report: %v", err)
+	}
+	if report.Created != 0 || report.Skipped != 1 || len(report.Errors) != 1 {
+		t.Fatalf("unexpected import report: %#v", report)
+	}
+	if !strings.Contains(report.Errors[0].Error, "password_hash is invalid") {
+		t.Fatalf("expected invalid hash error, got %#v", report.Errors)
 	}
 }
 

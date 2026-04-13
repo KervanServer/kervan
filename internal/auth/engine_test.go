@@ -97,3 +97,47 @@ func TestResetPasswordEnforcesMinPasswordLength(t *testing.T) {
 		t.Fatal("expected original password hash to remain unchanged")
 	}
 }
+
+func TestCreateUserRejectsTraversalHomeDir(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	repo := NewUserRepository(st)
+	engine := NewEngine(repo, "argon2id", 5, 15*time.Minute)
+
+	if _, err := engine.CreateUser("alice", "LongEnough123!", "/../../escape", false); err == nil {
+		t.Fatal("expected traversal home dir to be rejected")
+	}
+}
+
+func TestNormalizeHomeDir(t *testing.T) {
+	cases := []struct {
+		raw     string
+		want    string
+		wantErr bool
+	}{
+		{raw: "", want: "/"},
+		{raw: "/", want: "/"},
+		{raw: "alice/docs", want: "/alice/docs"},
+		{raw: `\alice\docs`, want: "/alice/docs"},
+		{raw: "/alice/../docs", wantErr: true},
+	}
+	for _, tc := range cases {
+		got, err := NormalizeHomeDir(tc.raw)
+		if tc.wantErr {
+			if err == nil {
+				t.Fatalf("expected error for %q", tc.raw)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("NormalizeHomeDir(%q) failed: %v", tc.raw, err)
+		}
+		if got != tc.want {
+			t.Fatalf("NormalizeHomeDir(%q) = %q, want %q", tc.raw, got, tc.want)
+		}
+	}
+}

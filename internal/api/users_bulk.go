@@ -14,6 +14,8 @@ import (
 	"github.com/kervanserver/kervan/internal/auth"
 )
 
+const maxUserImportBytes int64 = 10 << 20
+
 type userImportRecord struct {
 	Row          int    `json:"row,omitempty"`
 	Username     string `json:"username"`
@@ -62,6 +64,7 @@ func (s *Server) handleUsersImport(w http.ResponseWriter, r *http.Request) {
 	}
 
 	formatHint := strings.TrimSpace(r.URL.Query().Get("format"))
+	r.Body = http.MaxBytesReader(w, r.Body, maxUserImportBytes)
 	format, records, err := parseUserImportRequest(r, formatHint)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -163,8 +166,12 @@ func parseUserImportRequest(r *http.Request, formatHint string) (string, []userI
 	contentType := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Type")))
 	switch {
 	case strings.Contains(contentType, "multipart/form-data"):
+		// #nosec G120 -- request body is capped by http.MaxBytesReader before parsing.
 		if err := r.ParseMultipartForm(10 << 20); err != nil {
 			return "", nil, err
+		}
+		if r.MultipartForm != nil {
+			defer r.MultipartForm.RemoveAll()
 		}
 		file, header, err := r.FormFile("file")
 		if err != nil {
@@ -215,21 +222,28 @@ func loadUserImportRecords(reader io.Reader, format string) ([]userImportRecord,
 		return records, nil
 	case "csv":
 		csvReader := csv.NewReader(reader)
-		rows, err := csvReader.ReadAll()
+		headerRow, err := csvReader.Read()
 		if err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil, errors.New("csv file is empty")
+			}
 			return nil, err
 		}
-		if len(rows) == 0 {
-			return nil, errors.New("csv file is empty")
-		}
-		header := make(map[string]int, len(rows[0]))
-		for idx, col := range rows[0] {
+		header := make(map[string]int, len(headerRow))
+		for idx, col := range headerRow {
 			header[strings.ToLower(strings.TrimSpace(col))] = idx
 		}
-		records := make([]userImportRecord, 0, len(rows)-1)
-		for rowIndex, row := range rows[1:] {
+		records := make([]userImportRecord, 0, 16)
+		for rowIndex := 2; ; rowIndex++ {
+			row, readErr := csvReader.Read()
+			if errors.Is(readErr, io.EOF) {
+				break
+			}
+			if readErr != nil {
+				return nil, readErr
+			}
 			record := userImportRecord{
-				Row:          rowIndex + 2,
+				Row:          rowIndex,
 				Username:     csvValue(row, header, "username"),
 				Password:     csvValue(row, header, "password"),
 				PasswordHash: csvValue(row, header, "password_hash"),
@@ -264,10 +278,17 @@ func (s *Server) createImportedUser(record userImportRecord) (*auth.User, error)
 	if homeDir == "" {
 		homeDir = "/"
 	}
+	homeDir, err = auth.NormalizeHomeDir(homeDir)
+	if err != nil {
+		return nil, err
+	}
 
 	var user *auth.User
 	switch {
 	case record.PasswordHash != "":
+		if err := auth.ValidatePasswordHash(record.PasswordHash); err != nil {
+			return nil, fmt.Errorf("password_hash is invalid: %w", err)
+		}
 		user = &auth.User{
 			Username:     username,
 			PasswordHash: record.PasswordHash,

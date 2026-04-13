@@ -66,6 +66,19 @@ func TestTOTPSetupEnableLoginAndDisable(t *testing.T) {
 	if !bytes.Contains(loginRec.Body.Bytes(), []byte(`"code":"totp_required"`)) {
 		t.Fatalf("expected totp_required response, got %s", loginRec.Body.String())
 	}
+	afterFailedOTP, err := repo.GetByUsername("alice")
+	if err != nil {
+		t.Fatalf("GetByUsername after failed otp: %v", err)
+	}
+	if afterFailedOTP == nil {
+		t.Fatal("expected alice after failed otp")
+	}
+	if afterFailedOTP.LastLoginAt != nil {
+		t.Fatalf("expected failed otp to avoid last_login update, got %#v", afterFailedOTP.LastLoginAt)
+	}
+	if afterFailedOTP.FailedLogins != 1 {
+		t.Fatalf("expected failed otp to increment failed logins, got %d", afterFailedOTP.FailedLogins)
+	}
 
 	loginWithOTPBody, _ := json.Marshal(map[string]string{
 		"username": "alice",
@@ -78,6 +91,16 @@ func TestTOTPSetupEnableLoginAndDisable(t *testing.T) {
 
 	if loginWithOTPRec.Code != http.StatusOK {
 		t.Fatalf("expected login with otp to succeed, got %d: %s", loginWithOTPRec.Code, loginWithOTPRec.Body.String())
+	}
+	afterSuccess, err := repo.GetByUsername("alice")
+	if err != nil {
+		t.Fatalf("GetByUsername after successful otp: %v", err)
+	}
+	if afterSuccess == nil || afterSuccess.LastLoginAt == nil {
+		t.Fatalf("expected successful otp login to update last_login, got %#v", afterSuccess)
+	}
+	if afterSuccess.FailedLogins != 0 || afterSuccess.LockedUntil != nil {
+		t.Fatalf("expected successful otp login to clear failed counters, got %#v", afterSuccess)
 	}
 
 	disableBody, _ := json.Marshal(map[string]string{"code": code})
@@ -96,6 +119,82 @@ func TestTOTPSetupEnableLoginAndDisable(t *testing.T) {
 	}
 	if updated == nil || updated.TOTPEnabled || updated.TOTPSecret != "" {
 		t.Fatalf("expected totp to be removed, got %#v", updated)
+	}
+}
+
+func TestTOTPSetupRequiresCurrentCodeWhenAlreadyEnabled(t *testing.T) {
+	srv, repo := newAuthTestServer(t, true)
+
+	initialSetupReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/totp/setup", nil)
+	initialSetupReq.Header.Set("X-Auth-User", "alice")
+	initialSetupRec := httptest.NewRecorder()
+	srv.handleTOTPSetup(initialSetupRec, initialSetupReq)
+	if initialSetupRec.Code != http.StatusOK {
+		t.Fatalf("initial setup failed: %d %s", initialSetupRec.Code, initialSetupRec.Body.String())
+	}
+
+	var initialSetup struct {
+		Secret string `json:"secret"`
+	}
+	if err := json.Unmarshal(initialSetupRec.Body.Bytes(), &initialSetup); err != nil {
+		t.Fatalf("decode initial setup: %v", err)
+	}
+	code, err := auth.GenerateTOTPCode(initialSetup.Secret, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("GenerateTOTPCode: %v", err)
+	}
+
+	enableBody, _ := json.Marshal(map[string]string{"code": code})
+	enableReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/totp/enable", bytes.NewReader(enableBody))
+	enableReq.Header.Set("X-Auth-User", "alice")
+	enableRec := httptest.NewRecorder()
+	srv.handleTOTPEnable(enableRec, enableReq)
+	if enableRec.Code != http.StatusOK {
+		t.Fatalf("enable failed: %d %s", enableRec.Code, enableRec.Body.String())
+	}
+
+	missingCodeReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/totp/setup", nil)
+	missingCodeReq.Header.Set("X-Auth-User", "alice")
+	missingCodeRec := httptest.NewRecorder()
+	srv.handleTOTPSetup(missingCodeRec, missingCodeReq)
+	if missingCodeRec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for missing current code, got %d: %s", missingCodeRec.Code, missingCodeRec.Body.String())
+	}
+
+	invalidCodeBody := bytes.NewBufferString(`{"code":"000000"}`)
+	invalidCodeReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/totp/setup", invalidCodeBody)
+	invalidCodeReq.Header.Set("X-Auth-User", "alice")
+	invalidCodeRec := httptest.NewRecorder()
+	srv.handleTOTPSetup(invalidCodeRec, invalidCodeReq)
+	if invalidCodeRec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid current code, got %d: %s", invalidCodeRec.Code, invalidCodeRec.Body.String())
+	}
+
+	freshCode, err := auth.GenerateTOTPCode(initialSetup.Secret, time.Now().UTC())
+	if err != nil {
+		t.Fatalf("GenerateTOTPCode (refresh): %v", err)
+	}
+	validCodeBody, _ := json.Marshal(map[string]string{"code": freshCode})
+	validCodeReq := httptest.NewRequest(http.MethodPost, "/api/v1/auth/totp/setup", bytes.NewReader(validCodeBody))
+	validCodeReq.Header.Set("X-Auth-User", "alice")
+	validCodeRec := httptest.NewRecorder()
+	srv.handleTOTPSetup(validCodeRec, validCodeReq)
+	if validCodeRec.Code != http.StatusOK {
+		t.Fatalf("expected setup refresh with valid code to succeed, got %d: %s", validCodeRec.Code, validCodeRec.Body.String())
+	}
+
+	user, err := repo.GetByUsername("alice")
+	if err != nil {
+		t.Fatalf("GetByUsername: %v", err)
+	}
+	if user == nil {
+		t.Fatal("expected user to exist")
+	}
+	if user.TOTPEnabled {
+		t.Fatal("expected refreshed setup to move user into pending state")
+	}
+	if strings.TrimSpace(user.TOTPSecret) == "" {
+		t.Fatal("expected refreshed setup to persist new secret")
 	}
 }
 
@@ -133,6 +232,59 @@ func TestHandleLoginRateLimitsByRemoteIP(t *testing.T) {
 	}
 	if rec.Header().Get("Retry-After") == "" {
 		t.Fatal("expected Retry-After header to be set")
+	}
+}
+
+func TestHandleLoginRejectsOversizedJSONBody(t *testing.T) {
+	srv, _ := newAuthTestServer(t, false)
+
+	largeValue := strings.Repeat("a", maxJSONBodyBytes+128)
+	body, _ := json.Marshal(map[string]string{
+		"username": largeValue,
+		"password": "StrongPass123!",
+	})
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+
+	srv.handleLogin(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected oversized login body to return 400, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleServerStatusRequiresAdmin(t *testing.T) {
+	srv, _ := newAuthTestServer(t, false)
+	srv.status = func() map[string]any {
+		return map[string]any{"name": "test"}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/server/status", nil)
+	req.Header.Set("X-Auth-User", "alice")
+	rec := httptest.NewRecorder()
+	srv.handleServerStatus(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for non-admin, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHandleServerStatusAllowsAdmin(t *testing.T) {
+	srv, _ := newAuthTestServer(t, false)
+	if _, err := srv.auth.CreateUser("admin", "StrongPass123!", "/", true); err != nil {
+		t.Fatalf("create admin: %v", err)
+	}
+	srv.status = func() map[string]any {
+		return map[string]any{"name": "test"}
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/server/status", nil)
+	req.Header.Set("X-Auth-User", "admin")
+	rec := httptest.NewRecorder()
+	srv.handleServerStatus(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 for admin, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -44,25 +45,32 @@ func npmCommand() string {
 }
 
 func runCommand(dir, name string, args ...string) error {
+	if name != "npm" && name != "npm.cmd" {
+		return errors.New("unsupported command")
+	}
+	// #nosec G204 -- command name is restricted to trusted npm binaries above.
 	cmd := exec.Command(name, args...)
 	cmd.Dir = dir
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("run command %s %v in %s: %w", name, args, dir, err)
+	}
+	return nil
 }
 
 func copyDir(src, dst string) error {
 	info, err := os.Stat(src)
 	if err != nil {
-		return err
+		return fmt.Errorf("stat source directory %s: %w", src, err)
 	}
 	if err := os.MkdirAll(dst, info.Mode()); err != nil {
-		return err
+		return fmt.Errorf("create destination directory %s: %w", dst, err)
 	}
 
 	entries, err := os.ReadDir(src)
 	if err != nil {
-		return err
+		return fmt.Errorf("read source directory %s: %w", src, err)
 	}
 	for _, entry := range entries {
 		srcPath := filepath.Join(src, entry.Name())
@@ -81,27 +89,32 @@ func copyDir(src, dst string) error {
 }
 
 func copyFile(src, dst string) error {
+	// #nosec G304 -- src/dst are derived from recursive walk under project-owned directories.
 	in, err := os.Open(src)
 	if err != nil {
-		return err
+		return fmt.Errorf("open source file %s: %w", src, err)
 	}
 	defer in.Close()
 
 	info, err := in.Stat()
 	if err != nil {
-		return err
+		return fmt.Errorf("stat source file %s: %w", src, err)
 	}
 
+	// #nosec G304 -- destination path is constrained to internal/webui/dist mirror output.
 	out, err := os.OpenFile(dst, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, info.Mode())
 	if err != nil {
-		return err
+		return fmt.Errorf("open destination file %s: %w", dst, err)
 	}
 	defer out.Close()
 
 	if _, err := io.Copy(out, in); err != nil {
-		return err
+		return fmt.Errorf("copy %s -> %s: %w", src, dst, err)
 	}
-	return out.Close()
+	if err := out.Close(); err != nil {
+		return fmt.Errorf("close destination file %s: %w", dst, err)
+	}
+	return nil
 }
 
 func exitf(format string, args ...any) {

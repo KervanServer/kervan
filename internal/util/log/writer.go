@@ -28,8 +28,8 @@ func OpenFile(path string, maxSizeMB, maxBackups int) (io.WriteCloser, error) {
 	if maxBackups < 1 {
 		return nil, fmt.Errorf("max backups must be >= 1")
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return nil, err
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		return nil, fmt.Errorf("create log directory for %s: %w", path, err)
 	}
 
 	writer := &rotatingWriter{
@@ -38,7 +38,7 @@ func OpenFile(path string, maxSizeMB, maxBackups int) (io.WriteCloser, error) {
 		maxBackups: maxBackups,
 	}
 	if err := writer.openCurrentFile(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("open log file %s: %w", path, err)
 	}
 	return writer, nil
 }
@@ -59,7 +59,10 @@ func (w *rotatingWriter) Write(p []byte) (int, error) {
 	}
 	n, err := w.file.Write(p)
 	w.size += int64(n)
-	return n, err
+	if err != nil {
+		return n, fmt.Errorf("write log file %s: %w", w.path, err)
+	}
+	return n, nil
 }
 
 func (w *rotatingWriter) Close() error {
@@ -71,18 +74,21 @@ func (w *rotatingWriter) Close() error {
 	err := w.file.Close()
 	w.file = nil
 	w.size = 0
-	return err
+	if err != nil {
+		return fmt.Errorf("close log file %s: %w", w.path, err)
+	}
+	return nil
 }
 
 func (w *rotatingWriter) openCurrentFile() error {
 	file, err := os.OpenFile(w.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
 	if err != nil {
-		return err
+		return fmt.Errorf("open log file %s: %w", w.path, err)
 	}
 	info, err := file.Stat()
 	if err != nil {
 		_ = file.Close()
-		return err
+		return fmt.Errorf("stat log file %s: %w", w.path, err)
 	}
 	w.file = file
 	w.size = info.Size()
@@ -92,24 +98,24 @@ func (w *rotatingWriter) openCurrentFile() error {
 func (w *rotatingWriter) rotateLocked() error {
 	if w.file != nil {
 		if err := w.file.Close(); err != nil {
-			return err
+			return fmt.Errorf("close current log file %s: %w", w.path, err)
 		}
 		w.file = nil
 	}
 
 	oldest := backupPath(w.path, w.maxBackups)
 	if err := os.Remove(oldest); err != nil && !os.IsNotExist(err) {
-		return err
+		return fmt.Errorf("remove oldest backup %s: %w", oldest, err)
 	}
 	for i := w.maxBackups - 1; i >= 1; i-- {
 		src := backupPath(w.path, i)
 		dst := backupPath(w.path, i+1)
 		if err := os.Rename(src, dst); err != nil && !os.IsNotExist(err) {
-			return err
+			return fmt.Errorf("rotate backup %s -> %s: %w", src, dst, err)
 		}
 	}
 	if err := os.Rename(w.path, backupPath(w.path, 1)); err != nil && !os.IsNotExist(err) {
-		return err
+		return fmt.Errorf("rotate active log %s: %w", w.path, err)
 	}
 	return w.openCurrentFile()
 }

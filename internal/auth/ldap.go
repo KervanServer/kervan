@@ -31,6 +31,8 @@ type LDAPProvider struct {
 	cfg         config.LDAPConfig
 	now         func() time.Time
 	dialContext func(context.Context, string, string) (net.Conn, error)
+	warn        func(string, ...any)
+	warnOnce    sync.Once
 
 	mu    sync.Mutex
 	cache map[string]cachedLDAPIdentity
@@ -75,11 +77,20 @@ func NewLDAPProvider(cfg config.LDAPConfig) *LDAPProvider {
 		cfg:   cfg,
 		now:   func() time.Time { return time.Now().UTC() },
 		cache: make(map[string]cachedLDAPIdentity),
+		warn:  func(string, ...any) {},
 		dialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
 			var dialer net.Dialer
 			return dialer.DialContext(ctx, network, address)
 		},
 	}
+}
+
+func (p *LDAPProvider) SetWarningLogger(warn func(string, ...any)) {
+	if warn == nil {
+		p.warn = func(string, ...any) {}
+		return
+	}
+	p.warn = warn
 }
 
 func (p *LDAPProvider) Authenticate(ctx context.Context, username, password string) (*LDAPIdentity, error) {
@@ -175,11 +186,20 @@ func (p *LDAPProvider) dial(ctx context.Context) (net.Conn, error) {
 		if !strings.Contains(address, ":") {
 			address += ":636"
 		}
-		var base net.Dialer
-		return tls.DialWithDialer(&base, "tcp", address, &tls.Config{
-			ServerName:         hostOnly(address),
-			InsecureSkipVerify: p.cfg.TLSSkipVerify,
-		})
+		if p.cfg.TLSSkipVerify {
+			p.warnOnce.Do(func() {
+				p.warn("ldap TLS certificate verification is disabled", "url", strings.TrimSpace(p.cfg.URL))
+			})
+		}
+		dialer := &tls.Dialer{
+			NetDialer: &net.Dialer{},
+			Config: &tls.Config{
+				ServerName: hostOnly(address),
+				// #nosec G402 -- configurable for legacy/self-signed LDAP deployments.
+				InsecureSkipVerify: p.cfg.TLSSkipVerify,
+			},
+		}
+		return dialer.DialContext(ctx, "tcp", address)
 	case "ldap":
 		if !strings.Contains(address, ":") {
 			address += ":389"
@@ -480,7 +500,11 @@ func encodeTLV(tag byte, value []byte) []byte {
 }
 
 func encodeBERLength(length int) []byte {
+	if length < 0 {
+		return []byte{0}
+	}
 	if length < 0x80 {
+		// #nosec G115 -- guarded by length < 0x80.
 		return []byte{byte(length)}
 	}
 	buf := make([]byte, 0, 4)
@@ -488,6 +512,10 @@ func encodeBERLength(length int) []byte {
 		buf = append([]byte{byte(length & 0xFF)}, buf...)
 		length >>= 8
 	}
+	if len(buf) > 0x7F {
+		return []byte{0}
+	}
+	// #nosec G115 -- len(buf) is explicitly bounded to 0x7F.
 	return append([]byte{0x80 | byte(len(buf))}, buf...)
 }
 

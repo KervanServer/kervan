@@ -1,19 +1,20 @@
 package store
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 )
 
 func writeFileAtomically(path string, data []byte, perm os.FileMode) (err error) {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		return fmt.Errorf("create directory %s: %w", dir, err)
 	}
 
 	tmp, err := os.CreateTemp(dir, filepath.Base(path)+".*.tmp")
 	if err != nil {
-		return err
+		return fmt.Errorf("create temporary file for %s: %w", path, err)
 	}
 	tmpName := tmp.Name()
 	defer func() {
@@ -24,24 +25,24 @@ func writeFileAtomically(path string, data []byte, perm os.FileMode) (err error)
 
 	if _, err = tmp.Write(data); err != nil {
 		_ = tmp.Close()
-		return err
+		return fmt.Errorf("write temporary file for %s: %w", path, err)
 	}
 	if err = tmp.Chmod(perm); err != nil {
 		_ = tmp.Close()
-		return err
+		return fmt.Errorf("set temporary file permissions for %s: %w", path, err)
 	}
 	if err = tmp.Sync(); err != nil {
 		_ = tmp.Close()
-		return err
+		return fmt.Errorf("sync temporary file for %s: %w", path, err)
 	}
 	if err = tmp.Close(); err != nil {
-		return err
+		return fmt.Errorf("close temporary file for %s: %w", path, err)
 	}
 	if err = replaceFile(tmpName, path); err != nil {
-		return err
+		return fmt.Errorf("replace %s with temporary file: %w", path, err)
 	}
 	if err = syncDir(dir); err != nil {
-		return err
+		return fmt.Errorf("sync directory %s: %w", dir, err)
 	}
 	return nil
 }
@@ -52,12 +53,16 @@ func WriteFileAtomically(path string, data []byte, perm os.FileMode) error {
 
 func ReplaceTempFileAtomically(tmpPath, targetPath string) error {
 	if err := replaceFile(tmpPath, targetPath); err != nil {
-		return err
+		return fmt.Errorf("replace %s with %s: %w", targetPath, tmpPath, err)
 	}
-	return syncDir(filepath.Dir(targetPath))
+	if err := syncDir(filepath.Dir(targetPath)); err != nil {
+		return fmt.Errorf("sync directory for %s: %w", targetPath, err)
+	}
+	return nil
 }
 
 func syncDir(path string) error {
+	// #nosec G304 -- path is derived from internal store file location.
 	dir, err := os.Open(path)
 	if err != nil {
 		return nil

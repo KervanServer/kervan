@@ -37,6 +37,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const auxiliaryHTTPReadHeaderTimeout = 10 * time.Second
+
 type App struct {
 	cfg       *config.Config
 	logger    *slog.Logger
@@ -62,7 +64,7 @@ func New(cfg *config.Config, configPath string, logger *slog.Logger) (*App, erro
 	if cfg == nil {
 		return nil, errors.New("config is nil")
 	}
-	if err := os.MkdirAll(cfg.Server.DataDir, 0o755); err != nil {
+	if err := os.MkdirAll(cfg.Server.DataDir, 0o750); err != nil {
 		return nil, err
 	}
 
@@ -80,7 +82,13 @@ func New(cfg *config.Config, configPath string, logger *slog.Logger) (*App, erro
 	)
 	engine.SetMinPasswordLength(cfg.Auth.MinPasswordLength)
 	if cfg.Auth.LDAP.Enabled {
-		engine.SetLDAPProvider(auth.NewLDAPProvider(cfg.Auth.LDAP))
+		ldapProvider := auth.NewLDAPProvider(cfg.Auth.LDAP)
+		if logger != nil {
+			ldapProvider.SetWarningLogger(func(msg string, kv ...any) {
+				logger.Warn(msg, kv...)
+			})
+		}
+		engine.SetLDAPProvider(ldapProvider)
 	}
 
 	sinkPath := filepath.Join(cfg.Server.DataDir, "audit.jsonl")
@@ -383,8 +391,9 @@ func (a *App) Start(ctx context.Context) error {
 			return fmt.Errorf("start acme manager: not initialized")
 		}
 		a.acmeHTTP = &http.Server{
-			Addr:    net.JoinHostPort(a.cfg.Server.ListenAddress, "80"),
-			Handler: a.acmeMgr.HTTPHandler(acmeMux),
+			Addr:              net.JoinHostPort(a.cfg.Server.ListenAddress, "80"),
+			Handler:           a.acmeMgr.HTTPHandler(acmeMux),
+			ReadHeaderTimeout: auxiliaryHTTPReadHeaderTimeout,
 		}
 		go func() {
 			if err := a.acmeHTTP.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) && a.logger != nil {
@@ -398,7 +407,7 @@ func (a *App) Start(ctx context.Context) error {
 	if a.cfg.SFTP.Enabled {
 		if err := a.sftpServer.Start(runCtx); err != nil {
 			if a.acmeHTTP != nil {
-				_ = a.acmeHTTP.Shutdown(context.Background())
+				_ = a.shutdownHTTPServer(a.acmeHTTP)
 			}
 			_ = a.ftpServer.Stop()
 			return fmt.Errorf("start sftp: %w", err)
@@ -407,7 +416,7 @@ func (a *App) Start(ctx context.Context) error {
 	if a.cfg.WebUI.Enabled {
 		if err := a.apiServer.Start(runCtx); err != nil {
 			if a.acmeHTTP != nil {
-				_ = a.acmeHTTP.Shutdown(context.Background())
+				_ = a.shutdownHTTPServer(a.acmeHTTP)
 			}
 			_ = a.sftpServer.Stop()
 			_ = a.ftpServer.Stop()
@@ -417,7 +426,7 @@ func (a *App) Start(ctx context.Context) error {
 	if a.cfg.Debug.Enabled {
 		if err := a.startDebugServer(runCtx); err != nil {
 			if a.acmeHTTP != nil {
-				_ = a.acmeHTTP.Shutdown(context.Background())
+				_ = a.shutdownHTTPServer(a.acmeHTTP)
 			}
 			if a.apiServer != nil {
 				_ = a.apiServer.Stop(context.Background())
@@ -450,10 +459,10 @@ func (a *App) Close() error {
 			_ = a.apiServer.Stop(context.Background())
 		}
 		if a.debugHTTP != nil {
-			_ = a.debugHTTP.Shutdown(context.Background())
+			_ = a.shutdownHTTPServer(a.debugHTTP)
 		}
 		if a.acmeHTTP != nil {
-			_ = a.acmeHTTP.Shutdown(context.Background())
+			_ = a.shutdownHTTPServer(a.acmeHTTP)
 		}
 		if a.audit != nil {
 			a.audit.Close()
@@ -478,13 +487,14 @@ func (a *App) Close() error {
 func (a *App) startDebugServer(ctx context.Context) error {
 	addr := net.JoinHostPort(a.cfg.Debug.BindAddress, fmt.Sprintf("%d", a.cfg.Debug.Port))
 	a.debugHTTP = &http.Server{
-		Addr:    addr,
-		Handler: buildDebugMux(a.cfg.Debug.Pprof),
+		Addr:              addr,
+		Handler:           buildDebugMux(a.cfg.Debug.Pprof),
+		ReadHeaderTimeout: auxiliaryHTTPReadHeaderTimeout,
 	}
 
 	go func() {
 		<-ctx.Done()
-		_ = a.debugHTTP.Shutdown(context.Background())
+		_ = a.shutdownHTTPServer(a.debugHTTP)
 	}()
 
 	go func() {
@@ -496,6 +506,23 @@ func (a *App) startDebugServer(ctx context.Context) error {
 		}
 	}()
 	return nil
+}
+
+func (a *App) shutdownHTTPServer(srv *http.Server) error {
+	if srv == nil {
+		return nil
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), a.gracefulShutdownTimeout())
+	defer cancel()
+	return srv.Shutdown(shutdownCtx)
+}
+
+func (a *App) gracefulShutdownTimeout() time.Duration {
+	timeout := a.cfg.Server.GracefulShutdownTimeout
+	if timeout <= 0 {
+		return 30 * time.Second
+	}
+	return timeout
 }
 
 func buildDebugMux(pprofEnabled bool) *http.ServeMux {
@@ -567,6 +594,14 @@ func (a *App) buildUserFS(user *auth.User) (vfs.FileSystem, error) {
 	if backendType == "" {
 		backendType = "local"
 	}
+	normalizedHomeDir := "/"
+	if user != nil {
+		var err error
+		normalizedHomeDir, err = auth.NormalizeHomeDir(user.HomeDir)
+		if err != nil {
+			return nil, err
+		}
+	}
 	var rootFS vfs.FileSystem
 
 	switch backendType {
@@ -574,8 +609,8 @@ func (a *App) buildUserFS(user *auth.User) (vfs.FileSystem, error) {
 		rootFS = memory.New()
 	case "s3":
 		prefix := strings.TrimSpace(backendCfg.Options["prefix"])
-		if user.HomeDir != "" && user.HomeDir != "/" {
-			homeDir := strings.Trim(user.HomeDir, "/")
+		if normalizedHomeDir != "/" {
+			homeDir := strings.Trim(normalizedHomeDir, "/")
 			if homeDir != "" {
 				prefix = joinStoragePath(prefix, homeDir)
 			}
@@ -599,12 +634,28 @@ func (a *App) buildUserFS(user *auth.User) (vfs.FileSystem, error) {
 		if root == "" {
 			root = filepath.Join(a.cfg.Server.DataDir, "files")
 		}
-		if user.HomeDir != "" && user.HomeDir != "/" {
-			trimmed := user.HomeDir
+		baseRoot := root
+		if normalizedHomeDir != "/" {
+			trimmed := filepath.FromSlash(strings.Trim(normalizedHomeDir, "/"))
 			if filepath.IsAbs(trimmed) {
-				trimmed = trimmed[1:]
+				return nil, errors.New("home directory must be a virtual subpath")
 			}
 			root = filepath.Join(root, trimmed)
+		}
+		baseAbs, err := filepath.Abs(baseRoot)
+		if err != nil {
+			return nil, err
+		}
+		rootAbs, err := filepath.Abs(root)
+		if err != nil {
+			return nil, err
+		}
+		rel, err := filepath.Rel(baseAbs, rootAbs)
+		if err != nil {
+			return nil, err
+		}
+		if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return nil, errors.New("home directory escapes storage root")
 		}
 		localBackend, err := local.New(local.Options{
 			Root:            root,

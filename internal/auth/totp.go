@@ -3,7 +3,7 @@ package auth
 import (
 	"crypto/hmac"
 	"crypto/rand"
-	"crypto/sha1"
+	"crypto/sha1" // #nosec G505 -- RFC 6238 TOTP uses HMAC-SHA1 by default.
 	"encoding/base32"
 	"encoding/binary"
 	"fmt"
@@ -34,7 +34,11 @@ func GenerateTOTPCode(secret string, at time.Time) (string, error) {
 	if at.IsZero() {
 		at = time.Now().UTC()
 	}
-	counter := uint64(at.Unix() / totpPeriod)
+	unix := at.Unix()
+	if unix < 0 {
+		return "", fmt.Errorf("time before unix epoch is not supported")
+	}
+	counter := uint64(unix / totpPeriod)
 	var counterBytes [8]byte
 	binary.BigEndian.PutUint64(counterBytes[:], counter)
 

@@ -39,6 +39,30 @@ func VerifyPassword(password, encoded string) bool {
 	return false
 }
 
+func ValidatePasswordHash(encoded string) error {
+	encoded = strings.TrimSpace(encoded)
+	if encoded == "" {
+		return errors.New("password hash is empty")
+	}
+	if strings.HasPrefix(encoded, "$argon2id$") {
+		memory, timeCost, parallelism, salt, sum, err := parseArgon2ID(encoded)
+		if err != nil {
+			return err
+		}
+		if memory == 0 || timeCost == 0 || parallelism == 0 || len(salt) == 0 || len(sum) == 0 {
+			return errors.New("invalid argon2id parameters")
+		}
+		return nil
+	}
+	if strings.HasPrefix(encoded, "$2a$") || strings.HasPrefix(encoded, "$2b$") || strings.HasPrefix(encoded, "$2y$") {
+		if _, err := bcrypt.Cost([]byte(encoded)); err != nil {
+			return err
+		}
+		return nil
+	}
+	return errors.New("unsupported password hash format")
+}
+
 func hashArgon2ID(password string) (string, error) {
 	salt := make([]byte, 16)
 	if _, err := rand.Read(salt); err != nil {
@@ -64,7 +88,12 @@ func verifyArgon2ID(password, encoded string) bool {
 	if err != nil {
 		return false
 	}
-	calc := argon2.IDKey([]byte(password), salt, tc, mem, p, uint32(len(sum)))
+	if len(sum) == 0 || uint64(len(sum)) > uint64(^uint32(0)) {
+		return false
+	}
+	// #nosec G115 -- len(sum) is bounded to uint32 range above.
+	keyLen := uint32(len(sum))
+	calc := argon2.IDKey([]byte(password), salt, tc, mem, p, keyLen)
 	return subtle.ConstantTimeCompare(calc, sum) == 1
 }
 

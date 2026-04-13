@@ -83,6 +83,7 @@ func (s *Server) Start(ctx context.Context) error {
 				s.emitAudit(audit.EventAuthFailure, meta.User(), "sftp", "", meta.RemoteAddr().String(), "failed", authErr.Error())
 				return nil, errors.New("invalid credentials")
 			}
+			_ = s.auth.RecordSuccessfulLogin(user.ID)
 			s.emitAudit(audit.EventAuthSuccess, user.Username, "sftp", "", meta.RemoteAddr().String(), "ok", "login success")
 			return &ssh.Permissions{
 				Extensions: map[string]string{
@@ -134,11 +135,21 @@ func (s *Server) Start(ctx context.Context) error {
 			s.wg.Add(1)
 			go func(c net.Conn) {
 				defer s.wg.Done()
+				defer s.recoverConnPanic(c)
 				s.handleConn(sshCfg, c)
 			}(conn)
 		}
 	}()
 	return nil
+}
+
+func (s *Server) recoverConnPanic(conn net.Conn) {
+	if recovered := recover(); recovered != nil {
+		if s.logger != nil {
+			s.logger.Error("sftp connection panicked", "panic", recovered, "remote_addr", conn.RemoteAddr().String())
+		}
+		_ = conn.Close()
+	}
 }
 
 func (s *Server) Stop() error {

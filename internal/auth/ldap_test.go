@@ -113,6 +113,29 @@ func TestAuthenticatePrefersLocalUserOverLDAP(t *testing.T) {
 	}
 }
 
+func TestLDAPProviderWarnsWhenTLSSkipVerifyEnabled(t *testing.T) {
+	provider := NewLDAPProvider(config.LDAPConfig{
+		URL:               "ldaps://127.0.0.1:1",
+		TLSSkipVerify:     true,
+		UsernameAttribute: "uid",
+	})
+
+	var warnings atomic.Int32
+	provider.SetWarningLogger(func(msg string, _ ...any) {
+		if strings.Contains(msg, "certificate verification is disabled") {
+			warnings.Add(1)
+		}
+	})
+
+	_, err := provider.dial(context.Background())
+	if err == nil {
+		t.Fatal("expected ldaps dial to fail in test environment")
+	}
+	if warnings.Load() != 1 {
+		t.Fatalf("expected one skip-verify warning, got %d", warnings.Load())
+	}
+}
+
 type fakeLDAPServer struct {
 	listener        net.Listener
 	searchCount     atomic.Int32

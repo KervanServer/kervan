@@ -22,8 +22,8 @@ type Store struct {
 }
 
 func Open(dataDir string) (*Store, error) {
-	if err := os.MkdirAll(dataDir, 0o755); err != nil {
-		return nil, err
+	if err := os.MkdirAll(dataDir, 0o750); err != nil {
+		return nil, fmt.Errorf("create data directory %s: %w", dataDir, err)
 	}
 	path := filepath.Join(dataDir, "kervan-store.json")
 	s := &Store{
@@ -32,7 +32,7 @@ func Open(dataDir string) (*Store, error) {
 		data:       make(map[string]json.RawMessage),
 	}
 	if err := s.load(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("load store from %s: %w", path, err)
 	}
 	return s, nil
 }
@@ -46,7 +46,7 @@ func (s *Store) Close() error {
 func (s *Store) Put(collection, key string, value any) error {
 	raw, err := json.Marshal(value)
 	if err != nil {
-		return err
+		return fmt.Errorf("marshal value for %s/%s: %w", collection, key, err)
 	}
 	s.persistMu.Lock()
 	defer s.persistMu.Unlock()
@@ -63,7 +63,10 @@ func (s *Store) Get(collection, key string, out any) error {
 	if !ok {
 		return ErrNotFound
 	}
-	return json.Unmarshal(raw, out)
+	if err := json.Unmarshal(raw, out); err != nil {
+		return fmt.Errorf("decode value for %s/%s: %w", collection, key, err)
+	}
+	return nil
 }
 
 func (s *Store) Delete(collection, key string) error {
@@ -93,9 +96,12 @@ func (s *Store) List(collection string, out any) error {
 
 	joined, err := json.Marshal(rows)
 	if err != nil {
-		return err
+		return fmt.Errorf("marshal list for collection %s: %w", collection, err)
 	}
-	return json.Unmarshal(joined, out)
+	if err := json.Unmarshal(joined, out); err != nil {
+		return fmt.Errorf("decode list for collection %s: %w", collection, err)
+	}
+	return nil
 }
 
 func (s *Store) composite(collection, key string) string {
@@ -134,12 +140,15 @@ func (s *Store) flush() error {
 	snapshot := s.snapshot()
 	raw, err := json.MarshalIndent(snapshot, "", "  ")
 	if err != nil {
-		return err
+		return fmt.Errorf("marshal store snapshot: %w", err)
 	}
 	if err := writeFileAtomically(s.path, raw, 0o600); err != nil {
-		return err
+		return fmt.Errorf("write store file %s: %w", s.path, err)
 	}
-	return writeFileAtomically(s.backupPath, raw, 0o600)
+	if err := writeFileAtomically(s.backupPath, raw, 0o600); err != nil {
+		return fmt.Errorf("write store backup file %s: %w", s.backupPath, err)
+	}
+	return nil
 }
 
 func (s *Store) snapshot() map[string]json.RawMessage {
@@ -154,16 +163,17 @@ func (s *Store) snapshot() map[string]json.RawMessage {
 }
 
 func loadStoreFile(path string) (map[string]json.RawMessage, []byte, error) {
+	// #nosec G304 -- store file path is resolved from controlled application data directory.
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("read store file %s: %w", path, err)
 	}
 	if len(raw) == 0 {
 		return make(map[string]json.RawMessage), raw, nil
 	}
 	var decoded map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &decoded); err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("decode store file %s: %w", path, err)
 	}
 	return decoded, raw, nil
 }

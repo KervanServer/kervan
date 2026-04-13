@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -13,20 +14,21 @@ import (
 )
 
 func Load(path string) (*Config, error) {
+	// #nosec G304 -- config path is explicit CLI/service input from trusted operator context.
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read config file %s: %w", path, err)
 	}
 
 	expanded := os.ExpandEnv(string(data))
 	cfg := DefaultConfig()
 	if err := yaml.Unmarshal([]byte(expanded), cfg); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("decode config file %s: %w", path, err)
 	}
 
 	cfg.OverlayEnv()
 	if err := cfg.Validate(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("validate config %s: %w", path, err)
 	}
 	return cfg, nil
 }
@@ -100,15 +102,18 @@ func WriteDefault(path string) error {
 	cfg := DefaultConfig()
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
-		return err
+		return fmt.Errorf("marshal default config: %w", err)
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		return fmt.Errorf("create config directory for %s: %w", path, err)
 	}
 	if _, err := os.Stat(path); err == nil {
 		return errors.New("config already exists")
 	}
-	return store.WriteFileAtomically(path, data, 0o600)
+	if err := store.WriteFileAtomically(path, data, 0o600); err != nil {
+		return fmt.Errorf("write config file %s: %w", path, err)
+	}
+	return nil
 }
 
 func parseInt(raw string, fallback int) int {

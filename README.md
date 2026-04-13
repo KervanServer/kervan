@@ -2,6 +2,11 @@
 
 > **One Binary. Every Protocol. Total Control.**
 
+<p align="center">
+  <img src="assets/banner.jpeg" alt="Kervan Banner" width="100%">
+</p>
+
+
 **Kervan** (Turkish for *caravan*) is a single-binary, multi-protocol file transfer
 server written in pure Go. It unifies FTP, FTPS, SFTP and SCP behind a shared
 virtual filesystem, user store, session manager, audit engine and management API

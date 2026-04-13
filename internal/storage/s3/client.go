@@ -1,7 +1,6 @@
 package s3
 
 import (
-	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -12,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"path"
 	"sort"
 	"strconv"
@@ -20,6 +20,11 @@ import (
 )
 
 var ErrNotFound = errors.New("s3 object not found")
+
+const (
+	maxS3ListResponseBytes = 16 << 20
+	maxS3ErrorBodyBytes    = 8 << 10
+)
 
 type Client struct {
 	endpoint     *url.URL
@@ -109,7 +114,7 @@ func (c *Client) GetObject(ctx context.Context, bucket, key string) (*GetObjectR
 	if err != nil {
 		return nil, err
 	}
-	resp, err := c.do(req, nil)
+	resp, err := c.do(req, "")
 	if err != nil {
 		return nil, err
 	}
@@ -125,7 +130,7 @@ func (c *Client) HeadObject(ctx context.Context, bucket, key string) (*HeadObjec
 	if err != nil {
 		return nil, err
 	}
-	resp, err := c.do(req, nil)
+	resp, err := c.do(req, "")
 	if err != nil {
 		return nil, err
 	}
@@ -137,11 +142,19 @@ func (c *Client) HeadObject(ctx context.Context, bucket, key string) (*HeadObjec
 }
 
 func (c *Client) PutObject(ctx context.Context, bucket, key string, body io.Reader, size int64, contentType string) error {
-	payload, err := io.ReadAll(body)
+	reader, cleanup, err := ensureReadSeeker(body)
 	if err != nil {
 		return err
 	}
-	req, err := c.newObjectRequest(ctx, http.MethodPut, bucket, key, bytes.NewReader(payload))
+	defer cleanup()
+	payloadHash, err := sha256HexReader(reader)
+	if err != nil {
+		return err
+	}
+	if _, err := reader.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	req, err := c.newObjectRequest(ctx, http.MethodPut, bucket, key, reader)
 	if err != nil {
 		return err
 	}
@@ -149,7 +162,7 @@ func (c *Client) PutObject(ctx context.Context, bucket, key string, body io.Read
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}
-	resp, err := c.do(req, payload)
+	resp, err := c.do(req, payloadHash)
 	if err != nil {
 		return err
 	}
@@ -162,7 +175,7 @@ func (c *Client) DeleteObject(ctx context.Context, bucket, key string) error {
 	if err != nil {
 		return err
 	}
-	resp, err := c.do(req, nil)
+	resp, err := c.do(req, "")
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			return nil
@@ -179,7 +192,7 @@ func (c *Client) CopyObject(ctx context.Context, srcBucket, srcKey, dstBucket, d
 		return err
 	}
 	req.Header.Set("x-amz-copy-source", "/"+srcBucket+"/"+escapeCopySource(srcKey))
-	resp, err := c.do(req, nil)
+	resp, err := c.do(req, "")
 	if err != nil {
 		return err
 	}
@@ -210,7 +223,7 @@ func (c *Client) ListObjectsV2WithToken(ctx context.Context, bucket, prefix, del
 	if err != nil {
 		return nil, err
 	}
-	resp, err := c.do(req, nil)
+	resp, err := c.do(req, "")
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			return &ListObjectsResponse{}, nil
@@ -218,9 +231,12 @@ func (c *Client) ListObjectsV2WithToken(ctx context.Context, bucket, prefix, del
 		return nil, err
 	}
 	defer resp.Body.Close()
-	raw, err := io.ReadAll(resp.Body)
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxS3ListResponseBytes+1))
 	if err != nil {
 		return nil, err
+	}
+	if len(raw) > maxS3ListResponseBytes {
+		return nil, fmt.Errorf("s3 list response exceeds %d bytes", maxS3ListResponseBytes)
 	}
 	var parsed listBucketResult
 	if err := xml.Unmarshal(raw, &parsed); err != nil {
@@ -267,13 +283,11 @@ func (c *Client) newBucketRequest(ctx context.Context, bucket string, values url
 	return http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
 }
 
-func (c *Client) do(req *http.Request, payload []byte) (*http.Response, error) {
-	if payload == nil {
-		payload = []byte{}
-	}
+func (c *Client) do(req *http.Request, payloadHash string) (*http.Response, error) {
 	if c.accessKey != "" && c.secretKey != "" {
-		c.signRequest(req, payload)
+		c.signRequest(req, payloadHash)
 	}
+	// #nosec G704 -- endpoint is explicitly configured by server administrators.
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, err
@@ -282,7 +296,7 @@ func (c *Client) do(req *http.Request, payload []byte) (*http.Response, error) {
 		return resp, nil
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(resp.Body)
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, maxS3ErrorBodyBytes))
 	switch resp.StatusCode {
 	case http.StatusNotFound:
 		return nil, ErrNotFound
@@ -294,13 +308,16 @@ func (c *Client) do(req *http.Request, payload []byte) (*http.Response, error) {
 	}
 }
 
-func (c *Client) signRequest(req *http.Request, payload []byte) {
+func (c *Client) signRequest(req *http.Request, payloadHash string) {
+	if payloadHash == "" {
+		payloadHash = sha256Hex(nil)
+	}
 	now := time.Now().UTC()
 	datestamp := now.Format("20060102")
 	amzdate := now.Format("20060102T150405Z")
 
 	req.Header.Set("x-amz-date", amzdate)
-	req.Header.Set("x-amz-content-sha256", sha256Hex(payload))
+	req.Header.Set("x-amz-content-sha256", payloadHash)
 
 	canonicalHeaders, signedHeaders := buildCanonicalHeaders(req)
 	canonicalQuery := canonicalQueryString(req.URL.Query())
@@ -310,7 +327,7 @@ func (c *Client) signRequest(req *http.Request, payload []byte) {
 		canonicalQuery,
 		canonicalHeaders,
 		signedHeaders,
-		sha256Hex(payload),
+		payloadHash,
 	}, "\n")
 
 	credentialScope := datestamp + "/" + c.region + "/s3/aws4_request"
@@ -394,6 +411,40 @@ func hmacSHA256(key, data []byte) []byte {
 func sha256Hex(payload []byte) string {
 	sum := sha256.Sum256(payload)
 	return hex.EncodeToString(sum[:])
+}
+
+func sha256HexReader(r io.ReadSeeker) (string, error) {
+	if _, err := r.Seek(0, io.SeekStart); err != nil {
+		return "", err
+	}
+	hash := sha256.New()
+	if _, err := io.Copy(hash, r); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+func ensureReadSeeker(body io.Reader) (io.ReadSeeker, func(), error) {
+	if rs, ok := body.(io.ReadSeeker); ok {
+		return rs, func() {}, nil
+	}
+	tempFile, err := os.CreateTemp("", "kervan-s3-put-*")
+	if err != nil {
+		return nil, nil, err
+	}
+	cleanup := func() {
+		_ = tempFile.Close()
+		_ = os.Remove(tempFile.Name())
+	}
+	if _, err := io.Copy(tempFile, body); err != nil {
+		cleanup()
+		return nil, nil, err
+	}
+	if _, err := tempFile.Seek(0, io.SeekStart); err != nil {
+		cleanup()
+		return nil, nil, err
+	}
+	return tempFile, cleanup, nil
 }
 
 func headerInt64(header http.Header, key string) int64 {

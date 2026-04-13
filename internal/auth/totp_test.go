@@ -33,3 +33,9 @@ func TestTOTPProvisioningURL(t *testing.T) {
 		t.Fatalf("expected otpauth url, got %q", url)
 	}
 }
+
+func TestGenerateTOTPCodeRejectsPreEpochTime(t *testing.T) {
+	if _, err := GenerateTOTPCode("JBSWY3DPEHPK3PXP", time.Unix(-1, 0).UTC()); err == nil {
+		t.Fatal("expected pre-epoch timestamp to be rejected")
+	}
+}

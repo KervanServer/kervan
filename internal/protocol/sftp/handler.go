@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 	"path"
+	"strconv"
 	"strings"
 
 	"github.com/kervanserver/kervan/internal/audit"
@@ -224,9 +226,16 @@ func (h *sftpHandler) handleClose(payload []byte) error {
 	}
 	switch v := entry.(type) {
 	case *openFile:
-		_ = v.file.Close()
+		closeErr := v.file.Close()
 		if h.xfer != nil && v.transferID != "" {
-			h.xfer.End(v.transferID, transfer.StatusCompleted, "")
+			if closeErr != nil {
+				h.xfer.End(v.transferID, transfer.StatusFailed, closeErr.Error())
+			} else {
+				h.xfer.End(v.transferID, transfer.StatusCompleted, "")
+			}
+		}
+		if closeErr != nil {
+			return h.replyStatus(id, mapStatus(closeErr), closeErr.Error())
 		}
 	case *openDir:
 		_ = v
@@ -262,9 +271,16 @@ func (h *sftpHandler) handleRead(payload []byte) error {
 	if !ok {
 		return h.replyStatus(id, fxFailure, "handle is not file")
 	}
+	readOffset, err := sftpFileOffset(offset)
+	if err != nil {
+		return h.replyStatus(id, fxBadMessage, err.Error())
+	}
+	if err := validateReadLength(length); err != nil {
+		return h.replyStatus(id, fxBadMessage, err.Error())
+	}
 
 	buf := make([]byte, length)
-	n, readErr := of.file.ReadAt(buf, int64(offset))
+	n, readErr := of.file.ReadAt(buf, readOffset)
 	if readErr != nil && !errors.Is(readErr, io.EOF) {
 		return h.replyStatus(id, mapStatus(readErr), readErr.Error())
 	}
@@ -308,7 +324,11 @@ func (h *sftpHandler) handleWrite(payload []byte) error {
 	if !ok {
 		return h.replyStatus(id, fxFailure, "handle is not file")
 	}
-	if _, err := of.file.Seek(int64(offset), io.SeekStart); err != nil {
+	writeOffset, err := sftpFileOffset(offset)
+	if err != nil {
+		return h.replyStatus(id, fxBadMessage, err.Error())
+	}
+	if _, err := of.file.Seek(writeOffset, io.SeekStart); err != nil {
 		return h.replyStatus(id, fxFailure, err.Error())
 	}
 	if _, err := of.file.Write(data); err != nil {
@@ -715,7 +735,12 @@ func (w *packetWriter) uint64(v uint64) {
 func (w *packetWriter) string(s string) { w.bytes([]byte(s)) }
 
 func (w *packetWriter) bytes(b []byte) {
-	w.uint32(uint32(len(b)))
+	length, ok := intToUint32(len(b))
+	if !ok {
+		w.uint32(0)
+		return
+	}
+	w.uint32(length)
 	w.buf = append(w.buf, b...)
 }
 
@@ -736,7 +761,11 @@ func readPacket(r io.Reader) (byte, []byte, error) {
 }
 
 func writePacket(w io.Writer, packetType byte, payload []byte) error {
-	total := uint32(1 + len(payload))
+	length, ok := intToUint32(len(payload))
+	if !ok || length > ^uint32(0)-1 {
+		return errors.New("packet payload too large")
+	}
+	total := length + 1
 	var header [4]byte
 	binary.BigEndian.PutUint32(header[:], total)
 	if _, err := w.Write(header[:]); err != nil {
@@ -794,6 +823,20 @@ func mapStatus(err error) uint32 {
 	}
 }
 
+func sftpFileOffset(offset uint64) (int64, error) {
+	if offset > math.MaxInt64 {
+		return 0, errors.New("offset too large")
+	}
+	return int64(offset), nil
+}
+
+func validateReadLength(length uint32) error {
+	if length > maxPacketSize {
+		return errors.New("read length too large")
+	}
+	return nil
+}
+
 func marshalAttrs(info os.FileInfo) []byte {
 	const (
 		attrSize        = 0x00000001
@@ -803,7 +846,7 @@ func marshalAttrs(info os.FileInfo) []byte {
 
 	var w packetWriter
 	w.uint32(attrSize | attrPermissions | attrACModTime)
-	w.uint64(uint64(info.Size()))
+	w.uint64(nonNegativeInt64ToUint64(info.Size()))
 	perms := uint32(info.Mode().Perm())
 	if info.IsDir() {
 		perms |= 0o040000
@@ -811,7 +854,7 @@ func marshalAttrs(info os.FileInfo) []byte {
 		perms |= 0o100000
 	}
 	w.uint32(perms)
-	secs := uint32(max(0, info.ModTime().Unix()))
+	secs := nonNegativeInt64ToUint32(info.ModTime().Unix())
 	w.uint32(secs)
 	w.uint32(secs)
 	return w.buf
@@ -832,11 +875,33 @@ func idFromPayload(payload []byte) uint32 {
 	return binary.BigEndian.Uint32(payload[:4])
 }
 
-func max(a int64, b int64) int64 {
-	if a > b {
-		return a
+func intToUint32(value int) (uint32, bool) {
+	if value < 0 {
+		return 0, false
 	}
-	return b
+	u := uint64(value)
+	if strconv.IntSize == 64 && u > uint64(^uint32(0)) {
+		return 0, false
+	}
+	// #nosec G115 -- u is bounded to uint32 range above.
+	return uint32(u), true
+}
+
+func nonNegativeInt64ToUint64(value int64) uint64 {
+	if value <= 0 {
+		return 0
+	}
+	return uint64(value)
+}
+
+func nonNegativeInt64ToUint32(value int64) uint32 {
+	if value <= 0 {
+		return 0
+	}
+	if value > int64(^uint32(0)) {
+		return ^uint32(0)
+	}
+	return uint32(value)
 }
 
 func (h *sftpHandler) normalizePath(in string) string {

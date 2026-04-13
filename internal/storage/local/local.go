@@ -70,6 +70,7 @@ func (b *Backend) Open(name string, flags int, perm os.FileMode) (vfs.File, erro
 	if perm == 0 {
 		perm = b.filePerms
 	}
+	// #nosec G304 -- resolvedPath enforces backend root containment and symlink safety.
 	f, err := os.OpenFile(p, flags, perm)
 	if err != nil {
 		return nil, err

@@ -46,7 +46,7 @@ func runMigrateVSFTPDCommand(stdout io.Writer, args []string) error {
 	homeRoot := fs.String("home-root", "/", "Base home directory prefix for imported users")
 	jsonOut := fs.Bool("json", false, "Output JSON")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return fmt.Errorf("parse migrate vsftpd flags: %w", err)
 	}
 	if strings.TrimSpace(*userDBPath) == "" {
 		return errors.New("--user-db is required")
@@ -54,12 +54,12 @@ func runMigrateVSFTPDCommand(stdout io.Writer, args []string) error {
 
 	entries, err := parseVSFTPDUserDB(*userDBPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("parse vsftpd user db %s: %w", *userDBPath, err)
 	}
 
 	ctx, err := openCLIContext(*configPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("open CLI context: %w", err)
 	}
 	defer ctx.close()
 
@@ -84,7 +84,10 @@ func runMigrateVSFTPDCommand(stdout io.Writer, args []string) error {
 	}
 
 	if *jsonOut {
-		return json.NewEncoder(stdout).Encode(report)
+		if err := json.NewEncoder(stdout).Encode(report); err != nil {
+			return fmt.Errorf("encode vsftpd migration report: %w", err)
+		}
+		return nil
 	}
 
 	_, _ = fmt.Fprintf(stdout, "Migrated vsftpd users from %s\n", *userDBPath)
@@ -122,9 +125,10 @@ type migrationReport struct {
 }
 
 func parseVSFTPDUserDB(filePath string) ([]vsftpdUserEntry, error) {
+	// #nosec G304 -- migration source path is explicitly provided by operator.
 	file, err := os.Open(filePath)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("open vsftpd user db %s: %w", filePath, err)
 	}
 	defer file.Close()
 
@@ -138,7 +142,7 @@ func parseVSFTPDUserDB(filePath string) ([]vsftpdUserEntry, error) {
 		lines = append(lines, line)
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("scan vsftpd user db %s: %w", filePath, err)
 	}
 	if len(lines) == 0 {
 		return nil, errors.New("vsftpd user db is empty")
@@ -173,7 +177,7 @@ func runMigrateProFTPDCommand(stdout io.Writer, args []string) error {
 	proftpdConfigPathAlias := fs.String("source-config", "", "Path to ProFTPD config file")
 	jsonOut := fs.Bool("json", false, "Output JSON")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return fmt.Errorf("parse migrate proftpd flags: %w", err)
 	}
 	sourceConfigPath := strings.TrimSpace(*proftpdConfigPath)
 	if sourceConfigPath == "" {
@@ -185,7 +189,7 @@ func runMigrateProFTPDCommand(stdout io.Writer, args []string) error {
 
 	source, err := parseProFTPDConfig(sourceConfigPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("parse proftpd config %s: %w", sourceConfigPath, err)
 	}
 	if strings.TrimSpace(source.AuthUserFile) == "" {
 		return errors.New("AuthUserFile directive not found in ProFTPD config")
@@ -193,12 +197,12 @@ func runMigrateProFTPDCommand(stdout io.Writer, args []string) error {
 
 	entries, warnings, err := parseProFTPDUserFile(source.AuthUserFile)
 	if err != nil {
-		return err
+		return fmt.Errorf("parse proftpd user file %s: %w", source.AuthUserFile, err)
 	}
 
 	ctx, err := openCLIContext(*kervanConfigPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("open CLI context: %w", err)
 	}
 	defer ctx.close()
 
@@ -225,7 +229,10 @@ func runMigrateProFTPDCommand(stdout io.Writer, args []string) error {
 	}
 
 	if *jsonOut {
-		return json.NewEncoder(stdout).Encode(report)
+		if err := json.NewEncoder(stdout).Encode(report); err != nil {
+			return fmt.Errorf("encode proftpd migration report: %w", err)
+		}
+		return nil
 	}
 
 	_, _ = fmt.Fprintf(stdout, "Migrated ProFTPD users from %s\n", source.AuthUserFile)
@@ -260,9 +267,10 @@ type proFTPDUserEntry struct {
 }
 
 func parseProFTPDConfig(filePath string) (*proFTPDConfig, error) {
+	// #nosec G304 -- migration source path is explicitly provided by operator.
 	file, err := os.Open(filePath)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("open proftpd config %s: %w", filePath, err)
 	}
 	defer file.Close()
 
@@ -288,15 +296,16 @@ func parseProFTPDConfig(filePath string) (*proFTPDConfig, error) {
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("scan proftpd config %s: %w", filePath, err)
 	}
 	return cfg, nil
 }
 
 func parseProFTPDUserFile(filePath string) ([]proFTPDUserEntry, []string, error) {
+	// #nosec G304 -- migration source path is explicitly provided by operator.
 	file, err := os.Open(filePath)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("open proftpd user file %s: %w", filePath, err)
 	}
 	defer file.Close()
 
@@ -344,35 +353,43 @@ func parseProFTPDUserFile(filePath string) ([]proFTPDUserEntry, []string, error)
 		entries = append(entries, entry)
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, warnings, err
+		return nil, warnings, fmt.Errorf("scan proftpd user file %s: %w", filePath, err)
 	}
 	return entries, warnings, nil
 }
 
 func createMigratedProFTPDUser(ctx *cliContext, entry proFTPDUserEntry) (*auth.User, error) {
+	homeDir, err := auth.NormalizeHomeDir(entry.HomeDir)
+	if err != nil {
+		return nil, fmt.Errorf("invalid home directory for %s: %w", entry.Username, err)
+	}
+
 	switch {
 	case entry.PasswordHash != "":
+		if err := auth.ValidatePasswordHash(entry.PasswordHash); err != nil {
+			return nil, fmt.Errorf("password hash for %s is invalid: %w", entry.Username, err)
+		}
 		user := &auth.User{
 			Username:     entry.Username,
 			PasswordHash: entry.PasswordHash,
 			Type:         auth.UserTypeVirtual,
-			HomeDir:      entry.HomeDir,
+			HomeDir:      homeDir,
 			Enabled:      !entry.Disabled,
 			Permissions:  auth.DefaultUserPermissions(),
 		}
 		if err := ctx.repo.Create(user); err != nil {
-			return nil, err
+			return nil, fmt.Errorf("create migrated user %s: %w", entry.Username, err)
 		}
 		return user, nil
 	case entry.Password != "":
-		user, err := ctx.engine.CreateUser(entry.Username, entry.Password, entry.HomeDir, false)
+		user, err := ctx.engine.CreateUser(entry.Username, entry.Password, homeDir, false)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("create migrated user %s: %w", entry.Username, err)
 		}
 		if entry.Disabled {
 			user.Enabled = false
 			if err := ctx.repo.Update(user); err != nil {
-				return nil, err
+				return nil, fmt.Errorf("disable migrated user %s: %w", entry.Username, err)
 			}
 		}
 		return user, nil
@@ -399,7 +416,7 @@ func runMigrateSSHKeysCommand(stdout io.Writer, args []string) error {
 	authorizedKeysPattern := fs.String("authorized-keys-dir", "", "Glob to .ssh directories or authorized_keys files")
 	jsonOut := fs.Bool("json", false, "Output JSON")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return fmt.Errorf("parse migrate ssh-keys flags: %w", err)
 	}
 	if strings.TrimSpace(*authorizedKeysPattern) == "" {
 		return errors.New("--authorized-keys-dir is required")
@@ -407,7 +424,7 @@ func runMigrateSSHKeysCommand(stdout io.Writer, args []string) error {
 
 	matches, err := filepath.Glob(*authorizedKeysPattern)
 	if err != nil {
-		return err
+		return fmt.Errorf("glob authorized_keys pattern %s: %w", *authorizedKeysPattern, err)
 	}
 	if len(matches) == 0 {
 		return errors.New("no authorized_keys paths matched")
@@ -415,7 +432,7 @@ func runMigrateSSHKeysCommand(stdout io.Writer, args []string) error {
 
 	ctx, err := openCLIContext(*configPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("open CLI context: %w", err)
 	}
 	defer ctx.close()
 
@@ -470,7 +487,10 @@ func runMigrateSSHKeysCommand(stdout io.Writer, args []string) error {
 	}
 
 	if *jsonOut {
-		return json.NewEncoder(stdout).Encode(report)
+		if err := json.NewEncoder(stdout).Encode(report); err != nil {
+			return fmt.Errorf("encode ssh-key migration report: %w", err)
+		}
+		return nil
 	}
 
 	_, _ = fmt.Fprintf(stdout, "Migrated SSH authorized_keys from %s\n", *authorizedKeysPattern)
@@ -500,7 +520,7 @@ func runMigrateSSHKeysCommand(stdout io.Writer, args []string) error {
 func resolveAuthorizedKeysTarget(match string) (targetFile, username, homeDir string, err error) {
 	info, err := os.Stat(match)
 	if err != nil {
-		return "", "", "", err
+		return "", "", "", fmt.Errorf("stat path %s: %w", match, err)
 	}
 	if info.IsDir() {
 		targetFile = filepath.Join(match, "authorized_keys")
@@ -521,9 +541,10 @@ func resolveAuthorizedKeysTarget(match string) (targetFile, username, homeDir st
 }
 
 func parseAuthorizedKeysFile(filePath string) ([]string, []string, error) {
+	// #nosec G304 -- migration source path is explicitly provided by operator.
 	raw, err := os.ReadFile(filePath)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, fmt.Errorf("read authorized_keys file %s: %w", filePath, err)
 	}
 	keys := make([]string, 0, 4)
 	warnings := make([]string, 0)
@@ -558,7 +579,7 @@ func splitAuthorizedKeyChunk(raw []byte) ([]byte, []byte) {
 func createOrUpdateAuthorizedKeyUser(ctx *cliContext, username, homeDir string, keys []string) (*auth.User, int, error) {
 	user, err := ctx.repo.GetByUsername(username)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, fmt.Errorf("lookup user %s: %w", username, err)
 	}
 	if user == nil {
 		user = &auth.User{
@@ -570,7 +591,7 @@ func createOrUpdateAuthorizedKeyUser(ctx *cliContext, username, homeDir string, 
 			Permissions:    auth.DefaultUserPermissions(),
 		}
 		if err := ctx.repo.Create(user); err != nil {
-			return nil, 0, err
+			return nil, 0, fmt.Errorf("create user %s for authorized keys: %w", username, err)
 		}
 		return user, len(user.AuthorizedKeys), nil
 	}
@@ -581,7 +602,7 @@ func createOrUpdateAuthorizedKeyUser(ctx *cliContext, username, homeDir string, 
 		user.HomeDir = homeDir
 	}
 	if err := ctx.repo.Update(user); err != nil {
-		return nil, 0, err
+		return nil, 0, fmt.Errorf("update authorized keys for user %s: %w", username, err)
 	}
 	return user, len(user.AuthorizedKeys) - before, nil
 }

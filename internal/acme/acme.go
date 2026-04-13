@@ -65,7 +65,14 @@ func (m *Manager) HTTPHandler(next http.Handler) http.Handler {
 }
 
 func (m *Manager) TLSConfig(minVersion, maxVersion uint16) *tls.Config {
+	if minVersion < tls.VersionTLS12 {
+		minVersion = tls.VersionTLS12
+	}
+	if maxVersion < minVersion {
+		maxVersion = minVersion
+	}
 	cfg := &tls.Config{
+		// #nosec G402 -- minimum is clamped to TLS1.2 above.
 		MinVersion:     minVersion,
 		MaxVersion:     maxVersion,
 		GetCertificate: m.manager.GetCertificate,

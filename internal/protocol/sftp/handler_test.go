@@ -3,6 +3,7 @@ package sftp
 import (
 	"bytes"
 	"io"
+	"math"
 	"os"
 	"testing"
 )
@@ -44,5 +45,25 @@ func TestReadPacketEOF(t *testing.T) {
 	}
 	if err != io.EOF {
 		t.Fatalf("expected io.EOF, got %v", err)
+	}
+}
+
+func TestSFTPFileOffsetBounds(t *testing.T) {
+	offset, err := sftpFileOffset(math.MaxInt64)
+	if err != nil || offset != math.MaxInt64 {
+		t.Fatalf("expected max int64 offset to pass, got offset=%d err=%v", offset, err)
+	}
+
+	if _, err := sftpFileOffset(math.MaxInt64 + 1); err == nil || err.Error() != "offset too large" {
+		t.Fatalf("expected oversized offset error, got %v", err)
+	}
+}
+
+func TestValidateReadLengthBounds(t *testing.T) {
+	if err := validateReadLength(maxPacketSize); err != nil {
+		t.Fatalf("expected max packet size to pass, got %v", err)
+	}
+	if err := validateReadLength(maxPacketSize + 1); err == nil || err.Error() != "read length too large" {
+		t.Fatalf("expected oversized read length error, got %v", err)
 	}
 }

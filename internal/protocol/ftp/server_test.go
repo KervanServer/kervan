@@ -62,6 +62,21 @@ func TestParsePortRange(t *testing.T) {
 	}
 }
 
+func TestFTPHostHelpers(t *testing.T) {
+	if got := hostFromAddr("127.0.0.1:2121"); got != "127.0.0.1" {
+		t.Fatalf("unexpected host from addr: %q", got)
+	}
+	if got := hostFromAddr("[::1]:2121"); got != "::1" {
+		t.Fatalf("unexpected ipv6 host from addr: %q", got)
+	}
+	if !hostsEqual("127.0.0.1", "::ffff:127.0.0.1") {
+		t.Fatal("expected mapped IPv4 addresses to match")
+	}
+	if hostsEqual("127.0.0.1", "192.0.2.10") {
+		t.Fatal("expected different hosts not to match")
+	}
+}
+
 func TestWriteReplyAndMultiline(t *testing.T) {
 	server, client := net.Pipe()
 	defer server.Close()

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"flag"
 	"io"
 	"os"
@@ -22,12 +23,12 @@ func runMCPCommand(stdin io.Reader, stdout io.Writer, args []string) error {
 	fs.SetOutput(io.Discard)
 	configPath := fs.String("config", defaultConfigPath, "Path to config file")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return fmt.Errorf("parse mcp flags: %w", err)
 	}
 
 	ctx, err := openCLIContext(*configPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("open CLI context: %w", err)
 	}
 	defer ctx.close()
 
@@ -37,5 +38,8 @@ func runMCPCommand(stdin io.Reader, stdout io.Writer, args []string) error {
 	}
 
 	server := mcp.NewServer(ctx.cfg, ctx.repo, nil, auditLog, stdin, stdout)
-	return server.Serve(context.Background())
+	if err := server.Serve(context.Background()); err != nil {
+		return fmt.Errorf("serve MCP stdio session: %w", err)
+	}
+	return nil
 }

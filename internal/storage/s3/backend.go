@@ -1,7 +1,6 @@
 package s3
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -15,6 +14,8 @@ import (
 	"github.com/kervanserver/kervan/internal/vfs"
 )
 
+const defaultOperationTimeout = 30 * time.Second
+
 type Options struct {
 	Endpoint     string
 	Region       string
@@ -27,9 +28,10 @@ type Options struct {
 }
 
 type Backend struct {
-	client *Client
-	bucket string
-	prefix string
+	client  *Client
+	bucket  string
+	prefix  string
+	tempDir string
 }
 
 func New(opts Options) (*Backend, error) {
@@ -62,21 +64,21 @@ func (b *Backend) Open(name string, flags int, _ os.FileMode) (vfs.File, error) 
 	key := b.s3Key(name)
 	writeMode := flags&(os.O_WRONLY|os.O_RDWR|os.O_CREATE|os.O_TRUNC|os.O_APPEND) != 0
 	if !writeMode {
-		data, modTime, err := b.readObject(key)
+		file, err := b.openTempFile(name, key, false)
 		if err != nil {
 			return nil, err
 		}
-		return newFile(name, data, modTime, false, b, key), nil
+		return file, nil
 	}
 
-	var initial []byte
 	var modTime time.Time
+	var file *file
 	if flags&os.O_TRUNC == 0 {
-		data, existingModTime, err := b.readObject(key)
+		existing, err := b.openTempFile(name, key, true)
 		switch {
 		case err == nil:
-			initial = data
-			modTime = existingModTime
+			file = existing
+			modTime = existing.modTime
 		case errors.Is(err, os.ErrNotExist):
 			if flags&os.O_CREATE == 0 && flags&os.O_APPEND == 0 {
 				return nil, err
@@ -86,7 +88,14 @@ func (b *Backend) Open(name string, flags int, _ os.FileMode) (vfs.File, error) 
 		}
 	}
 
-	file := newFile(name, initial, modTime, true, b, key)
+	if file == nil {
+		var err error
+		file, err = b.newEmptyTempFile(name, key, true)
+		if err != nil {
+			return nil, err
+		}
+		file.modTime = modTime
+	}
 	if flags&os.O_APPEND != 0 {
 		_, _ = file.Seek(0, io.SeekEnd)
 	}
@@ -100,7 +109,9 @@ func (b *Backend) Stat(name string) (os.FileInfo, error) {
 	}
 
 	key := b.s3Key(cleanName)
-	resp, err := b.client.HeadObject(context.Background(), b.bucket, key)
+	ctx, cancel := b.operationContext()
+	defer cancel()
+	resp, err := b.client.HeadObject(ctx, b.bucket, key)
 	if err == nil {
 		return fileInfo{
 			name:    path.Base(cleanName),
@@ -114,7 +125,9 @@ func (b *Backend) Stat(name string) (os.FileInfo, error) {
 	}
 
 	dirPrefix := b.dirKey(cleanName)
-	list, listErr := b.client.ListObjectsV2(context.Background(), b.bucket, dirPrefix, "/", 1)
+	ctx, cancel = b.operationContext()
+	defer cancel()
+	list, listErr := b.client.ListObjectsV2(ctx, b.bucket, dirPrefix, "/", 1)
 	if listErr != nil {
 		return nil, listErr
 	}
@@ -122,7 +135,9 @@ func (b *Backend) Stat(name string) (os.FileInfo, error) {
 		return fileInfo{name: path.Base(cleanName), mode: fs.ModeDir | 0o755, isDir: true, modTime: time.Now().UTC()}, nil
 	}
 
-	marker, markerErr := b.client.HeadObject(context.Background(), b.bucket, dirPrefix)
+	ctx, cancel = b.operationContext()
+	defer cancel()
+	marker, markerErr := b.client.HeadObject(ctx, b.bucket, dirPrefix)
 	if markerErr == nil {
 		return fileInfo{
 			name:    path.Base(cleanName),
@@ -153,10 +168,14 @@ func (b *Backend) Rename(oldname, newname string) error {
 	}
 	oldKey := b.s3Key(oldClean)
 	newKey := b.s3Key(newClean)
-	if err := b.client.CopyObject(context.Background(), b.bucket, oldKey, b.bucket, newKey); err != nil {
+	ctx, cancel := b.operationContext()
+	defer cancel()
+	if err := b.client.CopyObject(ctx, b.bucket, oldKey, b.bucket, newKey); err != nil {
 		return mapS3Error(err)
 	}
-	return mapS3Error(b.client.DeleteObject(context.Background(), b.bucket, oldKey))
+	ctx, cancel = b.operationContext()
+	defer cancel()
+	return mapS3Error(b.client.DeleteObject(ctx, b.bucket, oldKey))
 }
 
 func (b *Backend) Remove(name string) error {
@@ -176,9 +195,13 @@ func (b *Backend) Remove(name string) error {
 		if len(entries) > 0 {
 			return errors.New("directory not empty")
 		}
-		return mapS3Error(b.client.DeleteObject(context.Background(), b.bucket, b.dirKey(cleanName)))
+		ctx, cancel := b.operationContext()
+		defer cancel()
+		return mapS3Error(b.client.DeleteObject(ctx, b.bucket, b.dirKey(cleanName)))
 	}
-	return mapS3Error(b.client.DeleteObject(context.Background(), b.bucket, b.s3Key(cleanName)))
+	ctx, cancel := b.operationContext()
+	defer cancel()
+	return mapS3Error(b.client.DeleteObject(ctx, b.bucket, b.s3Key(cleanName)))
 }
 
 func (b *Backend) RemoveAll(name string) error {
@@ -194,20 +217,28 @@ func (b *Backend) RemoveAll(name string) error {
 		return err
 	}
 	if !info.IsDir() {
-		return mapS3Error(b.client.DeleteObject(context.Background(), b.bucket, b.s3Key(cleanName)))
+		ctx, cancel := b.operationContext()
+		defer cancel()
+		return mapS3Error(b.client.DeleteObject(ctx, b.bucket, b.s3Key(cleanName)))
 	}
 	prefix := b.dirKey(cleanName)
 	if err := b.walkObjects(prefix, func(key string) error {
-		return b.client.DeleteObject(context.Background(), b.bucket, key)
+		ctx, cancel := b.operationContext()
+		defer cancel()
+		return b.client.DeleteObject(ctx, b.bucket, key)
 	}); err != nil {
 		return mapS3Error(err)
 	}
-	return mapS3Error(b.client.DeleteObject(context.Background(), b.bucket, prefix))
+	ctx, cancel := b.operationContext()
+	defer cancel()
+	return mapS3Error(b.client.DeleteObject(ctx, b.bucket, prefix))
 }
 
 func (b *Backend) Mkdir(name string, _ os.FileMode) error {
 	key := b.dirKey(name)
-	return mapS3Error(b.client.PutObject(context.Background(), b.bucket, key, bytes.NewReader(nil), 0, "application/x-directory"))
+	ctx, cancel := b.operationContext()
+	defer cancel()
+	return mapS3Error(b.client.PutObject(ctx, b.bucket, key, strings.NewReader(""), 0, "application/x-directory"))
 }
 
 func (b *Backend) MkdirAll(name string, perm os.FileMode) error {
@@ -245,7 +276,9 @@ func (b *Backend) ReadDir(name string) ([]fs.DirEntry, error) {
 		prefix = b.prefix
 	}
 
-	response, err := b.client.ListObjectsV2(context.Background(), b.bucket, prefix, "/", 1000)
+	ctx, cancel := b.operationContext()
+	defer cancel()
+	response, err := b.client.ListObjectsV2(ctx, b.bucket, prefix, "/", 1000)
 	if err != nil {
 		return nil, mapS3Error(err)
 	}
@@ -304,17 +337,68 @@ func (b *Backend) Statvfs(_ string) (*vfs.StatVFS, error) {
 	}, nil
 }
 
-func (b *Backend) readObject(key string) ([]byte, time.Time, error) {
-	resp, err := b.client.GetObject(context.Background(), b.bucket, key)
+func (b *Backend) openTempFile(name, key string, writable bool) (*file, error) {
+	ctx, cancel := b.operationContext()
+	defer cancel()
+	resp, err := b.client.GetObject(ctx, b.bucket, key)
 	if err != nil {
-		return nil, time.Time{}, mapS3Error(err)
+		return nil, mapS3Error(err)
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(resp.Body)
+	tempFile, tempPath, err := b.createTempFile()
 	if err != nil {
-		return nil, time.Time{}, err
+		return nil, err
 	}
-	return data, resp.LastModified, nil
+	if _, err := io.Copy(tempFile, resp.Body); err != nil {
+		_ = tempFile.Close()
+		_ = os.Remove(tempPath)
+		return nil, err
+	}
+	if _, err := tempFile.Seek(0, io.SeekStart); err != nil {
+		_ = tempFile.Close()
+		_ = os.Remove(tempPath)
+		return nil, err
+	}
+	info, err := tempFile.Stat()
+	if err != nil {
+		_ = tempFile.Close()
+		_ = os.Remove(tempPath)
+		return nil, err
+	}
+	return &file{
+		name:     clean(name),
+		key:      key,
+		handle:   tempFile,
+		tempPath: tempPath,
+		size:     info.Size(),
+		modTime:  nonZeroModTime(resp.LastModified),
+		writable: writable,
+		backend:  b,
+	}, nil
+}
+
+func (b *Backend) newEmptyTempFile(name, key string, writable bool) (*file, error) {
+	tempFile, tempPath, err := b.createTempFile()
+	if err != nil {
+		return nil, err
+	}
+	return &file{
+		name:     clean(name),
+		key:      key,
+		handle:   tempFile,
+		tempPath: tempPath,
+		modTime:  time.Now().UTC(),
+		writable: writable,
+		backend:  b,
+	}, nil
+}
+
+func (b *Backend) createTempFile() (*os.File, string, error) {
+	tempFile, err := os.CreateTemp(b.tempDir, "kervan-s3-*")
+	if err != nil {
+		return nil, "", err
+	}
+	return tempFile, tempFile.Name(), nil
 }
 
 func (b *Backend) s3Key(name string) string {
@@ -358,12 +442,18 @@ func (b *Backend) renameDir(oldname, newname string) error {
 		if suffix == "" {
 			target = newPrefix
 		}
-		if err := b.client.CopyObject(context.Background(), b.bucket, key, b.bucket, target); err != nil {
+		ctx, cancel := b.operationContext()
+		err := b.client.CopyObject(ctx, b.bucket, key, b.bucket, target)
+		cancel()
+		if err != nil {
 			return mapS3Error(err)
 		}
 	}
 	for _, key := range keys {
-		if err := b.client.DeleteObject(context.Background(), b.bucket, key); err != nil {
+		ctx, cancel := b.operationContext()
+		err := b.client.DeleteObject(ctx, b.bucket, key)
+		cancel()
+		if err != nil {
 			return mapS3Error(err)
 		}
 	}
@@ -373,7 +463,9 @@ func (b *Backend) renameDir(oldname, newname string) error {
 func (b *Backend) walkObjects(prefix string, fn func(key string) error) error {
 	token := ""
 	for {
-		resp, err := b.client.ListObjectsV2WithToken(context.Background(), b.bucket, prefix, "", 1000, token)
+		ctx, cancel := b.operationContext()
+		resp, err := b.client.ListObjectsV2WithToken(ctx, b.bucket, prefix, "", 1000, token)
+		cancel()
 		if err != nil {
 			return err
 		}
@@ -435,52 +527,27 @@ func (d dirEntry) Info() (fs.FileInfo, error) { return d.info, nil }
 type file struct {
 	name     string
 	key      string
-	buf      []byte
-	offset   int64
+	handle   *os.File
+	tempPath string
+	size     int64
 	modTime  time.Time
 	writable bool
 	closed   bool
 	backend  *Backend
 }
 
-func newFile(name string, data []byte, modTime time.Time, writable bool, backend *Backend, key string) *file {
-	if modTime.IsZero() {
-		modTime = time.Now().UTC()
-	}
-	return &file{
-		name:     clean(name),
-		key:      key,
-		buf:      append([]byte(nil), data...),
-		modTime:  modTime,
-		writable: writable,
-		backend:  backend,
-	}
-}
-
 func (f *file) Read(p []byte) (int, error) {
 	if f.closed {
 		return 0, os.ErrClosed
 	}
-	if f.offset >= int64(len(f.buf)) {
-		return 0, io.EOF
-	}
-	n := copy(p, f.buf[f.offset:])
-	f.offset += int64(n)
-	return n, nil
+	return f.handle.Read(p)
 }
 
 func (f *file) ReadAt(p []byte, off int64) (int, error) {
 	if f.closed {
 		return 0, os.ErrClosed
 	}
-	if off >= int64(len(f.buf)) {
-		return 0, io.EOF
-	}
-	n := copy(p, f.buf[off:])
-	if n < len(p) {
-		return n, io.EOF
-	}
-	return n, nil
+	return f.handle.ReadAt(p, off)
 }
 
 func (f *file) Write(p []byte) (int, error) {
@@ -490,46 +557,39 @@ func (f *file) Write(p []byte) (int, error) {
 	if !f.writable {
 		return 0, os.ErrPermission
 	}
-	end := int(f.offset) + len(p)
-	if end > len(f.buf) {
-		next := make([]byte, end)
-		copy(next, f.buf)
-		f.buf = next
+	n, err := f.handle.Write(p)
+	if err != nil {
+		return n, err
 	}
-	copy(f.buf[f.offset:], p)
-	f.offset += int64(len(p))
+	if pos, seekErr := f.handle.Seek(0, io.SeekCurrent); seekErr == nil && pos > f.size {
+		f.size = pos
+	}
 	f.modTime = time.Now().UTC()
-	return len(p), nil
+	return n, nil
 }
 
 func (f *file) WriteAt(p []byte, off int64) (int, error) {
-	if _, err := f.Seek(off, io.SeekStart); err != nil {
-		return 0, err
+	if f.closed {
+		return 0, os.ErrClosed
 	}
-	return f.Write(p)
+	if !f.writable {
+		return 0, os.ErrPermission
+	}
+	n, err := f.handle.WriteAt(p, off)
+	if end := off + int64(n); end > f.size {
+		f.size = end
+	}
+	if err == nil {
+		f.modTime = time.Now().UTC()
+	}
+	return n, err
 }
 
 func (f *file) Seek(offset int64, whence int) (int64, error) {
 	if f.closed {
 		return 0, os.ErrClosed
 	}
-	var base int64
-	switch whence {
-	case io.SeekStart:
-		base = 0
-	case io.SeekCurrent:
-		base = f.offset
-	case io.SeekEnd:
-		base = int64(len(f.buf))
-	default:
-		return 0, errors.New("invalid whence")
-	}
-	next := base + offset
-	if next < 0 {
-		return 0, errors.New("negative seek")
-	}
-	f.offset = next
-	return next, nil
+	return f.handle.Seek(offset, whence)
 }
 
 func (f *file) Close() error {
@@ -537,43 +597,72 @@ func (f *file) Close() error {
 		return nil
 	}
 	f.closed = true
-	if !f.writable {
-		return nil
+	var result error
+	if f.writable {
+		if _, err := f.handle.Seek(0, io.SeekStart); err != nil {
+			result = err
+		} else {
+			if info, err := f.handle.Stat(); err == nil {
+				f.size = info.Size()
+			}
+			ctx, cancel := f.backend.operationContext()
+			err := f.backend.client.PutObject(ctx, f.backend.bucket, f.key, f.handle, f.size, "application/octet-stream")
+			cancel()
+			if err != nil {
+				result = err
+			}
+		}
 	}
-	return f.backend.client.PutObject(context.Background(), f.backend.bucket, f.key, bytes.NewReader(f.buf), int64(len(f.buf)), "application/octet-stream")
+	if err := f.handle.Close(); result == nil && err != nil && !errors.Is(err, os.ErrClosed) {
+		result = err
+	}
+	if err := os.Remove(f.tempPath); result == nil && err != nil && !errors.Is(err, os.ErrNotExist) {
+		result = err
+	}
+	return result
 }
 
 func (f *file) Stat() (os.FileInfo, error) {
 	if f.closed {
 		return nil, os.ErrClosed
 	}
+	info, err := f.handle.Stat()
+	if err != nil {
+		return nil, err
+	}
 	return fileInfo{
 		name:    path.Base(f.name),
-		size:    int64(len(f.buf)),
+		size:    info.Size(),
 		mode:    0o644,
 		modTime: f.modTime,
 	}, nil
 }
 
-func (f *file) Sync() error { return nil }
+func (f *file) Sync() error {
+	if f.closed {
+		return os.ErrClosed
+	}
+	return f.handle.Sync()
+}
 
 func (f *file) Truncate(size int64) error {
+	if f.closed {
+		return os.ErrClosed
+	}
 	if !f.writable {
 		return os.ErrPermission
 	}
 	if size < 0 {
 		return errors.New("negative size")
 	}
-	switch {
-	case size < int64(len(f.buf)):
-		f.buf = f.buf[:size]
-	case size > int64(len(f.buf)):
-		next := make([]byte, size)
-		copy(next, f.buf)
-		f.buf = next
+	if err := f.handle.Truncate(size); err != nil {
+		return err
 	}
-	if f.offset > size {
-		f.offset = size
+	f.size = size
+	if pos, err := f.handle.Seek(0, io.SeekCurrent); err == nil && pos > size {
+		if _, err := f.handle.Seek(size, io.SeekStart); err != nil {
+			return err
+		}
 	}
 	f.modTime = time.Now().UTC()
 	return nil
@@ -581,3 +670,18 @@ func (f *file) Truncate(size int64) error {
 
 func (f *file) ReadDir(_ int) ([]fs.DirEntry, error) { return nil, errors.New("not a directory") }
 func (f *file) Name() string                         { return f.name }
+
+func nonZeroModTime(modTime time.Time) time.Time {
+	if modTime.IsZero() {
+		return time.Now().UTC()
+	}
+	return modTime
+}
+
+func (b *Backend) operationContext() (context.Context, context.CancelFunc) {
+	timeout := defaultOperationTimeout
+	if b != nil && b.client != nil && b.client.httpClient != nil && b.client.httpClient.Timeout > 0 {
+		timeout = b.client.httpClient.Timeout
+	}
+	return context.WithTimeout(context.Background(), timeout)
+}

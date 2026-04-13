@@ -150,11 +150,21 @@ func (s *Server) startListener(ctx context.Context, port int, label string, impl
 			s.wg.Add(1)
 			go func(c net.Conn) {
 				defer s.wg.Done()
+				defer s.recoverConnPanic(c)
 				s.handleConn(ctx, c, implicitTLS)
 			}(conn)
 		}
 	}()
 	return nil
+}
+
+func (s *Server) recoverConnPanic(conn net.Conn) {
+	if recovered := recover(); recovered != nil {
+		if s.logger != nil {
+			s.logger.Error("ftp connection panicked", "panic", recovered, "remote_addr", conn.RemoteAddr().String())
+		}
+		_ = conn.Close()
+	}
 }
 
 func (s *Server) ftpsExplicitEnabled() bool {
@@ -242,6 +252,7 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, implicitTLS bool
 				writeReply(conn, 550, "Unable to mount filesystem.")
 				continue
 			}
+			_ = s.auth.RecordSuccessfulLogin(user.ID)
 			state.user = user
 			state.fs = userFS
 			state.cwd = "/"
@@ -445,8 +456,15 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, implicitTLS bool
 			}
 			writeReply(conn, 150, "Opening binary mode data connection.")
 			n, err := io.Copy(dc, f)
-			_ = f.Close()
-			_ = dc.Close()
+			closeFileErr := f.Close()
+			closeDataErr := dc.Close()
+			if err == nil {
+				if closeFileErr != nil {
+					err = closeFileErr
+				} else if closeDataErr != nil {
+					err = closeDataErr
+				}
+			}
 			if err != nil {
 				if s.xfer != nil && transferID != "" {
 					s.xfer.AddBytes(transferID, n)
@@ -489,8 +507,15 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, implicitTLS bool
 			}
 			writeReply(conn, 150, "Ok to send data.")
 			n, err := io.Copy(f, dc)
-			_ = dc.Close()
-			_ = f.Close()
+			closeDataErr := dc.Close()
+			closeFileErr := f.Close()
+			if err == nil {
+				if closeFileErr != nil {
+					err = closeFileErr
+				} else if closeDataErr != nil {
+					err = closeDataErr
+				}
+			}
 			if err != nil {
 				if s.xfer != nil && transferID != "" {
 					s.xfer.AddBytes(transferID, n)
@@ -624,24 +649,63 @@ func (s *Server) acceptDataConn(state *connState) (net.Conn, error) {
 	}
 	ln := state.passiveLn
 	state.passiveLn = nil
+	defer func() {
+		_ = ln.Close()
+	}()
 	if tcpLn, ok := ln.(*net.TCPListener); ok {
 		_ = tcpLn.SetDeadline(time.Now().Add(30 * time.Second))
 	}
-	conn, err := ln.Accept()
-	_ = ln.Close()
-	if err != nil {
-		return nil, err
-	}
-	if state.secureControl && state.dataProtPrivate && s.cfg.TLSConfig != nil {
-		tlsConn := tls.Server(conn, s.cfg.TLSConfig)
-		if err := tlsConn.Handshake(); err != nil {
-			_ = conn.Close()
+	controlHost := hostFromAddr(state.remoteAddr)
+	for {
+		conn, err := ln.Accept()
+		if err != nil {
 			return nil, err
 		}
-		conn = tlsConn
+		dataHost := hostFromAddr(conn.RemoteAddr().String())
+		if controlHost != "" && dataHost != "" && !hostsEqual(controlHost, dataHost) {
+			if s.logger != nil {
+				s.logger.Warn(
+					"rejecting ftp passive data connection from unexpected peer",
+					"control_host", controlHost,
+					"data_host", dataHost,
+					"remote_addr", conn.RemoteAddr().String(),
+				)
+			}
+			_ = conn.Close()
+			continue
+		}
+		if state.secureControl && state.dataProtPrivate && s.cfg.TLSConfig != nil {
+			tlsConn := tls.Server(conn, s.cfg.TLSConfig)
+			if err := tlsConn.Handshake(); err != nil {
+				_ = conn.Close()
+				return nil, err
+			}
+			conn = tlsConn
+		}
+		_ = conn.SetDeadline(time.Now().Add(s.cfg.TransferTimeout))
+		return conn, nil
 	}
-	_ = conn.SetDeadline(time.Now().Add(s.cfg.TransferTimeout))
-	return conn, nil
+}
+
+func hostFromAddr(addr string) string {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return ""
+	}
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		return strings.Trim(addr, "[]")
+	}
+	return strings.Trim(host, "[]")
+}
+
+func hostsEqual(a, b string) bool {
+	ipA := net.ParseIP(a)
+	ipB := net.ParseIP(b)
+	if ipA != nil && ipB != nil {
+		return ipA.Equal(ipB)
+	}
+	return strings.EqualFold(a, b)
 }
 
 func isAuthed(conn net.Conn, state *connState) bool {

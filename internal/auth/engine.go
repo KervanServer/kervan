@@ -81,11 +81,6 @@ func (e *Engine) authenticateLocalUser(user *User, password string) (*User, erro
 		_ = e.registerFailedLogin(user)
 		return nil, ErrInvalidCredentials
 	}
-
-	_ = e.repo.UpdateLastLogin(user.ID)
-	if refreshed, err := e.repo.GetByID(user.ID); err == nil && refreshed != nil {
-		return refreshed, nil
-	}
 	return user, nil
 }
 
@@ -133,6 +128,10 @@ func (e *Engine) CreateUser(username, password, homeDir string, admin bool) (*Us
 	if err := e.validatePassword(password); err != nil {
 		return nil, err
 	}
+	normalizedHomeDir, err := NormalizeHomeDir(homeDir)
+	if err != nil {
+		return nil, err
+	}
 	hash, err := HashPassword(password, e.hashAlgo)
 	if err != nil {
 		return nil, err
@@ -141,7 +140,7 @@ func (e *Engine) CreateUser(username, password, homeDir string, admin bool) (*Us
 		Username:     username,
 		PasswordHash: hash,
 		AuthProvider: AuthProviderLocal,
-		HomeDir:      homeDir,
+		HomeDir:      normalizedHomeDir,
 		Enabled:      true,
 		Permissions:  DefaultUserPermissions(),
 		Type:         UserTypeVirtual,
@@ -174,6 +173,24 @@ func (e *Engine) ResetPassword(username, password string) error {
 	u.FailedLogins = 0
 	u.LockedUntil = nil
 	return e.repo.Update(u)
+}
+
+func (e *Engine) RecordSuccessfulLogin(userID string) error {
+	if e == nil || e.repo == nil || strings.TrimSpace(userID) == "" {
+		return nil
+	}
+	return e.repo.UpdateLastLogin(userID)
+}
+
+func (e *Engine) RecordFailedLogin(userID string) error {
+	if e == nil || e.repo == nil || strings.TrimSpace(userID) == "" {
+		return nil
+	}
+	user, err := e.repo.GetByID(userID)
+	if err != nil || user == nil {
+		return err
+	}
+	return e.registerFailedLogin(user)
 }
 
 func (e *Engine) validatePassword(password string) error {
@@ -209,7 +226,6 @@ func (e *Engine) authenticateLDAPUser(ctx context.Context, shadow *User, usernam
 }
 
 func (e *Engine) syncLDAPUser(identity *LDAPIdentity, shadow *User) (*User, error) {
-	now := time.Now().UTC()
 	if shadow == nil {
 		shadow = &User{
 			Username:     identity.Username,
@@ -228,7 +244,6 @@ func (e *Engine) syncLDAPUser(identity *LDAPIdentity, shadow *User) (*User, erro
 				out = append(out, identity.Groups[1:]...)
 				return out
 			}(),
-			LastLoginAt: &now,
 		}
 		if err := e.repo.Create(shadow); err != nil {
 			return nil, err
@@ -248,9 +263,6 @@ func (e *Engine) syncLDAPUser(identity *LDAPIdentity, shadow *User) (*User, erro
 	} else {
 		shadow.SecondaryGrps = nil
 	}
-	shadow.LastLoginAt = &now
-	shadow.FailedLogins = 0
-	shadow.LockedUntil = nil
 	if err := e.repo.Update(shadow); err != nil {
 		return nil, err
 	}

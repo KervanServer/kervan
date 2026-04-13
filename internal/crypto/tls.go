@@ -12,15 +12,15 @@ func BuildServerTLSConfig(minVersion, maxVersion, certFile, keyFile string) (*tl
 	}
 	cert, err := tls.LoadX509KeyPair(certFile, keyFile)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("load TLS key pair (%s, %s): %w", certFile, keyFile, err)
 	}
 	min, err := ParseTLSVersion(minVersion)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("parse minimum TLS version %q: %w", minVersion, err)
 	}
 	max, err := ParseTLSVersion(maxVersion)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("parse maximum TLS version %q: %w", maxVersion, err)
 	}
 	if min > max {
 		return nil, fmt.Errorf("min tls version cannot be higher than max tls version")
@@ -37,7 +37,14 @@ func BuildServerTLSConfigFromSource(
 	getCertificate func(*tls.ClientHelloInfo) (*tls.Certificate, error),
 	certificates []tls.Certificate,
 ) (*tls.Config, error) {
+	if minVersion < tls.VersionTLS12 {
+		minVersion = tls.VersionTLS12
+	}
+	if maxVersion < minVersion {
+		maxVersion = minVersion
+	}
 	return &tls.Config{
+		// #nosec G402 -- minimum is clamped to TLS1.2 above.
 		MinVersion:     minVersion,
 		MaxVersion:     maxVersion,
 		GetCertificate: getCertificate,

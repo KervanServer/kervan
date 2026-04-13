@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -64,21 +65,26 @@ func TestCopyDirAndCopyFileErrorPaths(t *testing.T) {
 	}
 }
 
-func TestRunCommandReturnsCommandErrors(t *testing.T) {
-	if err := runCommand(t.TempDir(), "definitely-missing-command-binary"); err == nil {
-		t.Fatal("expected runCommand to fail for missing binary")
+func TestRunCommandRejectsUnsupportedCommand(t *testing.T) {
+	err := runCommand(t.TempDir(), "definitely-missing-command-binary")
+	if err == nil {
+		t.Fatal("expected runCommand to reject unsupported command")
+	}
+	if !strings.Contains(err.Error(), "unsupported command") {
+		t.Fatalf("expected unsupported command error, got %v", err)
 	}
 }
 
 func TestRunCommandPropagatesExitFailure(t *testing.T) {
 	dir := t.TempDir()
-	script := filepath.Join(dir, "fail-script.sh")
-	command := "sh"
-	args := []string{script}
+	scriptName := "npm"
 	if runtime.GOOS == "windows" {
-		script = filepath.Join(dir, "fail-script.cmd")
-		command = "cmd"
-		args = []string{"/c", script}
+		scriptName = "npm.cmd"
+	}
+	script := filepath.Join(dir, scriptName)
+	command := npmCommand()
+	args := []string{"run", "build"}
+	if runtime.GOOS == "windows" {
 		if err := os.WriteFile(script, []byte("@echo off\r\nexit /b 7\r\n"), 0o644); err != nil {
 			t.Fatalf("write windows script: %v", err)
 		}
@@ -87,6 +93,7 @@ func TestRunCommandPropagatesExitFailure(t *testing.T) {
 			t.Fatalf("write shell script: %v", err)
 		}
 	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
 	err := runCommand(dir, command, args...)
 	if err == nil {

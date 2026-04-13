@@ -5,12 +5,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
 	"sync"
 	"time"
 )
+
+const httpSinkFlushTimeout = 10 * time.Second
 
 type HTTPSinkOptions struct {
 	URL           string
@@ -114,7 +117,9 @@ func (s *HTTPSink) Close() error {
 	if len(batch) == 0 {
 		return nil
 	}
-	return s.sendBatch(context.Background(), batch)
+	ctx, cancel := context.WithTimeout(context.Background(), httpSinkFlushTimeout)
+	defer cancel()
+	return s.sendBatch(ctx, batch)
 }
 
 func (s *HTTPSink) flushLoop() {
@@ -139,7 +144,9 @@ func (s *HTTPSink) flushPending() {
 	if len(batch) == 0 {
 		return
 	}
-	_ = s.sendBatch(context.Background(), batch)
+	ctx, cancel := context.WithTimeout(context.Background(), httpSinkFlushTimeout)
+	defer cancel()
+	_ = s.sendBatch(ctx, batch)
 }
 
 func (s *HTTPSink) takeBatchLocked() []Event {
@@ -165,14 +172,14 @@ func (s *HTTPSink) sendBatch(ctx context.Context, batch []Event) error {
 	}
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return err
+		return fmt.Errorf("marshal audit batch payload: %w", err)
 	}
 
 	var lastErr error
 	for attempt := 0; attempt <= s.retryCount; attempt++ {
 		req, err := http.NewRequestWithContext(ctx, s.method, s.url, bytes.NewReader(body))
 		if err != nil {
-			return err
+			return fmt.Errorf("build audit request %s %s: %w", s.method, s.url, err)
 		}
 		req.Header.Set("Content-Type", "application/json")
 		for key, value := range s.headers {

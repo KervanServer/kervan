@@ -2,6 +2,7 @@ package s3
 
 import (
 	"bytes"
+	"context"
 	"encoding/xml"
 	"errors"
 	"io"
@@ -351,5 +352,83 @@ func TestBackendRenameDirAndRemoveAll(t *testing.T) {
 	}
 	if _, err := backend.Stat("/beta"); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("Stat(removed dir) error = %v, want os.ErrNotExist", err)
+	}
+}
+
+func TestClientPutObjectSupportsNonSeekableReaders(t *testing.T) {
+	server := httptest.NewServer(newFakeS3Server())
+	t.Cleanup(server.Close)
+
+	client, err := NewClient(ClientConfig{
+		Endpoint:     server.URL,
+		UsePathStyle: true,
+		DisableSSL:   true,
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	body := bytes.NewBufferString("streamed upload")
+	if err := client.PutObject(context.Background(), "test-bucket", "docs/file.txt", body, int64(body.Len()), "text/plain"); err != nil {
+		t.Fatalf("PutObject() error = %v", err)
+	}
+
+	resp, err := client.GetObject(context.Background(), "test-bucket", "docs/file.txt")
+	if err != nil {
+		t.Fatalf("GetObject() error = %v", err)
+	}
+	defer resp.Body.Close()
+
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("ReadAll() error = %v", err)
+	}
+	if string(data) != "streamed upload" {
+		t.Fatalf("unexpected uploaded payload: %q", data)
+	}
+}
+
+func TestBackendTempFilesAreRemovedOnClose(t *testing.T) {
+	server := httptest.NewServer(newFakeS3Server())
+	t.Cleanup(server.Close)
+
+	backend, err := New(Options{
+		Endpoint:     server.URL,
+		Bucket:       "test-bucket",
+		UsePathStyle: true,
+		DisableSSL:   true,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	tempDir := t.TempDir()
+	backend.tempDir = tempDir
+
+	file, err := backend.Open("/cleanup.txt", os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatalf("Open(write) error = %v", err)
+	}
+	if _, err := io.WriteString(file, "cleanup"); err != nil {
+		t.Fatalf("WriteString() error = %v", err)
+	}
+
+	entries, err := os.ReadDir(tempDir)
+	if err != nil {
+		t.Fatalf("ReadDir(temp before close) error = %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected one temp file before close, got %d", len(entries))
+	}
+
+	if err := file.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	entries, err = os.ReadDir(tempDir)
+	if err != nil {
+		t.Fatalf("ReadDir(temp after close) error = %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("expected temp files to be cleaned up, got %d", len(entries))
 	}
 }

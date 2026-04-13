@@ -5,6 +5,7 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -26,9 +27,10 @@ type CertificateInfo struct {
 }
 
 func LoadCertificateInfo(certFile string, now time.Time) (*CertificateInfo, error) {
+	// #nosec G304 -- certificate file path is operator-configured server input.
 	raw, err := os.ReadFile(certFile)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("read certificate file %s: %w", certFile, err)
 	}
 	return ParseCertificateInfo(raw, "file", now)
 }
@@ -76,7 +78,7 @@ func ParseCertificateInfo(raw []byte, source string, now time.Time) (*Certificat
 	}
 	leaf, err := x509.ParseCertificate(blocks[0])
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("parse certificate: %w", err)
 	}
 	info := &CertificateInfo{
 		Source:           source,

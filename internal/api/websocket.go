@@ -1,7 +1,7 @@
 package api
 
 import (
-	"crypto/sha1"
+	"crypto/sha1" // #nosec G505 -- RFC 6455 Sec-WebSocket-Accept requires SHA-1.
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/json"
@@ -48,10 +48,11 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	protocols := parseWebSocketProtocols(r.Header.Get("Sec-WebSocket-Protocol"))
-	token := websocketAuthToken(protocols)
-	if token == "" {
-		token = bearerToken(r.Header.Get("Authorization"))
+	if hasWebSocketAuthProtocol(protocols) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "websocket auth protocol is not supported"})
+		return
 	}
+	token := bearerToken(r.Header.Get("Authorization"))
 	if token == "" {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing token"})
 		return
@@ -153,7 +154,7 @@ func (s *Server) buildWebSocketSnapshot(username string, requestedTypes map[stri
 		"type":      "snapshot",
 		"timestamp": time.Now().UTC(),
 	}
-	if hasSnapshotType(requestedTypes, "server") && s.status != nil {
+	if hasSnapshotType(requestedTypes, "server") && s.status != nil && s.isAdminUser(username) {
 		payload["server"] = s.status()
 	}
 	if hasSnapshotType(requestedTypes, "sessions") && s.sessions != nil {
@@ -208,13 +209,13 @@ func parseWebSocketProtocols(raw string) []string {
 	return protocols
 }
 
-func websocketAuthToken(protocols []string) string {
+func hasWebSocketAuthProtocol(protocols []string) bool {
 	for _, protocol := range protocols {
 		if strings.HasPrefix(protocol, "auth.") {
-			return strings.TrimPrefix(protocol, "auth.")
+			return true
 		}
 	}
-	return ""
+	return false
 }
 
 func websocketProtocolHeader(protocols []string) string {
@@ -294,6 +295,7 @@ func hostIncludesPort(hostport string) bool {
 }
 
 func computeWebSocketAccept(key string) string {
+	// #nosec G401 -- WebSocket handshake hash is fixed by RFC 6455.
 	hash := sha1.Sum([]byte(key + websocketGUID))
 	return base64.StdEncoding.EncodeToString(hash[:])
 }

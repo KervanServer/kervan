@@ -8,6 +8,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"math"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
@@ -200,6 +201,16 @@ func TestHandleHealthBuildsStructuredSubsystemChecks(t *testing.T) {
 	assertCheckStatus(t, checks, "audit", "up")
 	assertCheckStatus(t, checks, "tls_certificate", "up")
 	assertCheckStatus(t, checks, "debug", "disabled")
+	if _, ok := payload["tls_certificate"]; ok {
+		t.Fatalf("expected top-level tls_certificate to be redacted, got %v", payload["tls_certificate"])
+	}
+
+	for _, checkName := range []string{"storage", "cobaltdb", "audit", "tls_certificate"} {
+		check := checks[checkName].(map[string]any)
+		if _, ok := check["path"]; ok {
+			t.Fatalf("expected %s check path to be redacted", checkName)
+		}
+	}
 }
 
 func TestHandleHealthMarksExpiringTLSCertificateDegraded(t *testing.T) {
@@ -320,5 +331,14 @@ func assertCheckStatus(t *testing.T, checks map[string]any, key, want string) {
 	}
 	if got := check["status"]; got != want {
 		t.Fatalf("expected %s status %q, got %v", key, want, got)
+	}
+}
+
+func TestIntFromAnyRejectsOverflowValues(t *testing.T) {
+	if _, ok := intFromAny(uint64(^uint64(0))); ok {
+		t.Fatal("expected uint64 max value to overflow int conversion")
+	}
+	if _, ok := intFromAny(math.Inf(1)); ok {
+		t.Fatal("expected +Inf float64 to be rejected")
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"mime/multipart"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -150,6 +151,23 @@ func TestParseUserImportRequestVariants(t *testing.T) {
 	multipartReq.Header.Set("Content-Type", writer.FormDataContentType())
 	if _, _, err := parseUserImportRequest(multipartReq, "json"); err == nil || !strings.Contains(err.Error(), "file is required") {
 		t.Fatalf("expected multipart missing file error, got %v", err)
+	}
+}
+
+func TestParseUserImportRequestStreamsCSVRows(t *testing.T) {
+	payload := "username,password\nalice,one\nbob,two\n"
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/users/import", strings.NewReader(payload))
+	req.Header.Set("Content-Type", "text/csv")
+
+	format, records, err := parseUserImportRequest(req, "")
+	if err != nil {
+		t.Fatalf("parse csv request: %v", err)
+	}
+	if format != "csv" || len(records) != 2 {
+		t.Fatalf("unexpected parse result format=%q records=%d", format, len(records))
+	}
+	if records[0].Row != 2 || records[1].Row != 3 {
+		t.Fatalf("unexpected row numbering: %#v", records)
 	}
 }
 

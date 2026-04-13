@@ -2,6 +2,7 @@ package api
 
 import (
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -252,7 +253,6 @@ func (s *Server) buildHealthResponse() map[string]any {
 	copySnapshotField(resp, snapshot, "version")
 	copySnapshotField(resp, snapshot, "started_at")
 	copySnapshotField(resp, snapshot, "uptime_seconds")
-	copySnapshotField(resp, snapshot, "tls_certificate")
 	if s.transfers != nil {
 		resp["transfers"] = s.transfers.Stats()
 	}
@@ -537,7 +537,6 @@ func storageCheck(snapshot map[string]any) map[string]any {
 		return out
 	case "local":
 		root := stringFromAny(snapshot["storage_root"])
-		out["root"] = root
 		if strings.TrimSpace(root) == "" {
 			out["status"] = "degraded"
 			out["message"] = "local storage root is not configured"
@@ -546,7 +545,7 @@ func storageCheck(snapshot map[string]any) map[string]any {
 		info, err := os.Stat(root)
 		if err != nil {
 			out["status"] = "down"
-			out["error"] = err.Error()
+			out["message"] = "local storage root is unavailable"
 			return out
 		}
 		out["exists"] = true
@@ -570,6 +569,9 @@ func tlsCertificateCheck(snapshot map[string]any) map[string]any {
 		return map[string]any{"status": "disabled"}
 	}
 	out := cloneMap(raw)
+	for _, key := range []string{"path", "cert_path", "key_path", "private_key_path", "cert_file", "acme_dir"} {
+		delete(out, key)
+	}
 	switch stringFromAny(raw["status"]) {
 	case "up":
 		out["status"] = "up"
@@ -595,13 +597,10 @@ func (s *Server) storeCheck(snapshot map[string]any) map[string]any {
 	}
 	storePath := stringFromAny(snapshot["store_path"])
 	if strings.TrimSpace(storePath) != "" {
-		out["path"] = storePath
 		dir := filepath.Dir(storePath)
 		if info, err := os.Stat(dir); err != nil || !info.IsDir() {
 			out["status"] = "down"
-			if err != nil {
-				out["error"] = err.Error()
-			}
+			out["message"] = "store directory is unavailable"
 		}
 	}
 	return out
@@ -613,13 +612,10 @@ func (s *Server) auditCheck() map[string]any {
 		out["status"] = "disabled"
 		return out
 	}
-	out["path"] = s.auditLogPath
 	dir := filepath.Dir(s.auditLogPath)
 	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
 		out["status"] = "down"
-		if err != nil {
-			out["error"] = err.Error()
-		}
+		out["message"] = "audit log directory is unavailable"
 		return out
 	}
 	out["status"] = "up"
@@ -692,6 +688,9 @@ func boolFromAny(v any) (bool, bool) {
 }
 
 func intFromAny(v any) (int, bool) {
+	const maxInt = int(^uint(0) >> 1)
+	const minInt = -maxInt - 1
+
 	switch typed := v.(type) {
 	case int:
 		return typed, true
@@ -702,8 +701,14 @@ func intFromAny(v any) (int, bool) {
 	case int32:
 		return int(typed), true
 	case int64:
+		if typed > int64(maxInt) || typed < int64(minInt) {
+			return 0, false
+		}
 		return int(typed), true
 	case uint:
+		if typed > uint(maxInt) {
+			return 0, false
+		}
 		return int(typed), true
 	case uint8:
 		return int(typed), true
@@ -712,10 +717,19 @@ func intFromAny(v any) (int, bool) {
 	case uint32:
 		return int(typed), true
 	case uint64:
+		if typed > uint64(maxInt) {
+			return 0, false
+		}
 		return int(typed), true
 	case float32:
+		if float64(typed) > float64(maxInt) || float64(typed) < float64(minInt) || math.IsNaN(float64(typed)) || math.IsInf(float64(typed), 0) {
+			return 0, false
+		}
 		return int(typed), true
 	case float64:
+		if typed > float64(maxInt) || typed < float64(minInt) || math.IsNaN(typed) || math.IsInf(typed, 0) {
+			return 0, false
+		}
 		return int(typed), true
 	default:
 		return 0, false

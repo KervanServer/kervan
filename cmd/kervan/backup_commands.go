@@ -24,6 +24,8 @@ const (
 	backupAuditArchivePath    = "audit/audit.jsonl"
 	backupConfigArchivePath   = "config/kervan.yaml"
 	backupManifestPath        = "manifest.json"
+	backupManifestMaxBytes    = 2 << 20
+	backupEntryMaxBytes       = 1 << 30
 )
 
 type backupManifest struct {
@@ -84,7 +86,7 @@ func runBackupCreateCommand(stdout io.Writer, args []string) error {
 	includeConfig := fs.Bool("include-config", true, "Include config file")
 	jsonOut := fs.Bool("json", false, "Output JSON")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return fmt.Errorf("parse backup create flags: %w", err)
 	}
 	if strings.TrimSpace(*outputPath) == "" {
 		return errors.New("--output is required")
@@ -92,7 +94,7 @@ func runBackupCreateCommand(stdout io.Writer, args []string) error {
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("load config %s: %w", *configPath, err)
 	}
 
 	files := []backupArchiveFile{
@@ -119,13 +121,13 @@ func runBackupCreateCommand(stdout io.Writer, args []string) error {
 		})
 	}
 
-	if err := os.MkdirAll(filepath.Dir(*outputPath), 0o755); err != nil {
-		return err
+	if err := os.MkdirAll(filepath.Dir(*outputPath), 0o750); err != nil {
+		return fmt.Errorf("create output directory for %s: %w", *outputPath, err)
 	}
 
 	out, err := os.CreateTemp(filepath.Dir(*outputPath), filepath.Base(*outputPath)+".*.tmp")
 	if err != nil {
-		return err
+		return fmt.Errorf("create temporary backup archive: %w", err)
 	}
 	tmpPath := out.Name()
 	defer func() {
@@ -145,7 +147,8 @@ func runBackupCreateCommand(stdout io.Writer, args []string) error {
 	included := make([]string, 0, len(files))
 
 	for _, file := range files {
-		raw, err := os.ReadFile(file.SourcePath)
+		// #nosec G304 -- backup source paths are derived from local config/data directories.
+		source, err := os.Open(file.SourcePath)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) && !file.Required {
 				continue
@@ -154,45 +157,49 @@ func runBackupCreateCommand(stdout io.Writer, args []string) error {
 		}
 		entry, err := zipWriter.Create(file.ArchivePath)
 		if err != nil {
-			return err
+			_ = source.Close()
+			return fmt.Errorf("create archive entry %s: %w", file.ArchivePath, err)
 		}
-		if _, err := entry.Write(raw); err != nil {
-			return err
+		digest := sha256.New()
+		size, err := io.Copy(io.MultiWriter(entry, digest), source)
+		_ = source.Close()
+		if err != nil {
+			return fmt.Errorf("write archive entry %s: %w", file.ArchivePath, err)
 		}
 		included = append(included, file.ArchivePath)
 		manifest.Files = append(manifest.Files, backupManifestEntry{
 			ArchivePath: file.ArchivePath,
 			SourcePath:  file.SourcePath,
-			Size:        int64(len(raw)),
-			SHA256:      checksumSHA256(raw),
+			Size:        size,
+			SHA256:      hex.EncodeToString(digest.Sum(nil)),
 		})
 	}
 
 	manifestRaw, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
-		return err
+		return fmt.Errorf("marshal backup manifest: %w", err)
 	}
 	manifestEntry, err := zipWriter.Create(backupManifestPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("create archive entry %s: %w", backupManifestPath, err)
 	}
 	if _, err := manifestEntry.Write(manifestRaw); err != nil {
-		return err
+		return fmt.Errorf("write archive entry %s: %w", backupManifestPath, err)
 	}
 	if err := zipWriter.Close(); err != nil {
-		return err
+		return fmt.Errorf("finalize backup archive: %w", err)
 	}
 	if err := out.Chmod(0o600); err != nil {
-		return err
+		return fmt.Errorf("set backup archive permissions: %w", err)
 	}
 	if err := out.Sync(); err != nil {
-		return err
+		return fmt.Errorf("sync temporary backup archive: %w", err)
 	}
 	if err := out.Close(); err != nil {
-		return err
+		return fmt.Errorf("close temporary backup archive: %w", err)
 	}
 	if err := store.ReplaceTempFileAtomically(tmpPath, *outputPath); err != nil {
-		return err
+		return fmt.Errorf("move backup archive into place: %w", err)
 	}
 	tmpPath = ""
 
@@ -202,7 +209,10 @@ func runBackupCreateCommand(stdout io.Writer, args []string) error {
 		"included_files": included,
 	}
 	if *jsonOut {
-		return json.NewEncoder(stdout).Encode(payload)
+		if err := json.NewEncoder(stdout).Encode(payload); err != nil {
+			return fmt.Errorf("encode backup create output: %w", err)
+		}
+		return nil
 	}
 
 	_, _ = fmt.Fprintf(stdout, "Backup created: %s\n", *outputPath)
@@ -219,7 +229,7 @@ func runBackupRestoreCommand(stdout io.Writer, args []string) error {
 	restoreConfig := fs.Bool("restore-config", false, "Restore config/kervan.yaml into --config path")
 	jsonOut := fs.Bool("json", false, "Output JSON")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return fmt.Errorf("parse backup restore flags: %w", err)
 	}
 	if strings.TrimSpace(*inputPath) == "" {
 		return errors.New("--input is required")
@@ -227,18 +237,18 @@ func runBackupRestoreCommand(stdout io.Writer, args []string) error {
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("load config %s: %w", *configPath, err)
 	}
 
 	reader, err := zip.OpenReader(*inputPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("open backup archive %s: %w", *inputPath, err)
 	}
 	defer reader.Close()
 
 	archiveEntries, manifest, err := loadBackupArchive(reader.File)
 	if err != nil {
-		return err
+		return fmt.Errorf("load backup archive %s: %w", *inputPath, err)
 	}
 
 	targets := map[string]backupRestoreEntry{
@@ -274,7 +284,7 @@ func runBackupRestoreCommand(stdout io.Writer, args []string) error {
 		}
 		seen[archivePath] = true
 		if err := restoreBackupFile(file, target.TargetPath, *force); err != nil {
-			return err
+			return fmt.Errorf("restore %s to %s: %w", archivePath, target.TargetPath, err)
 		}
 		restored = append(restored, archivePath)
 	}
@@ -287,12 +297,13 @@ func runBackupRestoreCommand(stdout io.Writer, args []string) error {
 		"restored":       true,
 		"input":          *inputPath,
 		"restored_files": restored,
-	}
-	if manifest != nil {
-		payload["verified"] = manifest.Version >= 2
+		"verified":       manifest != nil && manifest.Version >= 2,
 	}
 	if *jsonOut {
-		return json.NewEncoder(stdout).Encode(payload)
+		if err := json.NewEncoder(stdout).Encode(payload); err != nil {
+			return fmt.Errorf("encode backup restore output: %w", err)
+		}
+		return nil
 	}
 
 	_, _ = fmt.Fprintf(stdout, "Backup restored: %s\n", *inputPath)
@@ -309,7 +320,7 @@ func runBackupVerifyCommand(stdout io.Writer, args []string) error {
 	inputPath := fs.String("input", "", "Backup ZIP archive")
 	jsonOut := fs.Bool("json", false, "Output JSON")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return fmt.Errorf("parse backup verify flags: %w", err)
 	}
 	if strings.TrimSpace(*inputPath) == "" {
 		return errors.New("--input is required")
@@ -317,21 +328,22 @@ func runBackupVerifyCommand(stdout io.Writer, args []string) error {
 
 	reader, err := zip.OpenReader(*inputPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("open backup archive %s: %w", *inputPath, err)
 	}
 	defer reader.Close()
 
 	archiveEntries, manifest, err := loadBackupArchive(reader.File)
 	if err != nil {
-		return err
+		return fmt.Errorf("load backup archive %s: %w", *inputPath, err)
 	}
 	if _, ok := archiveEntries[backupStoreArchivePath]; !ok {
 		return fmt.Errorf("backup archive missing required entry %s", backupStoreArchivePath)
 	}
 
 	entryCount := len(archiveEntries)
+	verified := manifest != nil && manifest.Version >= 2
 	payload := map[string]any{
-		"verified":         true,
+		"verified":         verified,
 		"input":            *inputPath,
 		"entry_count":      entryCount,
 		"manifest_present": manifest != nil,
@@ -344,10 +356,17 @@ func runBackupVerifyCommand(stdout io.Writer, args []string) error {
 		payload["verified_files"] = 0
 	}
 	if *jsonOut {
-		return json.NewEncoder(stdout).Encode(payload)
+		if err := json.NewEncoder(stdout).Encode(payload); err != nil {
+			return fmt.Errorf("encode backup verify output: %w", err)
+		}
+		return nil
 	}
 
-	_, _ = fmt.Fprintf(stdout, "Backup verified: %s\n", *inputPath)
+	if verified {
+		_, _ = fmt.Fprintf(stdout, "Backup verified: %s\n", *inputPath)
+	} else {
+		_, _ = fmt.Fprintf(stdout, "Backup inspected: %s\n", *inputPath)
+	}
 	_, _ = fmt.Fprintf(stdout, "Archive entries: %d\n", entryCount)
 	if manifest != nil {
 		_, _ = fmt.Fprintf(stdout, "Integrity manifest: version %d (%d files)\n", manifest.Version, len(manifest.Files))
@@ -366,7 +385,7 @@ func loadBackupArchive(files []*zip.File) (map[string]*zip.File, *backupManifest
 		if file.Name != backupManifestPath {
 			continue
 		}
-		raw, err := readZipFile(file)
+		raw, err := readZipFile(file, backupManifestMaxBytes)
 		if err != nil {
 			return nil, nil, fmt.Errorf("read %s: %w", backupManifestPath, err)
 		}
@@ -379,7 +398,7 @@ func loadBackupArchive(files []*zip.File) (map[string]*zip.File, *backupManifest
 
 	if manifest != nil {
 		if err := verifyBackupManifest(entries, manifest); err != nil {
-			return nil, nil, err
+			return nil, nil, fmt.Errorf("verify backup manifest: %w", err)
 		}
 	}
 
@@ -391,24 +410,56 @@ func restoreBackupFile(file *zip.File, targetPath string, force bool) error {
 		if _, err := os.Stat(targetPath); err == nil {
 			return fmt.Errorf("refusing to overwrite existing file %s without --force", targetPath)
 		} else if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
+			return fmt.Errorf("stat restore target %s: %w", targetPath, err)
 		}
 	}
 
 	rc, err := file.Open()
 	if err != nil {
-		return err
+		return fmt.Errorf("open archive entry %s: %w", file.Name, err)
 	}
 	defer rc.Close()
+	if file.UncompressedSize64 > uint64(backupEntryMaxBytes) {
+		return fmt.Errorf("archive entry %s exceeds %d bytes", file.Name, backupEntryMaxBytes)
+	}
+	reader := io.Reader(rc)
+	reader = io.LimitReader(reader, backupEntryMaxBytes+1)
 
-	raw, err := io.ReadAll(rc)
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o750); err != nil {
+		return fmt.Errorf("create restore directory for %s: %w", targetPath, err)
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(targetPath), filepath.Base(targetPath)+".*.tmp")
 	if err != nil {
-		return err
+		return fmt.Errorf("create temporary restore file for %s: %w", targetPath, err)
 	}
-	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
-		return err
+	tmpPath := tmp.Name()
+	defer func() {
+		_ = tmp.Close()
+		if tmpPath != "" {
+			_ = os.Remove(tmpPath)
+		}
+	}()
+	written, err := io.Copy(tmp, reader)
+	if err != nil {
+		return fmt.Errorf("write restored data for %s: %w", targetPath, err)
 	}
-	return store.WriteFileAtomically(targetPath, raw, 0o600)
+	if written > backupEntryMaxBytes {
+		return fmt.Errorf("archive entry %s exceeds %d bytes", file.Name, backupEntryMaxBytes)
+	}
+	if err := tmp.Chmod(0o600); err != nil {
+		return fmt.Errorf("set temporary restore file permissions for %s: %w", targetPath, err)
+	}
+	if err := tmp.Sync(); err != nil {
+		return fmt.Errorf("sync temporary restore file for %s: %w", targetPath, err)
+	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("close temporary restore file for %s: %w", targetPath, err)
+	}
+	if err := store.ReplaceTempFileAtomically(tmpPath, targetPath); err != nil {
+		return fmt.Errorf("replace restore target %s: %w", targetPath, err)
+	}
+	tmpPath = ""
+	return nil
 }
 
 func verifyBackupManifest(entries map[string]*zip.File, manifest *backupManifest) error {
@@ -423,15 +474,15 @@ func verifyBackupManifest(entries map[string]*zip.File, manifest *backupManifest
 		if !ok {
 			return fmt.Errorf("backup manifest references missing archive entry %s", item.ArchivePath)
 		}
-		raw, err := readZipFile(entry)
+		size, checksum, err := zipFileChecksum(entry)
 		if err != nil {
 			return fmt.Errorf("read %s: %w", item.ArchivePath, err)
 		}
-		if item.Size != int64(len(raw)) {
+		if item.Size != size {
 			return fmt.Errorf("backup integrity check failed for %s: size mismatch", item.ArchivePath)
 		}
 		if want := normalizeChecksum(item.SHA256); want != "" {
-			if got := checksumSHA256(raw); got != want {
+			if checksum != want {
 				return fmt.Errorf("backup integrity check failed for %s: checksum mismatch", item.ArchivePath)
 			}
 		}
@@ -439,18 +490,50 @@ func verifyBackupManifest(entries map[string]*zip.File, manifest *backupManifest
 	return nil
 }
 
-func readZipFile(file *zip.File) ([]byte, error) {
+func zipFileChecksum(file *zip.File) (int64, string, error) {
 	rc, err := file.Open()
 	if err != nil {
-		return nil, err
+		return 0, "", fmt.Errorf("open archive entry %s: %w", file.Name, err)
 	}
 	defer rc.Close()
-	return io.ReadAll(rc)
+	if file.UncompressedSize64 > uint64(backupEntryMaxBytes) {
+		return 0, "", fmt.Errorf("archive entry %s exceeds %d bytes", file.Name, backupEntryMaxBytes)
+	}
+	reader := io.Reader(rc)
+	reader = io.LimitReader(reader, backupEntryMaxBytes+1)
+
+	digest := sha256.New()
+	size, err := io.Copy(digest, reader)
+	if err != nil {
+		return 0, "", fmt.Errorf("read archive entry %s: %w", file.Name, err)
+	}
+	if size > backupEntryMaxBytes {
+		return 0, "", fmt.Errorf("archive entry %s exceeds %d bytes", file.Name, backupEntryMaxBytes)
+	}
+	return size, hex.EncodeToString(digest.Sum(nil)), nil
 }
 
-func checksumSHA256(raw []byte) string {
-	sum := sha256.Sum256(raw)
-	return hex.EncodeToString(sum[:])
+func readZipFile(file *zip.File, maxBytes int64) ([]byte, error) {
+	rc, err := file.Open()
+	if err != nil {
+		return nil, fmt.Errorf("open archive entry %s: %w", file.Name, err)
+	}
+	defer rc.Close()
+	if maxBytes > 0 && file.UncompressedSize64 > uint64(maxBytes) {
+		return nil, fmt.Errorf("archive entry %s exceeds %d bytes", file.Name, maxBytes)
+	}
+	reader := io.Reader(rc)
+	if maxBytes > 0 {
+		reader = io.LimitReader(rc, maxBytes+1)
+	}
+	raw, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, fmt.Errorf("read archive entry %s: %w", file.Name, err)
+	}
+	if maxBytes > 0 && int64(len(raw)) > maxBytes {
+		return nil, fmt.Errorf("archive entry %s exceeds %d bytes", file.Name, maxBytes)
+	}
+	return raw, nil
 }
 
 func normalizeChecksum(value string) string {

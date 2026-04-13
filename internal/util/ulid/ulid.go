@@ -29,12 +29,9 @@ func New() string {
 	_, _ = rand.Read(entropy[:])
 
 	var raw [16]byte
-	raw[0] = byte(now >> 40)
-	raw[1] = byte(now >> 32)
-	raw[2] = byte(now >> 24)
-	raw[3] = byte(now >> 16)
-	raw[4] = byte(now >> 8)
-	raw[5] = byte(now)
+	var timestamp [8]byte
+	binary.BigEndian.PutUint64(timestamp[:], now)
+	copy(raw[:6], timestamp[2:])
 	copy(raw[6:], entropy[:])
 
 	return encode(raw)

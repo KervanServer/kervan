@@ -634,6 +634,96 @@ func TestRunBackupVerifyCommand(t *testing.T) {
 	}
 }
 
+func TestRunBackupVerifyCommandWithoutManifest(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "data")
+	configPath := writeTestConfig(t, func(cfg *config.Config) {
+		cfg.Server.DataDir = dataDir
+		cfg.Audit.Outputs = []config.AuditOutput{{
+			Type: "file",
+			Path: filepath.Join(dataDir, "audit.jsonl"),
+		}}
+	})
+	if err := runUserCreateCommand(io.Discard, []string{
+		"--config", configPath,
+		"--username", "alice",
+		"--password", "StrongPass123!",
+	}); err != nil {
+		t.Fatalf("create alice: %v", err)
+	}
+
+	backupFile := filepath.Join(t.TempDir(), "backup.zip")
+	if err := runBackupCreateCommand(io.Discard, []string{
+		"--config", configPath,
+		"--output", backupFile,
+		"--include-audit=false",
+	}); err != nil {
+		t.Fatalf("create backup: %v", err)
+	}
+
+	manifestless := filepath.Join(t.TempDir(), "backup-no-manifest.zip")
+	if err := removeBackupEntry(backupFile, manifestless, backupManifestPath); err != nil {
+		t.Fatalf("remove manifest: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	if err := runBackupVerifyCommand(&stdout, []string{"--input", manifestless}); err != nil {
+		t.Fatalf("verify backup without manifest: %v", err)
+	}
+	if !strings.Contains(stdout.String(), "Backup inspected:") {
+		t.Fatalf("unexpected verify output: %s", stdout.String())
+	}
+
+	var jsonOut bytes.Buffer
+	if err := runBackupVerifyCommand(&jsonOut, []string{"--input", manifestless, "--json"}); err != nil {
+		t.Fatalf("verify backup without manifest json: %v", err)
+	}
+	var payload struct {
+		Verified        bool `json:"verified"`
+		ManifestPresent bool `json:"manifest_present"`
+		VerifiedFiles   int  `json:"verified_files"`
+	}
+	if err := json.Unmarshal(jsonOut.Bytes(), &payload); err != nil {
+		t.Fatalf("decode verify json: %v", err)
+	}
+	if payload.Verified || payload.ManifestPresent || payload.VerifiedFiles != 0 {
+		t.Fatalf("unexpected verify payload without manifest: %#v", payload)
+	}
+}
+
+func TestRunBackupVerifyCommandRejectsOversizedManifest(t *testing.T) {
+	dataDir := filepath.Join(t.TempDir(), "data")
+	configPath := writeTestConfig(t, func(cfg *config.Config) {
+		cfg.Server.DataDir = dataDir
+	})
+	if err := runUserCreateCommand(io.Discard, []string{
+		"--config", configPath,
+		"--username", "alice",
+		"--password", "StrongPass123!",
+	}); err != nil {
+		t.Fatalf("create alice: %v", err)
+	}
+
+	backupFile := filepath.Join(t.TempDir(), "backup.zip")
+	if err := runBackupCreateCommand(io.Discard, []string{
+		"--config", configPath,
+		"--output", backupFile,
+		"--include-audit=false",
+	}); err != nil {
+		t.Fatalf("create backup: %v", err)
+	}
+
+	oversized := filepath.Join(t.TempDir(), "backup-oversized-manifest.zip")
+	manifestPayload := bytes.Repeat([]byte("a"), backupManifestMaxBytes+128)
+	if err := rewriteBackupEntry(backupFile, oversized, backupManifestPath, manifestPayload); err != nil {
+		t.Fatalf("rewrite manifest: %v", err)
+	}
+
+	err := runBackupVerifyCommand(io.Discard, []string{"--input", oversized})
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("expected oversized manifest error, got %v", err)
+	}
+}
+
 func rewriteBackupEntry(srcPath, dstPath, archivePath string, replacement []byte) error {
 	reader, err := zip.OpenReader(srcPath)
 	if err != nil {
@@ -661,6 +751,45 @@ func rewriteBackupEntry(srcPath, dstPath, archivePath string, replacement []byte
 				return err
 			}
 			continue
+		}
+		rc, err := file.Open()
+		if err != nil {
+			_ = writer.Close()
+			return err
+		}
+		if _, err := io.Copy(entry, rc); err != nil {
+			_ = rc.Close()
+			_ = writer.Close()
+			return err
+		}
+		_ = rc.Close()
+	}
+	return writer.Close()
+}
+
+func removeBackupEntry(srcPath, dstPath, archivePath string) error {
+	reader, err := zip.OpenReader(srcPath)
+	if err != nil {
+		return err
+	}
+	defer reader.Close()
+
+	out, err := os.OpenFile(dstPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	writer := zip.NewWriter(out)
+	for _, file := range reader.File {
+		if file.Name == archivePath {
+			continue
+		}
+		header := file.FileHeader
+		entry, err := writer.CreateHeader(&header)
+		if err != nil {
+			_ = writer.Close()
+			return err
 		}
 		rc, err := file.Open()
 		if err != nil {

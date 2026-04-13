@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kervanserver/kervan/internal/audit"
 	"github.com/kervanserver/kervan/internal/config"
@@ -151,6 +152,20 @@ func TestStorageAndMessageHelpers(t *testing.T) {
 	}
 	if !strings.Contains(updateMessage(nil, restart), "Restart is required") {
 		t.Fatalf("unexpected restart update message: %q", updateMessage(nil, restart))
+	}
+}
+
+func TestGracefulShutdownTimeoutFallback(t *testing.T) {
+	app := &App{cfg: &config.Config{}}
+	if got := app.gracefulShutdownTimeout(); got != 30*time.Second {
+		t.Fatalf("expected fallback graceful shutdown timeout, got %s", got)
+	}
+
+	cfg := config.DefaultConfig()
+	cfg.Server.GracefulShutdownTimeout = 12 * time.Second
+	app.cfg = cfg
+	if got := app.gracefulShutdownTimeout(); got != 12*time.Second {
+		t.Fatalf("expected configured graceful shutdown timeout, got %s", got)
 	}
 }
 

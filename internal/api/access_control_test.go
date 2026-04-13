@@ -242,6 +242,9 @@ func TestHandleAuditExportScopesNonAdminToOwnEvents(t *testing.T) {
 
 func TestBuildWebSocketSnapshotScopesNonAdminData(t *testing.T) {
 	srv := newAccessControlServer(t)
+	srv.status = func() map[string]any {
+		return map[string]any{"name": "kervan", "data_dir": "/var/lib/kervan"}
+	}
 	srv.sessions.Start("alice", "ftp", "10.0.0.1:1000")
 	srv.sessions.Start("bob", "sftp", "10.0.0.2:1000")
 
@@ -257,10 +260,14 @@ func TestBuildWebSocketSnapshotScopesNonAdminData(t *testing.T) {
 	}
 
 	snapshot := srv.buildWebSocketSnapshot("alice", map[string]struct{}{
+		"server":    {},
 		"sessions":  {},
 		"transfers": {},
 		"audit":     {},
 	})
+	if _, ok := snapshot["server"]; ok {
+		t.Fatalf("expected non-admin websocket snapshot to hide server details, got %#v", snapshot["server"])
+	}
 
 	sessionsPayload, ok := snapshot["sessions"].([]*session.Session)
 	if !ok {
@@ -294,6 +301,24 @@ func TestBuildWebSocketSnapshotScopesNonAdminData(t *testing.T) {
 	}
 	if len(eventsPayload) != 1 || eventsPayload[0]["username"] != "alice" {
 		t.Fatalf("expected only alice websocket audit events, got %#v", eventsPayload)
+	}
+}
+
+func TestBuildWebSocketSnapshotIncludesServerForAdmin(t *testing.T) {
+	srv := newAccessControlServer(t)
+	srv.status = func() map[string]any {
+		return map[string]any{"name": "kervan"}
+	}
+
+	snapshot := srv.buildWebSocketSnapshot("admin", map[string]struct{}{
+		"server": {},
+	})
+	serverPayload, ok := snapshot["server"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected admin snapshot to include server payload, got %T", snapshot["server"])
+	}
+	if got := serverPayload["name"]; got != "kervan" {
+		t.Fatalf("unexpected server payload: %#v", serverPayload)
 	}
 }
 

@@ -192,7 +192,14 @@ func (s *Server) runSCPSink(ch ssh.Channel, fsys vfs.FileSystem, target, usernam
 				_ = writeSCPError(ch, true, err.Error())
 				return err
 			}
-			_ = f.Close()
+			if closeErr := f.Close(); closeErr != nil {
+				if s.xfer != nil && transferID != "" {
+					s.xfer.AddBytes(transferID, n)
+					s.xfer.End(transferID, transfer.StatusFailed, closeErr.Error())
+				}
+				_ = writeSCPError(ch, true, closeErr.Error())
+				return closeErr
+			}
 			trailer, err := br.ReadByte()
 			if err != nil {
 				if s.xfer != nil && transferID != "" {

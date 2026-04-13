@@ -150,7 +150,7 @@ func runInitCommand(stdout io.Writer, args []string) error {
 	configPath := fs.String("config", defaultConfigPath, "Path to config file")
 	force := fs.Bool("force", false, "Overwrite existing config")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return fmt.Errorf("parse init flags: %w", err)
 	}
 
 	if !*force {
@@ -163,15 +163,15 @@ func runInitCommand(stdout io.Writer, args []string) error {
 		_ = os.Remove(*configPath)
 	}
 	if err := config.WriteDefault(*configPath); err != nil {
-		return err
+		return fmt.Errorf("write default config %s: %w", *configPath, err)
 	}
 
 	cfg, err := config.Load(*configPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("load config %s: %w", *configPath, err)
 	}
 	if err := ensureInitDataDirs(cfg); err != nil {
-		return err
+		return fmt.Errorf("create initial data directories: %w", err)
 	}
 
 	_, _ = fmt.Fprintf(stdout, "Config created: %s\n", *configPath)
@@ -199,8 +199,8 @@ func ensureInitDataDirs(cfg *config.Config) error {
 		if dir == "" {
 			continue
 		}
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return err
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			return fmt.Errorf("create directory %s: %w", dir, err)
 		}
 	}
 	return nil
@@ -213,11 +213,11 @@ func runKeygenCommand(stdout io.Writer, args []string) error {
 	outputDir := fs.String("output", "./data/host_keys", "Output directory")
 	force := fs.Bool("force", false, "Overwrite existing keys")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return fmt.Errorf("parse keygen flags: %w", err)
 	}
 
 	if err := os.MkdirAll(*outputDir, 0o700); err != nil {
-		return err
+		return fmt.Errorf("create host key directory %s: %w", *outputDir, err)
 	}
 
 	var generated []string
@@ -225,20 +225,20 @@ func runKeygenCommand(stdout io.Writer, args []string) error {
 	case "ed25519":
 		path, err := generateHostKeyFile(*outputDir, "ed25519", *force)
 		if err != nil {
-			return err
+			return fmt.Errorf("generate %s host key: %w", "ed25519", err)
 		}
 		generated = append(generated, path)
 	case "rsa":
 		path, err := generateHostKeyFile(*outputDir, "rsa", *force)
 		if err != nil {
-			return err
+			return fmt.Errorf("generate %s host key: %w", "rsa", err)
 		}
 		generated = append(generated, path)
 	case "both":
 		for _, kind := range []string{"ed25519", "rsa"} {
 			path, err := generateHostKeyFile(*outputDir, kind, *force)
 			if err != nil {
-				return err
+				return fmt.Errorf("generate %s host key: %w", kind, err)
 			}
 			generated = append(generated, path)
 		}
@@ -249,7 +249,7 @@ func runKeygenCommand(stdout io.Writer, args []string) error {
 	for _, path := range generated {
 		signer, err := icrypto.LoadSigner(path)
 		if err != nil {
-			return err
+			return fmt.Errorf("load generated host key %s: %w", path, err)
 		}
 		_, _ = fmt.Fprintf(stdout, "Generated: %s\n", path)
 		_, _ = fmt.Fprintf(stdout, "Fingerprint: %s\n", ssh.FingerprintSHA256(signer.PublicKey()))
@@ -276,9 +276,15 @@ func generateHostKeyFile(outputDir, keyType string, force bool) (string, error) 
 
 	switch keyType {
 	case "ed25519":
-		return path, icrypto.GenerateED25519HostKey(path)
+		if err := icrypto.GenerateED25519HostKey(path); err != nil {
+			return path, fmt.Errorf("generate ed25519 host key at %s: %w", path, err)
+		}
+		return path, nil
 	case "rsa":
-		return path, icrypto.GenerateRSAHostKey(path, 4096)
+		if err := icrypto.GenerateRSAHostKey(path, 4096); err != nil {
+			return path, fmt.Errorf("generate rsa host key at %s: %w", path, err)
+		}
+		return path, nil
 	default:
 		return "", fmt.Errorf("unknown key type: %s", keyType)
 	}
@@ -307,7 +313,7 @@ func runAdminCreateCommand(stdout io.Writer, args []string) error {
 	username := fs.String("username", "admin", "Admin username")
 	password := fs.String("password", "", "Admin password")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return fmt.Errorf("parse admin create flags: %w", err)
 	}
 	if *password == "" {
 		return errors.New("--password is required")
@@ -315,13 +321,13 @@ func runAdminCreateCommand(stdout io.Writer, args []string) error {
 
 	ctx, err := openCLIContext(*configPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("open CLI context: %w", err)
 	}
 	defer ctx.close()
 
 	u, err := ctx.engine.CreateUser(*username, *password, "/", true)
 	if err != nil {
-		return err
+		return fmt.Errorf("create admin user %s: %w", *username, err)
 	}
 	_, _ = fmt.Fprintf(stdout, "Admin created: %s (%s)\n", u.Username, u.ID)
 	return nil
@@ -334,7 +340,7 @@ func runAdminResetCommand(stdout io.Writer, args []string) error {
 	username := fs.String("username", "admin", "Admin username")
 	password := fs.String("password", "", "New password")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return fmt.Errorf("parse admin reset-password flags: %w", err)
 	}
 	if *password == "" {
 		return errors.New("--password is required")
@@ -342,12 +348,12 @@ func runAdminResetCommand(stdout io.Writer, args []string) error {
 
 	ctx, err := openCLIContext(*configPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("open CLI context: %w", err)
 	}
 	defer ctx.close()
 
 	if err := ctx.engine.ResetPassword(*username, *password); err != nil {
-		return err
+		return fmt.Errorf("reset password for %s: %w", *username, err)
 	}
 	_, _ = fmt.Fprintf(stdout, "Password reset: %s\n", *username)
 	return nil
@@ -359,18 +365,18 @@ func runAdminListCommand(stdout io.Writer, args []string) error {
 	configPath := fs.String("config", defaultConfigPath, "Path to config file")
 	jsonOut := fs.Bool("json", false, "Output JSON")
 	if err := fs.Parse(args); err != nil {
-		return err
+		return fmt.Errorf("parse admin list flags: %w", err)
 	}
 
 	ctx, err := openCLIContext(*configPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("open CLI context: %w", err)
 	}
 	defer ctx.close()
 
 	users, err := ctx.repo.List()
 	if err != nil {
-		return err
+		return fmt.Errorf("list users: %w", err)
 	}
 
 	admins := make([]*auth.User, 0, len(users))
@@ -403,7 +409,10 @@ func runAdminListCommand(stdout io.Writer, args []string) error {
 				Type:      user.Type,
 			})
 		}
-		return json.NewEncoder(stdout).Encode(items)
+		if err := json.NewEncoder(stdout).Encode(items); err != nil {
+			return fmt.Errorf("encode admin list output: %w", err)
+		}
+		return nil
 	}
 
 	tw := tabwriter.NewWriter(stdout, 0, 0, 2, ' ', 0)
@@ -416,5 +425,8 @@ func runAdminListCommand(stdout io.Writer, args []string) error {
 			user.UpdatedAt.Format(time.RFC3339),
 		)
 	}
-	return tw.Flush()
+	if err := tw.Flush(); err != nil {
+		return fmt.Errorf("flush admin list output: %w", err)
+	}
+	return nil
 }
