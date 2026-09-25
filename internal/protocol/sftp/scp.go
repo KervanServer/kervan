@@ -59,19 +59,49 @@ func parseSCPExec(command string) (mode, target string, err error) {
 	return mode, target, nil
 }
 
-func (s *Server) runSCP(ch ssh.Channel, fsys vfs.FileSystem, mode, target, username, remoteAddr string) error {
+// touchReader renews the control-connection idle deadline whenever the SCP
+// flow reads from the channel, so long transfers are not killed by the
+// deadline set at connection accept.
+type touchReader struct {
+	r     io.Reader
+	touch func()
+}
+
+func (t touchReader) Read(p []byte) (int, error) {
+	n, err := t.r.Read(p)
+	if n > 0 {
+		t.touch()
+	}
+	return n, err
+}
+
+// touchWriter renews the deadline on channel writes (source-mode activity).
+type touchWriter struct {
+	w     io.Writer
+	touch func()
+}
+
+func (t touchWriter) Write(p []byte) (int, error) {
+	n, err := t.w.Write(p)
+	if n > 0 {
+		t.touch()
+	}
+	return n, err
+}
+
+func (s *Server) runSCP(ch ssh.Channel, fsys vfs.FileSystem, mode, target, username, remoteAddr string, touch func()) error {
 	switch mode {
 	case scpModeSource:
-		return s.runSCPSource(ch, fsys, normalizeSCPPath(target), username, remoteAddr)
+		return s.runSCPSource(ch, fsys, normalizeSCPPath(target), username, remoteAddr, touch)
 	case scpModeSink:
-		return s.runSCPSink(ch, fsys, normalizeSCPPath(target), username, remoteAddr)
+		return s.runSCPSink(ch, fsys, normalizeSCPPath(target), username, remoteAddr, touch)
 	default:
 		return fmt.Errorf("unknown scp mode: %s", mode)
 	}
 }
 
-func (s *Server) runSCPSource(ch ssh.Channel, fsys vfs.FileSystem, filePath, username, remoteAddr string) error {
-	br := bufio.NewReader(ch)
+func (s *Server) runSCPSource(ch ssh.Channel, fsys vfs.FileSystem, filePath, username, remoteAddr string, touch func()) error {
+	br := bufio.NewReader(touchReader{r: ch, touch: touch})
 	if err := readSCPAck(br); err != nil {
 		return err
 	}
@@ -104,7 +134,7 @@ func (s *Server) runSCPSource(ch ssh.Channel, fsys vfs.FileSystem, filePath, use
 	if s.xfer != nil {
 		transferID = s.xfer.Start(username, "scp", filePath, transfer.DirectionDownload, info.Size())
 	}
-	n, err := io.CopyN(ch, f, info.Size())
+	n, err := io.CopyN(touchWriter{w: ch, touch: touch}, f, info.Size())
 	if err != nil {
 		if s.xfer != nil && transferID != "" {
 			s.xfer.AddBytes(transferID, n)
@@ -135,8 +165,8 @@ func (s *Server) runSCPSource(ch ssh.Channel, fsys vfs.FileSystem, filePath, use
 	return nil
 }
 
-func (s *Server) runSCPSink(ch ssh.Channel, fsys vfs.FileSystem, target, username, remoteAddr string) error {
-	br := bufio.NewReader(ch)
+func (s *Server) runSCPSink(ch ssh.Channel, fsys vfs.FileSystem, target, username, remoteAddr string, touch func()) error {
+	br := bufio.NewReader(touchReader{r: ch, touch: touch})
 	if _, err := ch.Write([]byte{0}); err != nil {
 		return err
 	}

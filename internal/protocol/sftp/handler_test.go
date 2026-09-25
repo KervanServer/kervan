@@ -92,17 +92,21 @@ func (f *attrsTestFsys) Stat(string) (os.FileInfo, error) {
 	return nil, os.ErrNotExist
 }
 
-func (f *attrsTestFsys) Lstat(string) (os.FileInfo, error)  { return nil, os.ErrNotExist }
-func (f *attrsTestFsys) Rename(string, string) error        { return errors.New("attrsTestFsys: rename") }
-func (f *attrsTestFsys) Remove(string) error                { return errors.New("attrsTestFsys: remove") }
-func (f *attrsTestFsys) RemoveAll(string) error             { return errors.New("attrsTestFsys: removeall") }
-func (f *attrsTestFsys) Mkdir(string, os.FileMode) error    { return errors.New("attrsTestFsys: mkdir") }
-func (f *attrsTestFsys) MkdirAll(string, os.FileMode) error { return errors.New("attrsTestFsys: mkdirall") }
+func (f *attrsTestFsys) Lstat(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
+func (f *attrsTestFsys) Rename(string, string) error       { return errors.New("attrsTestFsys: rename") }
+func (f *attrsTestFsys) Remove(string) error               { return errors.New("attrsTestFsys: remove") }
+func (f *attrsTestFsys) RemoveAll(string) error            { return errors.New("attrsTestFsys: removeall") }
+func (f *attrsTestFsys) Mkdir(string, os.FileMode) error   { return errors.New("attrsTestFsys: mkdir") }
+func (f *attrsTestFsys) MkdirAll(string, os.FileMode) error {
+	return errors.New("attrsTestFsys: mkdirall")
+}
 
 func (f *attrsTestFsys) ReadDir(string) ([]fs.DirEntry, error) { return f.entries, nil }
 
-func (f *attrsTestFsys) Symlink(string, string) error    { return errors.New("attrsTestFsys: symlink") }
-func (f *attrsTestFsys) Readlink(string) (string, error) { return "", errors.New("attrsTestFsys: readlink") }
+func (f *attrsTestFsys) Symlink(string, string) error { return errors.New("attrsTestFsys: symlink") }
+func (f *attrsTestFsys) Readlink(string) (string, error) {
+	return "", errors.New("attrsTestFsys: readlink")
+}
 func (f *attrsTestFsys) Chmod(string, os.FileMode) error { return errors.New("attrsTestFsys: chmod") }
 func (f *attrsTestFsys) Chown(string, int, int) error    { return errors.New("attrsTestFsys: chown") }
 

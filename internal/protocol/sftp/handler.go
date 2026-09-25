@@ -42,8 +42,8 @@ const (
 
 	fxpStatus   = 101
 	fxpHandle   = 102
-	fxpData     = 103
-	fxpName     = 104
+	fxpData     = 104
+	fxpName     = 103
 	fxpAttrs    = 105
 	fxpExtended = 200
 
@@ -73,6 +73,7 @@ type sftpHandler struct {
 	xfer     *transfer.Manager
 	username string
 	remoteIP string
+	touch    func()
 
 	handles    map[string]any
 	nextHandle uint64
@@ -90,7 +91,7 @@ type openDir struct {
 	idx     int
 }
 
-func (s *Server) runSFTP(ch ssh.Channel, fsys vfs.FileSystem, username, remoteAddr string) {
+func (s *Server) runSFTP(ch ssh.Channel, fsys vfs.FileSystem, username, remoteAddr string, touch func()) {
 	handler := &sftpHandler{
 		ch:       ch,
 		fsys:     fsys,
@@ -98,6 +99,7 @@ func (s *Server) runSFTP(ch ssh.Channel, fsys vfs.FileSystem, username, remoteAd
 		xfer:     s.xfer,
 		username: username,
 		remoteIP: remoteAddr,
+		touch:    touch,
 		handles:  make(map[string]any),
 		logger: func(msg string, kv ...any) {
 			if s.logger != nil {
@@ -111,6 +113,9 @@ func (s *Server) runSFTP(ch ssh.Channel, fsys vfs.FileSystem, username, remoteAd
 func (h *sftpHandler) loop() error {
 	defer h.closeAllHandles()
 	for {
+		if h.touch != nil {
+			h.touch()
+		}
 		packetType, payload, err := readPacket(h.ch)
 		if err != nil {
 			if errors.Is(err, io.EOF) {

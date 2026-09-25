@@ -1,10 +1,12 @@
 package api
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -231,5 +233,76 @@ func TestHandleShareDownloadEscapesAttachmentFilename(t *testing.T) {
 	got := rec.Header().Get("Content-Disposition")
 	if !strings.Contains(got, `filename="quarter\"1.txt"`) {
 		t.Fatalf("expected escaped filename in content-disposition, got %q", got)
+	}
+}
+
+// Contract: the share-link lifecycle composes across real handler invocations
+// over real persistence — an authenticated create, unauthenticated downloads
+// that count against max_downloads, limit enforcement, and counts that
+// survive a fresh repository instance over the same store.
+
+func TestShareLinkLifecycleAcrossHandlersAndStore(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(dir)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+	repo := newShareLinkRepository(st)
+
+	mounts := vfs.NewMountTable()
+	mounts.Mount("/", memory.New(), false)
+	perms := &vfs.UserPermissions{Upload: true, Download: true, Delete: true, Rename: true, CreateDir: true, ListDir: true}
+	fsys := vfs.NewUserVFS(mounts, perms, nil)
+	f, err := fsys.Open("/report.txt", os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatalf("seed file: %v", err)
+	}
+	if _, err := f.Write([]byte("quarterly report")); err != nil {
+		t.Fatalf("seed content: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close seed file: %v", err)
+	}
+
+	s := &Server{
+		shareLinks:   repo,
+		fsBuilder:    func(string) (vfs.FileSystem, error) { return fsys, nil },
+		auditLogPath: filepath.Join(dir, "audit.jsonl"),
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/share?path=/report.txt&ttl=1h&max_downloads=2", nil)
+	req.Header.Set("X-Auth-User", "alice")
+	s.handleFilesShare(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create status = %d, body = %q, want 201", rec.Code, rec.Body.String())
+	}
+	var created struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil || created.Token == "" {
+		t.Fatalf("create response %q (err=%v)", rec.Body.String(), err)
+	}
+
+	download := func() (int, string) {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/api/v1/share/"+created.Token, nil)
+		s.handleShareDownload(rec, req)
+		return rec.Code, rec.Body.String()
+	}
+	for i := 1; i <= 2; i++ {
+		code, body := download()
+		if code != http.StatusOK || body != "quarterly report" {
+			t.Fatalf("download %d = (%d, %q), want (200, seeded content)", i, code, body)
+		}
+	}
+	if code, _ := download(); code != http.StatusGone {
+		t.Fatalf("download 3 status = %d, want 410 after max_downloads=2", code)
+	}
+
+	fresh := newShareLinkRepository(st)
+	if _, err := fresh.ReserveDownload(created.Token, time.Now().UTC()); err == nil {
+		t.Fatalf("download count/limit did not persist across a fresh repository over the same store")
 	}
 }

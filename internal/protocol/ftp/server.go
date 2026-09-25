@@ -473,12 +473,42 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, implicitTLS bool
 			}
 			writeReply(conn, 150, "Opening data connection.")
 			err = writeListing(dc, state.fs, target, cmd)
+			// A zero-entry listing performs no I/O, so the lazy tls.Server
+			// handshake must be completed explicitly before the close —
+			// otherwise FTPS clients see EOF mid-handshake (RFC 4217).
+			if tc, ok := dc.(*tls.Conn); ok {
+				if hsErr := tc.Handshake(); hsErr != nil && err == nil {
+					err = hsErr
+				}
+			}
 			_ = dc.Close()
 			if err != nil {
 				writeReply(conn, 550, "Listing failed.")
 				continue
 			}
 			writeReply(conn, 226, "Transfer complete.")
+		case "MLST":
+			// RFC 3659 §7: MLST returns the machine-facts entry for a single
+			// file or directory on the CONTROL channel (MLSD lists a
+			// directory over the data connection). FEAT advertises MLST, so
+			// the command must be honored, not rejected as unimplemented.
+			if !isAuthed(conn, state) {
+				continue
+			}
+			mlstTarget := state.cwd
+			if strings.TrimSpace(arg) != "" {
+				mlstTarget = resolvePath(state.cwd, arg)
+			}
+			var buf bytes.Buffer
+			if err := writeListing(&buf, state.fs, mlstTarget, "MLST"); err != nil {
+				writeReply(conn, 550, "Listing failed.")
+				continue
+			}
+			if _, err := fmt.Fprintf(conn, "250-Listing %s\r\n", mlstTarget); err != nil {
+				continue
+			}
+			_, _ = conn.Write(buf.Bytes())
+			_, _ = fmt.Fprintf(conn, "250 End\r\n")
 		case "RETR":
 			if !isAuthed(conn, state) {
 				continue
@@ -505,6 +535,13 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, implicitTLS bool
 			}
 			writeReply(conn, 150, "Opening binary mode data connection.")
 			n, err := io.Copy(dc, f)
+			// A zero-byte file means io.Copy never touches dc, so the lazy
+			// tls.Server handshake must be completed explicitly (RFC 4217).
+			if tc, ok := dc.(*tls.Conn); ok {
+				if hsErr := tc.Handshake(); hsErr != nil && err == nil {
+					err = hsErr
+				}
+			}
 			closeFileErr := f.Close()
 			closeDataErr := dc.Close()
 			if err == nil {
@@ -738,12 +775,12 @@ func (s *Server) acceptDataConn(state *connState) (net.Conn, error) {
 			continue
 		}
 		if state.secureControl && state.dataProtPrivate && s.cfg.TLSConfig != nil {
-			tlsConn := tls.Server(conn, s.cfg.TLSConfig)
-			if err := tlsConn.Handshake(); err != nil {
-				_ = conn.Close()
-				return nil, err
-			}
-			conn = tlsConn
+			// The TLS handshake must NOT be awaited here: RFC 4217 clients
+			// start the data-TLS handshake when they connect the data
+			// channel, before (or concurrently with) the transfer command.
+			// Wrapping without an eager handshake lets it complete lazily on
+			// first I/O on either side; the transfer deadline below bounds it.
+			conn = tls.Server(conn, s.cfg.TLSConfig)
 		}
 		_ = conn.SetDeadline(time.Now().Add(s.cfg.TransferTimeout))
 		return conn, nil
@@ -835,6 +872,19 @@ func parsePortRange(raw string) (int, int, error) {
 
 func writeListing(w io.Writer, fsys vfs.FileSystem, target string, mode string) error {
 	info, err := fsys.Stat(target)
+	if mode == "MLST" {
+		// RFC 3659 §7: MLST lists exactly the named object — one facts line,
+		// for directories too (the entries loop below lists children only).
+		if err != nil {
+			return err
+		}
+		kind := "file"
+		if info.IsDir() {
+			kind = "dir"
+		}
+		_, err = fmt.Fprintf(w, " type=%s;size=%d;modify=%s; %s\r\n", kind, info.Size(), info.ModTime().UTC().Format("20060102150405"), target)
+		return err
+	}
 	if err == nil && !info.IsDir() {
 		switch mode {
 		case "NLST":

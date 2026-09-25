@@ -97,7 +97,7 @@ func TestSCPSinkUploadCompletes(t *testing.T) {
 		_ = clientConn.Close()
 	})
 	go func() {
-		_ = srv.runSCPSink(pipeSCPChannel{Conn: serverConn}, fsys, "/", "alice", "remote")
+		_ = srv.runSCPSink(pipeSCPChannel{Conn: serverConn}, fsys, "/", "alice", "remote", func() {})
 		_ = serverConn.Close()
 	}()
 
@@ -155,7 +155,7 @@ func TestSCPSinkOversizedHeaderClosesConnection(t *testing.T) {
 		_ = clientConn.Close()
 	})
 	go func() {
-		_ = srv.runSCPSink(pipeSCPChannel{Conn: serverConn}, fsys, "/", "alice", "remote")
+		_ = srv.runSCPSink(pipeSCPChannel{Conn: serverConn}, fsys, "/", "alice", "remote", func() {})
 		_ = serverConn.Close()
 	}()
 

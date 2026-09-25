@@ -156,9 +156,8 @@ func (c *Config) Validate() error {
 		outputType := strings.ToLower(strings.TrimSpace(output.Type))
 		switch outputType {
 		case "", "file":
-			if strings.TrimSpace(output.Path) == "" {
-				errs = append(errs, prefix+".path is required for file outputs")
-			}
+			// An empty path is valid: buildAuditSinks anchors file outputs to
+			// server.data_dir/audit.jsonl (matching backupAuditPath).
 		case "http", "webhook":
 			if strings.TrimSpace(output.URL) == "" {
 				errs = append(errs, prefix+".url is required for http/webhook outputs")

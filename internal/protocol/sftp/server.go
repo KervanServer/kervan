@@ -171,7 +171,8 @@ func (s *Server) isClosed() bool {
 
 func (s *Server) handleConn(cfg *ssh.ServerConfig, c net.Conn) {
 	defer c.Close()
-	_ = c.SetDeadline(time.Now().Add(s.cfg.IdleTimeout))
+	touch := func() { _ = c.SetDeadline(time.Now().Add(s.cfg.IdleTimeout)) }
+	touch()
 
 	sshConn, chans, reqs, err := ssh.NewServerConn(c, cfg)
 	if err != nil {
@@ -202,18 +203,18 @@ func (s *Server) handleConn(cfg *ssh.ServerConfig, c net.Conn) {
 		if acceptErr != nil {
 			continue
 		}
-		go s.handleSessionChannel(channel, requests, userFS, username, c.RemoteAddr().String())
+		go s.handleSessionChannel(channel, requests, userFS, username, c.RemoteAddr().String(), touch)
 	}
 }
 
-func (s *Server) handleSessionChannel(ch ssh.Channel, requests <-chan *ssh.Request, fsys vfs.FileSystem, username, remoteAddr string) {
+func (s *Server) handleSessionChannel(ch ssh.Channel, requests <-chan *ssh.Request, fsys vfs.FileSystem, username, remoteAddr string, touch func()) {
 	defer ch.Close()
 	for req := range requests {
 		switch req.Type {
 		case "subsystem":
 			if len(req.Payload) >= 4 && string(req.Payload[4:]) == "sftp" {
 				_ = req.Reply(true, nil)
-				s.runSFTP(ch, fsys, username, remoteAddr)
+				s.runSFTP(ch, fsys, username, remoteAddr, touch)
 				return
 			}
 			_ = req.Reply(false, nil)
@@ -229,7 +230,7 @@ func (s *Server) handleSessionChannel(ch ssh.Channel, requests <-chan *ssh.Reque
 				return
 			}
 			_ = req.Reply(true, nil)
-			if runErr := s.runSCP(ch, fsys, mode, target, username, remoteAddr); runErr != nil && s.logger != nil {
+			if runErr := s.runSCP(ch, fsys, mode, target, username, remoteAddr, touch); runErr != nil && s.logger != nil {
 				s.logger.Debug("scp request failed", "error", runErr, "user", username, "mode", mode, "target", target)
 			}
 			return

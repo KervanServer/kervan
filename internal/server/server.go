@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/kervanserver/kervan/internal/acme"
@@ -48,6 +49,11 @@ type App struct {
 	audit     *audit.Engine
 	sessions  *session.Manager
 	transfers *transfer.Manager
+
+	// Shared per-user in-memory storage worlds: backend type "memory" must
+	// hand every fsBuilder call for the same user the same instance, or uploads
+	// from one connection/request are invisible to all others.
+	memoryFS sync.Map
 
 	ftpServer  *ftp.Server
 	sftpServer *sftp.Server
@@ -606,7 +612,18 @@ func (a *App) buildUserFS(user *auth.User) (vfs.FileSystem, error) {
 
 	switch backendType {
 	case "memory":
-		rootFS = memory.New()
+		// One shared in-memory world per user: a fresh memory.New() per call
+		// would isolate every connection/request from each other.
+		memoryKey := ""
+		if user != nil {
+			memoryKey = strings.TrimSpace(user.Username)
+		}
+		if cached, ok := a.memoryFS.Load(memoryKey); ok {
+			rootFS = cached.(*memory.Backend)
+		} else {
+			rootFS = memory.New()
+			a.memoryFS.Store(memoryKey, rootFS)
+		}
 	case "s3":
 		prefix := strings.TrimSpace(backendCfg.Options["prefix"])
 		if normalizedHomeDir != "/" {

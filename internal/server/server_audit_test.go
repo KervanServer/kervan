@@ -35,3 +35,23 @@ func TestBuildAuditSinksSupportsFileAndWebhook(t *testing.T) {
 		t.Fatal("expected primary audit file path")
 	}
 }
+
+// TestDefaultAuditSinkPathAnchorsToDataDir pins the shipped default: an empty
+// audit output path must anchor the sink to server.data_dir, not the launch
+// directory (buildAuditSinks fallback, matching backupAuditPath).
+func TestDefaultAuditSinkPathAnchorsToDataDir(t *testing.T) {
+	dir := t.TempDir()
+	cfg := config.DefaultConfig()
+	cfg.Server.DataDir = dir
+	sinks, primary, err := buildAuditSinks(cfg)
+	if err != nil {
+		t.Fatalf("buildAuditSinks: %v", err)
+	}
+	for _, s := range sinks {
+		_ = s.Close()
+	}
+	want := filepath.Join(dir, "audit.jsonl")
+	if primary != want {
+		t.Fatalf("default-config audit sink path = %q, want %q", primary, want)
+	}
+}

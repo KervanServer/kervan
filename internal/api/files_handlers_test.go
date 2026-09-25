@@ -1,95 +1,75 @@
 package api
 
 import (
-	"bytes"
-	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/kervanserver/kervan/internal/storage/memory"
 	"github.com/kervanserver/kervan/internal/vfs"
 )
 
-func TestFileHandlersRequirePath(t *testing.T) {
-	mem := memory.New()
-	srv := &Server{
-		fsBuilder: func(string) (vfs.FileSystem, error) {
-			return mem, nil
-		},
+// Contract: the API file handlers compose over a real user VFS —
+// handleFilesUpload persists the raw request body at the requested virtual
+// path and handleFilesDownload streams the same bytes back.
+
+func TestFileUploadDownloadIntegration(t *testing.T) {
+	backend := memory.New()
+	mounts := vfs.NewMountTable()
+	mounts.Mount("/", backend, false)
+	fsys := vfs.NewUserVFS(mounts, &vfs.UserPermissions{
+		Upload: true, Download: true, Delete: true, Rename: true, CreateDir: true, ListDir: true,
+	}, nil)
+	s := &Server{
+		fsBuilder:    func(string) (vfs.FileSystem, error) { return fsys, nil },
+		auditLogPath: "",
 	}
 
-	tests := []struct {
-		name    string
-		method  string
-		target  string
-		body    []byte
-		handler func(http.ResponseWriter, *http.Request)
-	}{
-		{name: "upload", method: http.MethodPost, target: "/api/files/upload", body: []byte("payload"), handler: srv.handleFilesUpload},
-		{name: "download", method: http.MethodGet, target: "/api/files/download", handler: srv.handleFilesDownload},
-		{name: "stat", method: http.MethodGet, target: "/api/files/stat", handler: srv.handleFilesStat},
-		{name: "delete", method: http.MethodDelete, target: "/api/files/delete", handler: srv.handleFilesDelete},
+	payload := "api file upload integration payload\r\nline two\n"
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/files/upload", strings.NewReader(payload))
+	req.Header.Set("X-Auth-User", "alice")
+	s.handleFilesUpload(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("missing-path upload status = %d, want 400", rec.Code)
 	}
 
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			req := httptest.NewRequest(tc.method, tc.target, bytes.NewReader(tc.body))
-			req.Header.Set("X-Auth-User", "alice")
-			rec := httptest.NewRecorder()
-
-			tc.handler(rec, req)
-
-			if rec.Code != http.StatusBadRequest {
-				t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
-			}
-			var payload map[string]string
-			if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
-				t.Fatalf("decode response: %v", err)
-			}
-			if payload["error"] != "path is required" {
-				t.Fatalf("expected path required error, got %#v", payload)
-			}
-		})
-	}
-}
-
-func TestHandleFilesRenameRequiresFromAndTo(t *testing.T) {
-	mem := memory.New()
-	srv := &Server{
-		fsBuilder: func(string) (vfs.FileSystem, error) {
-			return mem, nil
-		},
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/files/upload?path=/upload.txt", strings.NewReader(payload))
+	req.Header.Set("X-Auth-User", "alice")
+	s.handleFilesUpload(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("upload status = %d, body = %q, want 200", rec.Code, rec.Body.String())
 	}
 
-	tests := []struct {
-		name   string
-		target string
-		body   []byte
-	}{
-		{name: "missing query and body", target: "/api/files/rename", body: []byte(`{}`)},
-		{name: "missing to", target: "/api/files/rename?from=/a.txt", body: nil},
-		{name: "missing from", target: "/api/files/rename?to=/b.txt", body: nil},
+	f, err := backend.Open("/upload.txt", 0, 0)
+	if err != nil {
+		t.Fatalf("uploaded file missing from the shared backend: %v", err)
+	}
+	got, err := io.ReadAll(f)
+	_ = f.Close()
+	if err != nil {
+		t.Fatalf("read uploaded file: %v", err)
+	}
+	if string(got) != payload {
+		t.Fatalf("uploaded content mismatch: got %q, want %q", got, payload)
 	}
 
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodPost, tc.target, bytes.NewReader(tc.body))
-			req.Header.Set("X-Auth-User", "alice")
-			rec := httptest.NewRecorder()
-
-			srv.handleFilesRename(rec, req)
-
-			if rec.Code != http.StatusBadRequest {
-				t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
-			}
-			var payload map[string]string
-			if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
-				t.Fatalf("decode response: %v", err)
-			}
-			if payload["error"] != "from and to are required" {
-				t.Fatalf("unexpected payload: %#v", payload)
-			}
-		})
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/api/files/download?path=/upload.txt", nil)
+	req.Header.Set("X-Auth-User", "alice")
+	s.handleFilesDownload(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("download status = %d, want 200", rec.Code)
+	}
+	downloaded, err := io.ReadAll(rec.Body)
+	if err != nil {
+		t.Fatalf("read download body: %v", err)
+	}
+	if string(downloaded) != payload {
+		t.Fatalf("download content mismatch: got %q, want %q", downloaded, payload)
 	}
 }

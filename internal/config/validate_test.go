@@ -193,7 +193,6 @@ func TestValidateReturnsDetailedErrorsForInvalidConfiguration(t *testing.T) {
 		"storage.backends.weird.type must be local|memory|s3",
 		"security.allowed_ips contains invalid entry: not-an-ip",
 		"security.denied_ips contains invalid entry: also-not-an-ip",
-		"audit.outputs[0].path is required for file outputs",
 		"audit.outputs[1].url must be a valid http:// or https:// URL",
 		"audit.outputs[1].batch_size must be >= 0",
 		"audit.outputs[1].flush_interval must be >= 0",

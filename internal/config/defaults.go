@@ -103,7 +103,7 @@ func DefaultConfig() *Config {
 			Outputs: []AuditOutput{
 				{
 					Type: "file",
-					Path: "./data/audit.jsonl",
+					Path: "", // empty anchors to server.data_dir (see buildAuditSinks)
 				},
 			},
 		},
