@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.0.2 (2026-09-25)
+
+Seven post-release defects fixed by bug-hunt rounds 26-48. Every fix was
+proven with a failing reproduction (red) and a durable regression test
+(green); the full suite is green (24 packages) on this tree.
+(Commit 527caf2.)
+
+### Fixed
+- **SFTP:** the idle deadline is renewed on session activity — `idle_timeout`
+  acted as an absolute lifetime cap that killed active transfers at the
+  timeout.
+- **SFTP:** the SSH_FXP_NAME/SSH_FXP_DATA packet type constants are corrected
+  (they were swapped against the wire spec, wire-breaking READ replies and
+  READDIR/REALPATH listings).
+- **storage:** the memory backend is shared per user across protocols and
+  requests — per-call instantiation isolated every session's data.
+- **config:** the default audit sink path is anchored to `server.data_dir`
+  instead of the CWD-relative `./data` default.
+- **FTP:** the explicit-FTPS data-TLS handshake is performed lazily — RFC 4217
+  client ordering no longer deadlocks PROT P transfers.
+- **FTP:** the advertised MLST command is implemented (RFC 3659 single-entry
+  listing on the control channel).
+- **FTP:** zero-I/O protected transfers complete their lazy TLS handshake —
+  empty MLSD listings and zero-byte RETR aborted mid-handshake.
+
 ## v0.0.1 (2026-09-25)
 
 First tagged release: 16 defects fixed by a 25-round proof-driven bug hunt.
