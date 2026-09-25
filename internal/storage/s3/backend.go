@@ -276,35 +276,44 @@ func (b *Backend) ReadDir(name string) ([]fs.DirEntry, error) {
 		prefix = b.prefix
 	}
 
-	ctx, cancel := b.operationContext()
-	defer cancel()
-	response, err := b.client.ListObjectsV2(ctx, b.bucket, prefix, "/", 1000)
-	if err != nil {
-		return nil, mapS3Error(err)
-	}
-
+	// Follow listing pagination (IsTruncated/NextContinuationToken) so
+	// directories with more than one page of entries are fully visible,
+	// matching the walkObjects contract.
 	entryMap := map[string]dirEntry{}
-	for _, cp := range response.CommonPrefixes {
-		name := strings.TrimSuffix(strings.TrimPrefix(cp, prefix), "/")
-		if name == "" {
-			continue
+	token := ""
+	for {
+		ctx, cancel := b.operationContext()
+		response, err := b.client.ListObjectsV2WithToken(ctx, b.bucket, prefix, "/", 1000, token)
+		cancel()
+		if err != nil {
+			return nil, mapS3Error(err)
 		}
-		entryMap[name] = dirEntry{info: fileInfo{name: name, mode: fs.ModeDir | 0o755, isDir: true}}
-	}
-	for _, obj := range response.Contents {
-		name := strings.TrimPrefix(obj.Key, prefix)
-		if name == "" {
-			continue
-		}
-		if strings.HasSuffix(name, "/") {
-			name = strings.TrimSuffix(name, "/")
+		for _, cp := range response.CommonPrefixes {
+			name := strings.TrimSuffix(strings.TrimPrefix(cp, prefix), "/")
 			if name == "" {
 				continue
 			}
-			entryMap[name] = dirEntry{info: fileInfo{name: name, mode: fs.ModeDir | 0o755, isDir: true, modTime: obj.LastModified}}
-			continue
+			entryMap[name] = dirEntry{info: fileInfo{name: name, mode: fs.ModeDir | 0o755, isDir: true}}
 		}
-		entryMap[name] = dirEntry{info: fileInfo{name: name, size: obj.Size, mode: 0o644, modTime: obj.LastModified}}
+		for _, obj := range response.Contents {
+			name := strings.TrimPrefix(obj.Key, prefix)
+			if name == "" {
+				continue
+			}
+			if strings.HasSuffix(name, "/") {
+				name = strings.TrimSuffix(name, "/")
+				if name == "" {
+					continue
+				}
+				entryMap[name] = dirEntry{info: fileInfo{name: name, mode: fs.ModeDir | 0o755, isDir: true, modTime: obj.LastModified}}
+				continue
+			}
+			entryMap[name] = dirEntry{info: fileInfo{name: name, size: obj.Size, mode: 0o644, modTime: obj.LastModified}}
+		}
+		if !response.IsTruncated || response.NextContinuationToken == "" {
+			break
+		}
+		token = response.NextContinuationToken
 	}
 
 	names := make([]string, 0, len(entryMap))

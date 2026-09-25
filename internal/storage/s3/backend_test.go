@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/xml"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -155,18 +156,31 @@ func (f *fakeS3Server) handleList(w http.ResponseWriter, bucket string, query ur
 		Prefix string `xml:"Prefix"`
 	}
 	type result struct {
-		XMLName        xml.Name       `xml:"ListBucketResult"`
-		IsTruncated    bool           `xml:"IsTruncated"`
-		CommonPrefixes []commonPrefix `xml:"CommonPrefixes,omitempty"`
-		Contents       []content      `xml:"Contents,omitempty"`
+		XMLName               xml.Name       `xml:"ListBucketResult"`
+		IsTruncated           bool           `xml:"IsTruncated"`
+		NextContinuationToken string         `xml:"NextContinuationToken,omitempty"`
+		CommonPrefixes        []commonPrefix `xml:"CommonPrefixes,omitempty"`
+		Contents              []content      `xml:"Contents,omitempty"`
+	}
+
+	start := 0
+	if raw := query.Get("continuation-token"); raw != "" {
+		parsed, err := strconv.Atoi(strings.TrimPrefix(raw, "continuation-"))
+		if err != nil || parsed < 0 || parsed > len(keys) {
+			http.Error(w, "invalid continuation token", http.StatusBadRequest)
+			return
+		}
+		start = parsed
 	}
 
 	response := result{}
 	seenPrefixes := map[string]struct{}{}
 	count := 0
-	for _, key := range keys {
+	for i := start; i < len(keys); i++ {
+		key := keys[i]
 		if count >= maxKeys {
 			response.IsTruncated = true
+			response.NextContinuationToken = "continuation-" + strconv.Itoa(i)
 			break
 		}
 		trimmed := strings.TrimPrefix(key, prefix)
@@ -430,5 +444,43 @@ func TestBackendTempFilesAreRemovedOnClose(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Fatalf("expected temp files to be cleaned up, got %d", len(entries))
+	}
+}
+
+// Regression: ReadDir must follow S3 listing pagination (IsTruncated /
+// NextContinuationToken) so directories with more than one page of entries
+// are fully visible. It previously performed a single ListObjectsV2 call and
+// silently truncated, hiding every file beyond the first page from FTP,
+// SFTP, and API listings (walkObjects already paginated).
+func TestReadDirFollowsListingPagination(t *testing.T) {
+	const total = 1250
+	fake := newFakeS3Server()
+	fake.ensureBucket("bucket")
+	for i := 0; i < total; i++ {
+		// Zero-padded so lexicographic order matches numeric order.
+		fake.objects["bucket"][fmt.Sprintf("docs/file%04d.txt", i)] = fakeObject{data: []byte("x"), modTime: time.Now().UTC()}
+	}
+	server := httptest.NewServer(fake)
+	defer server.Close()
+
+	backend, err := New(Options{
+		Endpoint:     server.URL,
+		Bucket:       "bucket",
+		UsePathStyle: true,
+		DisableSSL:   true,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	entries, err := backend.ReadDir("/docs")
+	if err != nil {
+		t.Fatalf("ReadDir() error = %v", err)
+	}
+	if len(entries) != total {
+		t.Fatalf("ReadDir returned %d of %d entries: listing pagination is ignored", len(entries), total)
+	}
+	if entries[0].Name() != "file0000.txt" || entries[total-1].Name() != "file1249.txt" {
+		t.Fatalf("first entry = %q, last entry = %q, want file0000.txt..file1249.txt", entries[0].Name(), entries[total-1].Name())
 	}
 }

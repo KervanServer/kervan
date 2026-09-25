@@ -62,6 +62,9 @@ func (c *Config) Validate() error {
 	if c.WebUI.TLS && !c.FTPS.AutoCert.Enabled && (strings.TrimSpace(c.FTPS.CertFile) == "" || strings.TrimSpace(c.FTPS.KeyFile) == "") {
 		errs = append(errs, "webui.tls requires ftps cert_file/key_file or ftps.auto_cert.enabled=true")
 	}
+	if c.WebUI.Enabled && (c.WebUI.Port < 1 || c.WebUI.Port > 65535) {
+		errs = append(errs, "webui.port must be 1-65535")
+	}
 	if c.WebUI.ReadTimeout < 0 {
 		errs = append(errs, "webui.read_timeout must be >= 0")
 	}

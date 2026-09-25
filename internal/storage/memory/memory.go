@@ -310,6 +310,7 @@ func (m memDirEntry) Info() (fs.FileInfo, error) { return m.n.info(), nil }
 type memFile struct {
 	backend *Backend
 	path    string
+	node    *node
 	offset  int
 	closed  bool
 	buf     *bytes.Buffer
@@ -321,6 +322,7 @@ func newMemFile(b *Backend, path string, n *node, offset int) *memFile {
 	return &memFile{
 		backend: b,
 		path:    path,
+		node:    n,
 		offset:  offset,
 		buf:     bytes.NewBuffer(append([]byte(nil), n.data...)),
 		mode:    n.mode,
@@ -417,10 +419,14 @@ func (m *memFile) Close() error {
 	}
 	m.closed = true
 	m.backend.mu.Lock()
-	n := m.backend.nodes[m.path]
-	n.data = append([]byte(nil), m.buf.Bytes()...)
-	n.modTime = time.Now().UTC()
-	n.mode = m.mode
+	// Write back through the node retained at open time: the map entry may
+	// have moved (Rename) or vanished (Remove) while this handle was open.
+	// Rename keeps the same node, so buffered data follows the new name; a
+	// removed node is unreachable, so buffered writes are discarded like
+	// writes to an unlinked POSIX inode.
+	m.node.data = append([]byte(nil), m.buf.Bytes()...)
+	m.node.modTime = time.Now().UTC()
+	m.node.mode = m.mode
 	m.backend.mu.Unlock()
 	return nil
 }

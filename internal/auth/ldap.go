@@ -439,6 +439,12 @@ func readBERValue(r *bufio.Reader) (berValue, error) {
 	return berValue{tag: tag, value: value}, nil
 }
 
+// maxLDAPMessageSize bounds the server-declared BER length before any
+// payload arrives; a hostile or MITM'd LDAP server could otherwise force an
+// arbitrarily large allocation on the auth path. Matches the SFTP and MCP
+// frame bounds.
+const maxLDAPMessageSize = 16 * 1024 * 1024
+
 func readBERLength(r *bufio.Reader) (int, error) {
 	first, err := r.ReadByte()
 	if err != nil {
@@ -458,6 +464,9 @@ func readBERLength(r *bufio.Reader) (int, error) {
 			return 0, err
 		}
 		length = (length << 8) | int(b)
+	}
+	if length > maxLDAPMessageSize {
+		return 0, fmt.Errorf("ldap message length %d exceeds limit of %d bytes", length, maxLDAPMessageSize)
 	}
 	return length, nil
 }

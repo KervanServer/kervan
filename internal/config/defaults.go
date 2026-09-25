@@ -45,7 +45,6 @@ func DefaultConfig() *Config {
 			HostKeyAlgorithms: []string{"ed25519", "rsa"},
 			MaxConnections:    500,
 			IdleTimeout:       300 * time.Second,
-			MaxPacketSize:     32768,
 			DisableShell:      true,
 		},
 		SCP: SCPConfig{Enabled: true},

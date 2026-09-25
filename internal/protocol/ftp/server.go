@@ -2,6 +2,7 @@ package ftp
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/tls"
 	"errors"
@@ -192,6 +193,38 @@ type connState struct {
 	dataProtPrivate bool
 }
 
+// maxControlLineBytes bounds a single FTP control-channel line: legitimate
+// command lines are a few kilobytes at most, and an uncapped ReadString would
+// let any pre-authentication client grow the connection buffer without bound
+// toward process OOM.
+const maxControlLineBytes = 64 << 10
+
+// readControlLine reads one '\n'-terminated line, capping total accumulation
+// at maxControlLineBytes. An over-cap line returns an error, which the command
+// loop treats like any read error: the connection is closed.
+func readControlLine(reader *bufio.Reader) (string, error) {
+	var buf []byte
+	for {
+		chunk, err := reader.ReadSlice('\n')
+		if err == nil {
+			buf = append(buf, chunk...)
+			return string(buf), nil
+		}
+		if errors.Is(err, bufio.ErrBufferFull) {
+			buf = append(buf, chunk...)
+			if len(buf) > maxControlLineBytes {
+				return "", fmt.Errorf("control line exceeds %d bytes", maxControlLineBytes)
+			}
+			continue
+		}
+		if len(buf) > 0 {
+			buf = append(buf, chunk...)
+			return string(buf), err
+		}
+		return "", err
+	}
+}
+
 func (s *Server) handleConn(ctx context.Context, conn net.Conn, implicitTLS bool) {
 	defer conn.Close()
 	state := &connState{
@@ -218,7 +251,7 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, implicitTLS bool
 
 	for {
 		_ = conn.SetReadDeadline(time.Now().Add(s.cfg.IdleTimeout))
-		line, err := reader.ReadString('\n')
+		line, err := readControlLine(reader)
 		if err != nil {
 			if !errors.Is(err, io.EOF) && s.logger != nil {
 				s.logger.Debug("ftp read error", "error", err)
@@ -256,6 +289,13 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, implicitTLS bool
 			state.user = user
 			state.fs = userFS
 			state.cwd = "/"
+			// A successful re-login on the same connection replaces the
+			// previous session; end it first so it does not linger in the
+			// manager (its stale terminator would otherwise close this
+			// connection if the orphan were ever killed).
+			if state.session != nil {
+				s.sessions.End(state.session.ID)
+			}
 			state.session = s.sessions.Start(user.Username, "ftp", state.remoteAddr)
 			_ = s.sessions.AttachTerminator(state.session.ID, func() {
 				_ = conn.Close()
@@ -282,7 +322,16 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, implicitTLS bool
 			if s.ftpsExplicitEnabled() || implicitTLS {
 				features = append(features, " AUTH TLS", " PBSZ", " PROT")
 			}
-			writeMultiline(conn, 211, features)
+			// writeMultiline renders lines[0] on the opening reply and
+			// lines[last] on the terminating reply, so the feature list needs
+			// explicit framing elements — otherwise the first and last features
+			// would be consumed by the framing and stay invisible to clients
+			// (RFC 2389 §3.2).
+			framed := make([]string, 0, len(features)+2)
+			framed = append(framed, "Features:")
+			framed = append(framed, features...)
+			framed = append(framed, "End")
+			writeMultiline(conn, 211, framed)
 		case "OPTS":
 			writeReply(conn, 200, "OK")
 		case "PWD":
@@ -544,6 +593,16 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, implicitTLS bool
 				continue
 			}
 			writeReply(conn, 234, "AUTH TLS successful.")
+			// Commands the client pipelined with AUTH TLS may already sit in
+			// the old reader's buffer; requeue them so they are processed
+			// over the new TLS control channel instead of being silently
+			// dropped by the reader swap.
+			var pending []byte
+			if n := reader.Buffered(); n > 0 {
+				if pendingBytes, peekErr := reader.Peek(n); peekErr == nil {
+					pending = append([]byte(nil), pendingBytes...)
+				}
+			}
 			tlsConn := tls.Server(conn, s.cfg.TLSConfig)
 			if err := tlsConn.Handshake(); err != nil {
 				if s.logger != nil {
@@ -553,7 +612,11 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, implicitTLS bool
 				return
 			}
 			conn = tlsConn
-			reader = bufio.NewReader(conn)
+			if len(pending) > 0 {
+				reader = bufio.NewReader(io.MultiReader(bytes.NewReader(pending), tlsConn))
+			} else {
+				reader = bufio.NewReader(conn)
+			}
 			state.secureControl = true
 			state.pbszSet = false
 			state.dataProtPrivate = false

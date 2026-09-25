@@ -11,3 +11,9 @@ webui/node_modules/
 webui/dist/
 
 node_modules/
+.temp_files/
+
+.wrongstack/
+!/.wrongstack/
+/.wrongstack/*
+!/.wrongstack/project.json

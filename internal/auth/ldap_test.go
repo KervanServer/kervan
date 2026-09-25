@@ -2,10 +2,12 @@ package auth
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"io"
 	"net"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -268,5 +270,34 @@ func TestParseLDAPFilterEscapesUsername(t *testing.T) {
 	}
 	if !strings.Contains(escapeLDAPFilterValue("alice*"), "\\2a") {
 		t.Fatal("expected ldap filter escape to preserve wildcard safely")
+	}
+}
+
+// Regression: readBERValue must reject a server-declared BER length above
+// the protocol bound without allocating it. The length arrives over the wire
+// from the LDAP server (or a MITM on plaintext ldap://) before any payload,
+// so an unbounded make() let a single length header force a multi-GiB
+// allocation on the auth path (the SFTP and MCP readers bound the same value
+// at 16MB).
+func TestReadBERValueRejectsOversizedDeclaredLength(t *testing.T) {
+	wire := []byte{0x30, 0x84, 0x7F, 0x00, 0x00, 0x00} // ~2.13 GiB declared
+
+	runtime.GC()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+
+	_, err := readBERValue(bufio.NewReader(bytes.NewReader(wire)))
+
+	runtime.ReadMemStats(&after)
+	allocated := after.TotalAlloc - before.TotalAlloc
+
+	if err == nil {
+		t.Fatalf("oversized declared BER length %d was accepted", 0x7F000000)
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("readBERValue tried to read the oversized payload instead of rejecting the length header (got %v)", err)
+	}
+	if allocated >= 512<<20 {
+		t.Fatalf("readBERValue allocated %d bytes for a length header declaring %d bytes before any payload arrived", allocated, 0x7F000000)
 	}
 }

@@ -407,20 +407,32 @@ func (h *sftpHandler) handleReadDir(payload []byte) error {
 		count = 100
 	}
 
-	var body packetWriter
-	body.uint32(id)
-	body.uint32(uint32(count))
+	// Encode entries before writing the NAME count: the declared count must
+	// always equal the number of encoded entries. Entries whose stat fails
+	// (e.g. removed after the directory scan) are skipped, and the batch
+	// cursor advances past them so they are never re-offered — matching
+	// OpenSSH sftp-server behavior for unstatable entries.
+	encoded := make([][]byte, 0, count)
 	for i := 0; i < count; i++ {
 		de := dir.entries[dir.idx+i]
 		info, infoErr := de.Info()
 		if infoErr != nil {
 			continue
 		}
-		body.string(de.Name())
-		body.string(formatLongname(info))
-		body.bytes(marshalAttrs(info))
+		var entry packetWriter
+		entry.string(de.Name())
+		entry.string(formatLongname(info))
+		entry.rawBytes(marshalAttrs(info))
+		encoded = append(encoded, entry.buf)
 	}
 	dir.idx += count
+
+	var body packetWriter
+	body.uint32(id)
+	body.uint32(uint32(len(encoded)))
+	for _, entry := range encoded {
+		body.rawBytes(entry)
+	}
 	return writePacket(h.ch, fxpName, body.buf)
 }
 
@@ -512,7 +524,7 @@ func (h *sftpHandler) handleStat(payload []byte, lstat bool) error {
 
 	var body packetWriter
 	body.uint32(id)
-	body.bytes(marshalAttrs(info))
+	body.rawBytes(marshalAttrs(info))
 	return writePacket(h.ch, fxpAttrs, body.buf)
 }
 
@@ -540,7 +552,7 @@ func (h *sftpHandler) handleFStat(payload []byte) error {
 	}
 	var body packetWriter
 	body.uint32(id)
-	body.bytes(marshalAttrs(info))
+	body.rawBytes(marshalAttrs(info))
 	return writePacket(h.ch, fxpAttrs, body.buf)
 }
 
@@ -586,11 +598,11 @@ func (h *sftpHandler) handleRealpath(payload []byte) error {
 
 	info, statErr := h.fsys.Stat(p)
 	if statErr == nil {
-		body.bytes(marshalAttrs(info))
+		body.rawBytes(marshalAttrs(info))
 	} else {
 		var attrs packetWriter
 		attrs.uint32(0)
-		body.bytes(attrs.buf)
+		body.rawBytes(attrs.buf)
 	}
 	return writePacket(h.ch, fxpName, body.buf)
 }
@@ -741,6 +753,13 @@ func (w *packetWriter) bytes(b []byte) {
 		return
 	}
 	w.uint32(length)
+	w.buf = append(w.buf, b...)
+}
+
+// rawBytes appends b verbatim, without a uint32 length prefix. SFTP wire
+// structures such as ATTRS are written raw; only the "string" type (and
+// FXP_DATA) is length-prefixed.
+func (w *packetWriter) rawBytes(b []byte) {
 	w.buf = append(w.buf, b...)
 }
 

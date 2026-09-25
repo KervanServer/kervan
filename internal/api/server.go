@@ -2,6 +2,7 @@ package api
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/tls"
@@ -1527,11 +1528,6 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"events": []any{}})
 		return
 	}
-	allEvents, err := s.readAllAuditEvents()
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
 	limit := parseInt(r.URL.Query().Get("limit"), 100)
 	if limit < 1 {
 		limit = 1
@@ -1550,8 +1546,57 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 	status := strings.TrimSpace(r.URL.Query().Get("status"))
 	query := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
 
-	filtered := filterAuditEvents(allEvents, username, protocol, eventType, status, query)
-	eventsPage, total := paginateAudit(filtered, page, limit)
+	// Stream the audit log instead of replaying it: matches are counted and
+	// only the requested page window is retained, so per-request memory does
+	// not grow with the total audit log size. Events are stored oldest first,
+	// so page 1 must return the newest matches — the page window is collected
+	// in file order and reversed below.
+	total := 0
+	if err := s.streamAuditEvents(func(fields auditEventFilterFields, _ []byte) error {
+		if fields.matches(username, protocol, eventType, status, query) {
+			total++
+		}
+		return nil
+	}); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+
+	start := (page - 1) * limit
+	windowLo := total - start - limit
+	if windowLo < 0 {
+		windowLo = 0
+	}
+	windowHi := total - start
+	if windowHi < 0 {
+		windowHi = 0
+	}
+
+	eventsPage := make([]map[string]any, 0, limit)
+	matchIdx := 0
+	if err := s.streamAuditEvents(func(fields auditEventFilterFields, line []byte) error {
+		if !fields.matches(username, protocol, eventType, status, query) {
+			return nil
+		}
+		if matchIdx >= windowLo && matchIdx < windowHi {
+			var evt map[string]any
+			if err := json.Unmarshal(line, &evt); err != nil {
+				return nil
+			}
+			eventsPage = append(eventsPage, evt)
+		}
+		matchIdx++
+		if matchIdx >= windowHi {
+			return errStopAuditScan
+		}
+		return nil
+	}); err != nil && !errors.Is(err, errStopAuditScan) {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	for i, j := 0, len(eventsPage)-1; i < j; i, j = i+1, j-1 {
+		eventsPage[i], eventsPage[j] = eventsPage[j], eventsPage[i]
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"events": eventsPage,
 		"pagination": map[string]any{
@@ -2266,34 +2311,45 @@ func filterAuditEvents(
 	}
 	out := make([]map[string]any, 0, len(events))
 	for _, evt := range events {
-		u := strField(evt, "username")
-		p := strField(evt, "protocol")
-		t := strField(evt, "type")
-		s := strField(evt, "status")
-		msg := strField(evt, "message")
-		pathVal := strField(evt, "path")
-
-		if username != "" && !strings.EqualFold(u, username) {
-			continue
+		fields := auditEventFilterFields{
+			Username: strField(evt, "username"),
+			Protocol: strField(evt, "protocol"),
+			Type:     strField(evt, "type"),
+			Status:   strField(evt, "status"),
+			Message:  strField(evt, "message"),
+			Path:     strField(evt, "path"),
 		}
-		if protocol != "" && !strings.EqualFold(p, protocol) {
-			continue
+		if fields.matches(username, protocol, eventType, status, query) {
+			out = append(out, evt)
 		}
-		if eventType != "" && !strings.EqualFold(t, eventType) {
-			continue
-		}
-		if status != "" && !strings.EqualFold(s, status) {
-			continue
-		}
-		if query != "" {
-			hay := strings.ToLower(strings.Join([]string{u, p, t, s, msg, pathVal}, " "))
-			if !strings.Contains(hay, query) {
-				continue
-			}
-		}
-		out = append(out, evt)
 	}
 	return out
+}
+
+// matches reports whether this audit event passes the viewer scope and
+// filter arguments shared by the whole-file and streaming audit readers.
+// The receiver carries the event's own field values; the arguments carry the
+// request filters (username is the viewer-scoped username).
+func (f auditEventFilterFields) matches(username, protocol, eventType, status, query string) bool {
+	if username != "" && !strings.EqualFold(f.Username, username) {
+		return false
+	}
+	if protocol != "" && !strings.EqualFold(f.Protocol, protocol) {
+		return false
+	}
+	if eventType != "" && !strings.EqualFold(f.Type, eventType) {
+		return false
+	}
+	if status != "" && !strings.EqualFold(f.Status, status) {
+		return false
+	}
+	if query != "" {
+		hay := strings.ToLower(strings.Join([]string{f.Username, f.Protocol, f.Type, f.Status, f.Message, f.Path}, " "))
+		if !strings.Contains(hay, query) {
+			return false
+		}
+	}
+	return true
 }
 
 func paginateAudit(in []map[string]any, page, size int) ([]map[string]any, int) {
@@ -2388,6 +2444,75 @@ func (s *Server) readAllAuditEvents() ([]map[string]any, error) {
 		events = append(events, evt)
 	}
 	return events, nil
+}
+
+// maxAuditScanLineBytes bounds the scanner buffer for replaying audit lines;
+// audit events are small JSON objects, with generous headroom for odd lines.
+const maxAuditScanLineBytes = 1 << 20
+
+// errStopAuditScan stops streamAuditEvents early once the caller has what it
+// needs (e.g. the requested page window has been collected).
+var errStopAuditScan = errors.New("stop audit scan")
+
+// auditEventFilterFields carries the filter-relevant audit fields with a
+// cheap decode for streaming scans. Lines whose filter fields are not JSON
+// strings fall back to the whole-event decode in streamAuditEvents.
+type auditEventFilterFields struct {
+	Username string `json:"username"`
+	Protocol string `json:"protocol"`
+	Type     string `json:"type"`
+	Status   string `json:"status"`
+	Message  string `json:"message"`
+	Path     string `json:"path"`
+}
+
+// streamAuditEvents replays the audit log in file order (oldest first),
+// decoding the filter fields of one line at a time so per-request allocation
+// does not grow with the total log size. Malformed lines are skipped,
+// matching the whole-file reader; lines with non-string filter fields are
+// decoded through the whole-event path to preserve their strField text.
+// Return errStopAuditScan from visit to stop early. line is only valid
+// during the visit call.
+func (s *Server) streamAuditEvents(visit func(fields auditEventFilterFields, line []byte) error) error {
+	if s.auditLogPath == "" {
+		return nil
+	}
+	file, err := os.Open(s.auditLogPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 0, 64*1024), maxAuditScanLineBytes)
+	for scanner.Scan() {
+		line := bytes.TrimSpace(scanner.Bytes())
+		if len(line) == 0 {
+			continue
+		}
+		var fields auditEventFilterFields
+		if err := json.Unmarshal(line, &fields); err != nil {
+			var evt map[string]any
+			if err := json.Unmarshal(line, &evt); err != nil {
+				continue
+			}
+			fields = auditEventFilterFields{
+				Username: strField(evt, "username"),
+				Protocol: strField(evt, "protocol"),
+				Type:     strField(evt, "type"),
+				Status:   strField(evt, "status"),
+				Message:  strField(evt, "message"),
+				Path:     strField(evt, "path"),
+			}
+		}
+		if err := visit(fields, line); err != nil {
+			return err
+		}
+	}
+	return scanner.Err()
 }
 
 func writeAuditCSV(w io.Writer, events []map[string]any) error {

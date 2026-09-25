@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -134,5 +135,57 @@ func TestWebUITimeoutValidation(t *testing.T) {
 
 	if err := cfg.Validate(); err == nil {
 		t.Fatal("expected validation error for negative webui read timeout")
+	}
+}
+
+func TestWebUIPortValidatedWhenEnabled(t *testing.T) {
+	for _, port := range []int{0, -1, 65536} {
+		cfg := DefaultConfig()
+		cfg.WebUI.Port = port
+		if err := cfg.Validate(); err == nil {
+			t.Fatalf("expected validation error for webui.enabled=true with webui.port=%d", port)
+		}
+	}
+	cfg := DefaultConfig()
+	cfg.WebUI.Enabled = false
+	cfg.WebUI.Port = 0
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("webui disabled with port=0 must stay valid: %v", err)
+	}
+}
+
+func TestDefaultConfigDeclaresNoDeadSFTPPacketSizeKnob(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "kervan.yaml")
+	if err := WriteDefault(path); err != nil {
+		t.Fatalf("WriteDefault: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read generated config: %v", err)
+	}
+	if strings.Contains(string(raw), "max_packet_size") {
+		t.Fatal("default config declares sftp.max_packet_size, but no code reads it — the SFTP packet bound is the hardcoded 16 MiB const in internal/protocol/sftp/handler.go")
+	}
+}
+
+func TestConfigsWithRemovedSFTPPacketSizeKeyStillLoad(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "kervan.yaml")
+	if err := WriteDefault(path); err != nil {
+		t.Fatalf("WriteDefault: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read generated config: %v", err)
+	}
+	edited := strings.Replace(string(raw), "max_packet_size: 32768", "max_packet_size: 1024", 1)
+	if edited == string(raw) {
+		// The declaration is gone; an operator's legacy key is simply absent.
+		return
+	}
+	if err := os.WriteFile(path, []byte(edited), 0o600); err != nil {
+		t.Fatalf("write edited config: %v", err)
+	}
+	if _, err := Load(path); err != nil {
+		t.Fatalf("config carrying the removed key must still load: %v", err)
 	}
 }

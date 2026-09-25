@@ -46,3 +46,19 @@ func TestValidatePasswordHash(t *testing.T) {
 		t.Fatal("expected invalid hash to be rejected")
 	}
 }
+
+func TestValidatePasswordHashBoundsArgon2Params(t *testing.T) {
+	cases := []string{
+		"$argon2id$v=19$m=4294967295,t=1,p=1$MDEyMzQ1Njc4OWFiY2RlZg$MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY",
+		"$argon2id$v=19$m=8,t=999999999,p=1$MDEyMzQ1Njc4OWFiY2RlZg$MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY",
+		"$argon2id$v=19$m=1,t=1,p=1$MDEyMzQ1Njc4OWFiY2RlZg$MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY",
+	}
+	for _, hash := range cases {
+		if err := ValidatePasswordHash(hash); err == nil {
+			t.Fatalf("expected out-of-range argon2id parameters to be rejected: %s", hash)
+		}
+		if VerifyPassword("guess", hash) {
+			t.Fatalf("expected out-of-range argon2id hash to fail verification: %s", hash)
+		}
+	}
+}

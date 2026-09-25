@@ -8,12 +8,14 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"math"
 	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -340,5 +342,90 @@ func TestIntFromAnyRejectsOverflowValues(t *testing.T) {
 	}
 	if _, ok := intFromAny(math.Inf(1)); ok {
 		t.Fatal("expected +Inf float64 to be rejected")
+	}
+}
+
+// Regression: metric route labels must be bounded. metricPathLabel falls
+// back to a fixed "unmatched" label for paths outside the normalization
+// table — it previously returned the raw request path, so every unique
+// scanned or 404 path permanently created new metric series and grew the
+// httpMetrics maps and /metrics output without bound.
+func TestMetricsRouteLabelsBoundedForUnmatchedPaths(t *testing.T) {
+	srv := &Server{}
+	handler := srv.withMiddleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+
+	const distinct = 200
+	for i := 0; i < distinct; i++ {
+		req := httptest.NewRequest(http.MethodGet, fmt.Sprintf("/nope-%04d", i), nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+	}
+	// A known route must keep its own series label.
+	knownReq := httptest.NewRequest(http.MethodGet, "/api/v1/server/status", nil)
+	knownRec := httptest.NewRecorder()
+	handler.ServeHTTP(knownRec, knownReq)
+
+	metricsRec := httptest.NewRecorder()
+	srv.handleMetrics(metricsRec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := metricsRec.Body.String()
+
+	if series := strings.Count(body, "kervan_http_requests_total{"); series > 2 {
+		t.Fatalf("%d distinct unmatched paths produced %d kervan_http_requests_total series: route labels are unbounded", distinct, series)
+	}
+	assertContains(t, body, `route="/api/v1/server/status"`)
+}
+
+func TestHandleAuditPageBoundedAllocation(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "audit.jsonl")
+	var sb strings.Builder
+	for i := 0; i < 30000; i++ {
+		fmt.Fprintf(&sb, `{"seq":%d,"type":"file.read","username":"u%d","protocol":"ftp","status":"ok","path":"/f%d.bin","message":"download %d","ip":"203.0.113.%d","timestamp":"2026-01-01T00:00:%02dZ"}`+"\n",
+			i+1, i%7, i, i, (i%200)+1, i%60)
+	}
+	if err := os.WriteFile(logPath, []byte(sb.String()), 0o600); err != nil {
+		t.Fatalf("write audit log: %v", err)
+	}
+
+	server := &Server{auditLogPath: logPath}
+
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/audit?page=1&limit=100", nil)
+	req.Header.Set("X-Auth-User", "")
+	server.handleAudit(rec, req)
+
+	runtime.ReadMemStats(&after)
+	allocated := after.TotalAlloc - before.TotalAlloc
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("handleAudit status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	var payload struct {
+		Events     []map[string]any `json:"events"`
+		Pagination struct {
+			Total int `json:"total"`
+		} `json:"pagination"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode audit page: %v", err)
+	}
+	if payload.Pagination.Total != 30000 {
+		t.Fatalf("total = %d, want 30000", payload.Pagination.Total)
+	}
+	if len(payload.Events) != 100 {
+		t.Fatalf("len(events) = %d, want 100", len(payload.Events))
+	}
+	first, ok := payload.Events[0]["seq"].(float64)
+	if !ok || int(first) != 30000 {
+		t.Fatalf("newest-first violated: first seq = %v, want 30000", payload.Events[0]["seq"])
+	}
+	if allocated > 40<<20 {
+		t.Fatalf("serving a 100-event page from a ~5.6MB audit log allocated %d bytes: handleAudit must not replay and decode the whole log per request", allocated)
 	}
 }

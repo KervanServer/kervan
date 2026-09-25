@@ -17,6 +17,12 @@ import (
 
 const protocolVersion = "2024-11-05"
 
+// maxFrameSize bounds the client-declared frame length before any payload
+// arrives; a hostile or buggy client could otherwise force an arbitrarily
+// large allocation from a single header line. Matches the SFTP readPacket
+// packet bound.
+const maxFrameSize = 16 * 1024 * 1024
+
 type Server struct {
 	cfg       *config.Config
 	repo      *auth.UserRepository
@@ -177,6 +183,9 @@ func readFrame(r *bufio.Reader) ([]byte, error) {
 	}
 	if contentLength < 0 {
 		return nil, errors.New("missing Content-Length header")
+	}
+	if contentLength > maxFrameSize {
+		return nil, fmt.Errorf("declared frame length %d exceeds limit of %d bytes", contentLength, maxFrameSize)
 	}
 	payload := make([]byte, contentLength)
 	if _, err := io.ReadFull(r, payload); err != nil {

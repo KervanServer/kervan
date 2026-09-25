@@ -446,7 +446,15 @@ func metricPathLabel(rawPath string) string {
 	case strings.HasPrefix(path, "/assets/"):
 		return "/assets/*"
 	default:
-		return path
+		if path == "/" {
+			// The root path serves the web UI; keep it visible rather than
+			// folding it into the unmatched bucket.
+			return "/"
+		}
+		// Unknown paths (scanner hits, 404 probes) must not become metric
+		// labels: raw request paths would grow the metrics maps and the
+		// /metrics output without bound.
+		return "unmatched"
 	}
 }
 

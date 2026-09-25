@@ -257,3 +257,55 @@ func TestMemFileCloseTwiceAndStatAfterClose(t *testing.T) {
 		t.Fatalf("expected stat after close to fail with os.ErrClosed, got %v", err)
 	}
 }
+
+func TestMemFileCloseAfterRemoveWhileOpen(t *testing.T) {
+	backend := New()
+	file, err := backend.Open("/victim.txt", os.O_CREATE|os.O_RDWR, 0)
+	if err != nil {
+		t.Fatalf("open file: %v", err)
+	}
+	if _, err := file.Write([]byte("data")); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	if err := backend.Remove("/victim.txt"); err != nil {
+		t.Fatalf("remove while open: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close after remove: %v", err)
+	}
+	if _, err := backend.Stat("/victim.txt"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected removed path to stay gone after close, got %v", err)
+	}
+}
+
+func TestMemFileCloseAfterRenameWhileOpenPersistsData(t *testing.T) {
+	backend := New()
+	file, err := backend.Open("/origin.txt", os.O_CREATE|os.O_RDWR, 0)
+	if err != nil {
+		t.Fatalf("open file: %v", err)
+	}
+	if _, err := file.Write([]byte("payload")); err != nil {
+		t.Fatalf("write file: %v", err)
+	}
+	if err := backend.Rename("/origin.txt", "/moved.txt"); err != nil {
+		t.Fatalf("rename while open: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("close after rename: %v", err)
+	}
+	if _, err := backend.Stat("/origin.txt"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected old path to stay gone after close, got %v", err)
+	}
+	reopened, err := backend.Open("/moved.txt", os.O_RDONLY, 0)
+	if err != nil {
+		t.Fatalf("open renamed file: %v", err)
+	}
+	defer reopened.Close()
+	data, err := io.ReadAll(reopened)
+	if err != nil {
+		t.Fatalf("read renamed file: %v", err)
+	}
+	if string(data) != "payload" {
+		t.Fatalf("renamed file data = %q, want %q", data, "payload")
+	}
+}

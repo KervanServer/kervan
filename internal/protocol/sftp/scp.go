@@ -142,7 +142,7 @@ func (s *Server) runSCPSink(ch ssh.Channel, fsys vfs.FileSystem, target, usernam
 	}
 
 	for {
-		header, err := br.ReadString('\n')
+		header, err := readSCPLE(br)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				return nil
@@ -305,6 +305,38 @@ func normalizeSCPPath(p string) string {
 	return clean
 }
 
+// maxSCPLEBytes bounds a single SCP protocol line: legitimate headers and ack
+// messages are a few kilobytes at most, and an uncapped ReadString would let
+// an authenticated client grow the connection buffer without bound toward
+// process OOM.
+const maxSCPLEBytes = 64 << 10
+
+// readSCPLE reads one '\n'-terminated line, capping total accumulation at
+// maxSCPLEBytes. An over-cap line returns an error, which the SCP flows treat
+// like any read error: the transfer fails and the channel closes.
+func readSCPLE(br *bufio.Reader) (string, error) {
+	var buf []byte
+	for {
+		chunk, err := br.ReadSlice('\n')
+		if err == nil {
+			buf = append(buf, chunk...)
+			return string(buf), nil
+		}
+		if errors.Is(err, bufio.ErrBufferFull) {
+			buf = append(buf, chunk...)
+			if len(buf) > maxSCPLEBytes {
+				return "", fmt.Errorf("scp line exceeds %d bytes", maxSCPLEBytes)
+			}
+			continue
+		}
+		if len(buf) > 0 {
+			buf = append(buf, chunk...)
+			return string(buf), err
+		}
+		return "", err
+	}
+}
+
 func readSCPAck(br *bufio.Reader) error {
 	b, err := br.ReadByte()
 	if err != nil {
@@ -314,7 +346,10 @@ func readSCPAck(br *bufio.Reader) error {
 	case 0:
 		return nil
 	case 1, 2:
-		msg, _ := br.ReadString('\n')
+		msg, err := readSCPLE(br)
+		if err != nil {
+			return err
+		}
 		return errors.New(strings.TrimSpace(msg))
 	default:
 		return fmt.Errorf("unexpected ack byte: %d", b)

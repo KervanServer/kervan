@@ -17,6 +17,31 @@ const (
 	hashBcrypt   = "bcrypt"
 )
 
+const (
+	// maxArgon2MemoryKiB bounds the memory (KiB) a stored hash may demand at
+	// verification time. The hasher default is 64 MiB; 1 GiB still accepts
+	// hashes from other systems while blocking multi-TiB allocation bombs.
+	maxArgon2MemoryKiB uint32 = 1 << 20
+	// maxArgon2TimeCost bounds the CPU passes a stored hash may demand at
+	// verification time.
+	maxArgon2TimeCost uint32 = 16
+)
+
+// validArgon2Params reports whether the declared argon2id parameters are
+// safely verifiable. argon2.IDKey allocates memory KiB and loops timeCost
+// passes on every verification; its only internal guard is a lower memory
+// clamp (8*parallelism KiB), so upper bounds must be enforced here before a
+// hash is stored or verified.
+func validArgon2Params(memory uint32, timeCost uint32, parallelism uint8) bool {
+	if memory == 0 || timeCost == 0 || parallelism == 0 {
+		return false
+	}
+	if uint64(memory) < 8*uint64(parallelism) {
+		return false
+	}
+	return memory <= maxArgon2MemoryKiB && timeCost <= maxArgon2TimeCost
+}
+
 func HashPassword(password, algo string) (string, error) {
 	switch algo {
 	case hashArgon2id:
@@ -49,7 +74,7 @@ func ValidatePasswordHash(encoded string) error {
 		if err != nil {
 			return err
 		}
-		if memory == 0 || timeCost == 0 || parallelism == 0 || len(salt) == 0 || len(sum) == 0 {
+		if !validArgon2Params(memory, timeCost, parallelism) || len(salt) == 0 || len(sum) == 0 {
 			return errors.New("invalid argon2id parameters")
 		}
 		return nil
@@ -86,6 +111,9 @@ func hashArgon2ID(password string) (string, error) {
 func verifyArgon2ID(password, encoded string) bool {
 	mem, tc, p, salt, sum, err := parseArgon2ID(encoded)
 	if err != nil {
+		return false
+	}
+	if !validArgon2Params(mem, tc, p) {
 		return false
 	}
 	if len(sum) == 0 || uint64(len(sum)) > uint64(^uint32(0)) {

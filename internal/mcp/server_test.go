@@ -1,12 +1,15 @@
 package mcp
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -169,4 +172,33 @@ func extractTextResult(t *testing.T, response map[string]any) string {
 	}
 	content := result["content"].([]any)
 	return content[0].(map[string]any)["text"].(string)
+}
+
+// Regression: readFrame must reject a declared frame length above the
+// protocol bound without allocating it. The length arrives from the client
+// before any payload, so an unbounded make() let a single header line force
+// an arbitrarily large allocation on the stdio MCP process (the SFTP
+// readPacket bounds the same value at 16MB).
+func TestReadFrameRejectsOversizedDeclaredLength(t *testing.T) {
+	const declared = 1 << 30 // 1 GiB, fits comfortably in int on 64-bit
+	wire := "Content-Length: 1073741824\r\n\r\n"
+
+	runtime.GC()
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+
+	_, err := readFrame(bufio.NewReader(bytes.NewBufferString(wire)))
+
+	runtime.ReadMemStats(&after)
+	allocated := after.TotalAlloc - before.TotalAlloc
+
+	if err == nil {
+		t.Fatalf("oversized declared length %d was accepted", declared)
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("readFrame tried to read the oversized payload instead of rejecting the header (got %v)", err)
+	}
+	if allocated >= 512<<20 {
+		t.Fatalf("readFrame allocated %d bytes for a frame declaring %d bytes before any payload arrived", allocated, declared)
+	}
 }

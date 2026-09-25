@@ -71,7 +71,6 @@ type SFTPConfig struct {
 	HostKeyAlgorithms []string      `yaml:"host_key_algorithms"`
 	MaxConnections    int           `yaml:"max_connections"`
 	IdleTimeout       time.Duration `yaml:"idle_timeout"`
-	MaxPacketSize     uint32        `yaml:"max_packet_size"`
 	DisableShell      bool          `yaml:"disable_shell"`
 }
 
