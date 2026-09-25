@@ -22,14 +22,19 @@ import (
 var crossProtoAlicePassword = "pw12345" + "678"
 
 const (
-	crossProtoFxpInit    = 1
-	crossProtoFxpOpen    = 3
-	crossProtoFxpClose   = 4
-	crossProtoFxpWrite   = 6
-	crossProtoFxpVersion = 2
-	crossProtoFxpHandle  = 102
-	crossProtoFxpStatus  = 101
-	crossProtoStatusOK   = 0
+	crossProtoFxpInit     = 1
+	crossProtoFxpOpen     = 3
+	crossProtoFxpClose    = 4
+	crossProtoFxpWrite    = 6
+	crossProtoFxpVersion  = 2
+	crossProtoFxpHandle   = 102
+	crossProtoFxpStatus   = 101
+	crossProtoStatusOK    = 0
+	crossProtoFxpSetstat  = 9
+	crossProtoFxpRealpath = 16
+	crossProtoFxpName     = 103
+
+	crossProtoStatusUnsupported = 8
 )
 
 func crossProtoU32(v uint32) []byte { return binary.BigEndian.AppendUint32(nil, v) }
@@ -273,6 +278,187 @@ func TestCrossProtocolSFTPFTPAPIOverSharedMemoryBackend(t *testing.T) {
 		t.Fatalf("marshal login body: %v", err)
 	}
 	resp, err := (&http.Client{Timeout: 10 * time.Second}).Post("http://127.0.0.1:22123/api/login", "application/json", bytes.NewReader(loginBody))
+	if err != nil {
+		t.Fatalf("api login: %v", err)
+	}
+	defer resp.Body.Close()
+	var login struct {
+		Token string `json:"token"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&login); err != nil || login.Token == "" {
+		t.Fatalf("api login decode (status %d): %v", resp.StatusCode, err)
+	}
+	req, _ := http.NewRequest(http.MethodGet, "http://127.0.0.1:22123/api/files/download?path=/f.txt", nil)
+	req.Header.Set("Authorization", "Bearer "+login.Token)
+	resp2, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatalf("api download: %v", err)
+	}
+	defer resp2.Body.Close()
+	body, _ := io.ReadAll(resp2.Body)
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("api download status = %d, body %q — the SFTP upload is invisible to the API", resp2.StatusCode, string(body))
+	}
+	if string(body) != "cross-protocol" {
+		t.Fatalf("api download body = %q, want %q", string(body), "cross-protocol")
+	}
+}
+
+// TestCrossProtocolSetstatToleranceMlstDownload drives the full
+// cross-protocol composition on one shared per-user memory backend: an SFTP
+// upload, an unsupported mid-flow SETSTAT (tolerated — STATUS 8 — with the
+// connection staying functional), an FTP MLST listing of the uploaded file on
+// the control channel, and an authenticated API download returning the exact
+// uploaded bytes.
+func TestCrossProtocolSetstatToleranceMlstDownload(t *testing.T) {
+	dir := t.TempDir()
+	cfg := crossProtoConfig(dir)
+	hostKeyDir := dir + "/host_keys"
+	if _, err := icrypto.EnsureHostKeys(hostKeyDir); err != nil {
+		t.Fatalf("ensure host keys: %v", err)
+	}
+	cfg.SFTP.HostKeyDir = hostKeyDir
+
+	srv, err := New(cfg, dir+"/kervan.yaml", nil)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := srv.auth.CreateUser("alice", crossProtoAlicePassword, "/", false); err != nil {
+		t.Fatalf("seed alice: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	if err := srv.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	t.Cleanup(func() { cancel(); _ = srv.Close() })
+
+	// 1. SFTP upload /f.txt = "cross-protocol".
+	transport, err := net.DialTimeout("tcp", "127.0.0.1:22122", 10*time.Second)
+	if err != nil {
+		t.Fatalf("sftp dial: %v", err)
+	}
+	defer transport.Close()
+	conn, newChannels, reqs, err := ssh.NewClientConn(transport, "127.0.0.1:22122", &ssh.ClientConfig{
+		User:            "alice",
+		Auth:            []ssh.AuthMethod{ssh.Password(crossProtoAlicePassword)},
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		Timeout:         10 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("sftp handshake: %v", err)
+	}
+	go ssh.DiscardRequests(reqs)
+	client := ssh.NewClient(conn, newChannels, reqs)
+	defer client.Close()
+	ch, acceptReqs, err := client.OpenChannel("session", nil)
+	if err != nil {
+		t.Fatalf("open session channel: %v", err)
+	}
+	defer ch.Close()
+	go ssh.DiscardRequests(acceptReqs)
+	if ok, err := ch.SendRequest("subsystem", true, ssh.Marshal(struct{ V string }{"sftp"})); err != nil || !ok {
+		t.Fatalf("sftp subsystem request: ok=%v err=%v", ok, err)
+	}
+
+	crossProtoSFTPSend(t, ch, crossProtoFxpInit, crossProtoU32(3))
+	typ, versionPayload := crossProtoSFTPRecvRaw(t, ch)
+	if typ != crossProtoFxpVersion || binary.BigEndian.Uint32(versionPayload[:4]) != 3 {
+		t.Fatalf("sftp init/version failed")
+	}
+
+	var openUp []byte
+	openUp = append(openUp, crossProtoU32(100)...)
+	openUp = append(openUp, crossProtoStr("/f.txt")...)
+	openUp = append(openUp, crossProtoU32(2|8|16)...)
+	openUp = append(openUp, crossProtoU32(0)...)
+	crossProtoSFTPSend(t, ch, crossProtoFxpOpen, openUp)
+	typ, payload := crossProtoSFTPRecv(t, ch, 100)
+	if typ != crossProtoFxpHandle {
+		t.Fatalf("upload OPEN reply type = %d, want HANDLE", typ)
+	}
+	n := binary.BigEndian.Uint32(payload[4:8])
+	handle := string(payload[8 : 8+n])
+
+	var writeUp []byte
+	writeUp = append(writeUp, crossProtoU32(101)...)
+	writeUp = append(writeUp, crossProtoStr(handle)...)
+	writeUp = append(writeUp, crossProtoU64(0)...)
+	writeUp = append(writeUp, crossProtoStr("cross-protocol")...)
+	crossProtoSFTPSend(t, ch, crossProtoFxpWrite, writeUp)
+	typ, payload = crossProtoSFTPRecv(t, ch, 101)
+	if typ != crossProtoFxpStatus || binary.BigEndian.Uint32(payload[4:8]) != crossProtoStatusOK {
+		t.Fatalf("upload WRITE status wrong")
+	}
+	crossProtoSFTPSend(t, ch, crossProtoFxpClose, append(crossProtoU32(102), crossProtoStr(handle)...))
+	typ, payload = crossProtoSFTPRecv(t, ch, 102)
+	if typ != crossProtoFxpStatus || binary.BigEndian.Uint32(payload[4:8]) != crossProtoStatusOK {
+		t.Fatalf("upload CLOSE status wrong")
+	}
+
+	// 2. SETSTAT is unsupported: STATUS 8, tolerated — the connection and the
+	// file stay intact (round-49 contract, mid-flow).
+	var setstat []byte
+	setstat = append(setstat, crossProtoU32(103)...)
+	setstat = append(setstat, crossProtoStr("/f.txt")...)
+	setstat = append(setstat, crossProtoU32(4)...)     // SSH_FILEXFER_ATTR_PERMISSIONS
+	setstat = append(setstat, crossProtoU32(0o644)...) // mode
+	crossProtoSFTPSend(t, ch, crossProtoFxpSetstat, setstat)
+	typ, payload = crossProtoSFTPRecv(t, ch, 103)
+	if typ != crossProtoFxpStatus || binary.BigEndian.Uint32(payload[4:8]) != crossProtoStatusUnsupported {
+		t.Fatalf("SETSTAT status = %d/%d, want STATUS %d (unsupported, tolerated)", typ, binary.BigEndian.Uint32(payload[4:8]), crossProtoStatusUnsupported)
+	}
+
+	// 3. The connection survived: REALPATH still answers with a NAME entry.
+	var realpath []byte
+	realpath = append(realpath, crossProtoU32(104)...)
+	realpath = append(realpath, crossProtoStr("/f.txt")...)
+	crossProtoSFTPSend(t, ch, crossProtoFxpRealpath, realpath)
+	typ, payload = crossProtoSFTPRecv(t, ch, 104)
+	if typ != crossProtoFxpName {
+		t.Fatalf("REALPATH after unsupported SETSTAT reply type = %d, want NAME (%d) — the connection did not survive the unsupported op", typ, crossProtoFxpName)
+	}
+	if count := binary.BigEndian.Uint32(payload[4:8]); count != 1 {
+		t.Fatalf("REALPATH entry count = %d, want 1", count)
+	}
+
+	// 4. FTP MLST lists the uploaded file on the control channel (round-46
+	// contract, in a cross-protocol flow).
+	ftpConn, err := net.DialTimeout("tcp", "127.0.0.1:22121", 10*time.Second)
+	if err != nil {
+		t.Fatalf("ftp dial: %v", err)
+	}
+	defer ftpConn.Close()
+	if err := ftpConn.SetDeadline(time.Now().Add(15 * time.Second)); err != nil {
+		t.Fatalf("set ftp deadline: %v", err)
+	}
+	crossProtoFTPReply(t, ftpConn) // banner
+	fmt.Fprintf(ftpConn, "USER alice\r\n")
+	if reply := crossProtoFTPReply(t, ftpConn); !strings.HasPrefix(reply, "331") {
+		t.Fatalf("USER reply = %q", reply)
+	}
+	fmt.Fprintf(ftpConn, "PASS %s\r\n", crossProtoAlicePassword)
+	if reply := crossProtoFTPReply(t, ftpConn); !strings.HasPrefix(reply, "230") {
+		t.Fatalf("PASS reply = %q", reply)
+	}
+	fmt.Fprintf(ftpConn, "MLST /f.txt\r\n")
+	if opening := crossProtoFTPReply(t, ftpConn); !strings.HasPrefix(opening, "250-Listing /f.txt") {
+		t.Fatalf("MLST opening = %q, want \"250-Listing /f.txt\"", opening)
+	}
+	entry := strings.TrimRight(crossProtoFTPReply(t, ftpConn), "\r\n")
+	if !strings.HasPrefix(entry, " type=file;") || !strings.Contains(entry, "size=14;") || !strings.HasSuffix(entry, " /f.txt") {
+		t.Fatalf("MLST entry = %q, want \" type=file;size=14;… /f.txt\"", entry)
+	}
+	if end := crossProtoFTPReply(t, ftpConn); !strings.HasPrefix(end, "250 End") {
+		t.Fatalf("MLST terminator = %q, want \"250 End\"", end)
+	}
+
+	// 5. Authenticated API download returns the same bytes.
+	loginBody, err := json.Marshal(map[string]string{"username": "alice", "password": crossProtoAlicePassword})
+	if err != nil {
+		t.Fatalf("marshal login body: %v", err)
+	}
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Post("http://127.0.0.1:22123/api/login", "application/json", strings.NewReader(string(loginBody)))
 	if err != nil {
 		t.Fatalf("api login: %v", err)
 	}
