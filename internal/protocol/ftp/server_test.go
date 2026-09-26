@@ -1945,3 +1945,190 @@ func TestExplicitTLSEmptyListingAndZeroByteRetr(t *testing.T) {
 		t.Fatalf("RETR content = %q, want empty", string(content))
 	}
 }
+func TestFTPRntoAfterTLSUpgradeAndMlstOnDir(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	repo := auth.NewUserRepository(st)
+	engine := auth.NewEngine(repo, "bcrypt", 5, time.Minute)
+	if _, err := engine.CreateUser("alice", "pw12345", "/", false); err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	backend := memory.New()
+	mounts := vfs.NewMountTable()
+	mounts.Mount("/", backend, false)
+	fsys := vfs.NewUserVFS(mounts, &vfs.UserPermissions{
+		Upload: true, Download: true, Delete: true, Rename: true, CreateDir: true, ListDir: true,
+	}, nil)
+
+	srv := NewServer(Config{
+		Port:        2121,
+		Banner:      "kervan test",
+		ListenAddr:  "127.0.0.1",
+		IdleTimeout: 30 * time.Second,
+		FTPSMode:    "explicit",
+		TLSConfig:   selfSignedTLSConfig(t),
+	}, nil, engine, session.NewManager(), nil, func(*auth.User) (vfs.FileSystem, error) {
+		return fsys, nil
+	}, nil)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go srv.handleConn(context.Background(), conn, false)
+		}
+	}()
+
+	cc, err := net.DialTimeout("tcp", ln.Addr().String(), 5*time.Second)
+	if err != nil {
+		t.Fatalf("dial control: %v", err)
+	}
+	t.Cleanup(func() { _ = cc.Close() })
+	_ = cc.SetDeadline(time.Now().Add(30 * time.Second))
+	r := bufio.NewReader(cc)
+	if reply := readFTPReply(t, r); !strings.HasPrefix(reply, "220") {
+		t.Fatalf("banner = %q", reply)
+	}
+
+	if _, err := cc.Write([]byte("AUTH TLS\r\nPBSZ 0\r\n")); err != nil {
+		t.Fatalf("write pipelined commands: %v", err)
+	}
+	if reply := readFTPReply(t, r); !strings.HasPrefix(reply, "234") {
+		t.Fatalf("AUTH TLS reply = %q, want 234", reply)
+	}
+	tlsCtl := tls.Client(cc, &tls.Config{InsecureSkipVerify: true, ServerName: "kervan-test"})
+	if err := tlsCtl.Handshake(); err != nil {
+		t.Fatalf("client tls handshake: %v", err)
+	}
+	rTLS := bufio.NewReader(tlsCtl)
+	if reply := readFTPReply(t, rTLS); !strings.HasPrefix(reply, "200") {
+		t.Fatalf("requeued PBSZ reply = %q, want 200", reply)
+	}
+
+	if reply := ftpCmd(t, tlsCtl, rTLS, "USER alice"); !strings.HasPrefix(reply, "331") {
+		t.Fatalf("USER reply = %q", reply)
+	}
+	if reply := ftpCmd(t, tlsCtl, rTLS, "PASS pw12345"); !strings.HasPrefix(reply, "230") {
+		t.Fatalf("PASS reply = %q", reply)
+	}
+	if reply := ftpCmd(t, tlsCtl, rTLS, "TYPE I"); !strings.HasPrefix(reply, "200") {
+		t.Fatalf("TYPE I reply = %q", reply)
+	}
+	if reply := ftpCmd(t, tlsCtl, rTLS, "PROT P"); !strings.HasPrefix(reply, "200") {
+		t.Fatalf("PROT P reply = %q, want 200", reply)
+	}
+
+	dialData := func() net.Conn {
+		t.Helper()
+		reply := ftpCmd(t, tlsCtl, rTLS, "PASV")
+		if !strings.HasPrefix(reply, "227") {
+			t.Fatalf("PASV reply = %q", reply)
+		}
+		addr := parsePASVDataAddr(t, reply)
+		dc, err := net.DialTimeout("tcp", addr, 5*time.Second)
+		if err != nil {
+			t.Fatalf("data dial %s: %v", addr, err)
+		}
+		return dc
+	}
+	wrapTLS := func(dc net.Conn) *tls.Conn {
+		t.Helper()
+		td := tls.Client(dc, &tls.Config{InsecureSkipVerify: true, ServerName: "kervan-test"})
+		if err := td.Handshake(); err != nil {
+			dc.Close()
+			t.Fatalf("data tls handshake: %v", err)
+		}
+		return td
+	}
+
+	// Seed /a.txt = "payload A" (9 bytes) over the protected data plane.
+	dc := dialData()
+	if reply := ftpCmd(t, tlsCtl, rTLS, "STOR /a.txt"); !strings.HasPrefix(reply, "150") {
+		dc.Close()
+		t.Fatalf("STOR start reply = %q", reply)
+	}
+	td := wrapTLS(dc)
+	if _, err := io.WriteString(td, "payload A"); err != nil {
+		t.Fatalf("STOR write: %v", err)
+	}
+	if err := td.Close(); err != nil {
+		t.Fatalf("STOR data close: %v", err)
+	}
+	if line := readFTPReply(t, rTLS); !strings.HasPrefix(line, "226") {
+		t.Fatalf("STOR completion = %q", line)
+	}
+
+	// RNFR + RNTO over the TLS-upgraded control channel.
+	if reply := ftpCmd(t, tlsCtl, rTLS, "RNFR /a.txt"); !strings.HasPrefix(reply, "350") {
+		t.Fatalf("RNFR reply = %q, want 350", reply)
+	}
+	if reply := ftpCmd(t, tlsCtl, rTLS, "RNTO /renamed.txt"); !strings.HasPrefix(reply, "250") {
+		t.Fatalf("RNTO reply = %q, want 250", reply)
+	}
+
+	// MLST on the renamed file: file facts carry size=9.
+	if reply := ftpCmd(t, tlsCtl, rTLS, "MLST /renamed.txt"); !strings.HasPrefix(reply, "250") {
+		t.Fatalf("MLST /renamed.txt reply = %q, want 250", reply)
+	}
+	fileLine := readFTPReply(t, rTLS)
+	if !strings.HasPrefix(fileLine, " type=file;size=9;") || !strings.Contains(fileLine, "/renamed.txt") {
+		t.Fatalf("MLST file entry = %q, want \" type=file;size=9;… /renamed.txt\"", fileLine)
+	}
+	if end := readFTPReply(t, rTLS); !strings.HasPrefix(end, "250 End") {
+		t.Fatalf("MLST file terminator = %q, want \"250 End\"", end)
+	}
+
+	// MLST on a directory: dir facts (type=dir), no size.
+	if reply := ftpCmd(t, tlsCtl, rTLS, "MKD /sub"); !strings.HasPrefix(reply, "257") {
+		t.Fatalf("MKD reply = %q", reply)
+	}
+	if reply := ftpCmd(t, tlsCtl, rTLS, "MLST /sub"); !strings.HasPrefix(reply, "250") {
+		t.Fatalf("MLST /sub reply = %q, want 250", reply)
+	}
+	dirLine := readFTPReply(t, rTLS)
+	if !strings.HasPrefix(dirLine, " type=dir;") || !strings.Contains(dirLine, "/sub") || !strings.Contains(dirLine, "size=0;") {
+		t.Fatalf("MLST dir entry = %q, want \" type=dir;size=0;… /sub\" (the server pins size=0 for dirs in both MLST and MLSD)", dirLine)
+	}
+	if end := readFTPReply(t, rTLS); !strings.HasPrefix(end, "250 End") {
+		t.Fatalf("MLST dir terminator = %q, want \"250 End\"", end)
+	}
+
+	// The rename persisted: RETR over the renamed path returns the content.
+	dc2 := dialData()
+	if reply := ftpCmd(t, tlsCtl, rTLS, "RETR /renamed.txt"); !strings.HasPrefix(reply, "150") {
+		dc2.Close()
+		t.Fatalf("RETR start reply = %q", reply)
+	}
+	td2 := wrapTLS(dc2)
+	got, err := io.ReadAll(td2)
+	if err != nil {
+		t.Fatalf("RETR read: %v", err)
+	}
+	if err := td2.Close(); err != nil {
+		t.Fatalf("RETR data close: %v", err)
+	}
+	if line := readFTPReply(t, rTLS); !strings.HasPrefix(line, "226") {
+		t.Fatalf("RETR completion = %q", line)
+	}
+	if string(got) != "payload A" {
+		t.Fatalf("RETR /renamed.txt = %q, want %q", string(got), "payload A")
+	}
+
+	// Cleanup over the same TLS control channel.
+	if reply := ftpCmd(t, tlsCtl, rTLS, "DELE /renamed.txt"); !strings.HasPrefix(reply, "250") {
+		t.Fatalf("DELE reply = %q", reply)
+	}
+	if reply := ftpCmd(t, tlsCtl, rTLS, "RMD /sub"); !strings.HasPrefix(reply, "250") {
+		t.Fatalf("RMD reply = %q", reply)
+	}
+}
