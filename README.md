@@ -23,7 +23,7 @@ marks aspirational items from the spec as *planned*.
 - **4 protocols in 1 binary** — FTP, FTPS (explicit + implicit), SFTP and SCP
   share a single auth engine, VFS layer and audit pipeline.
 - **Virtual Filesystem (VFS)** — per-user chroot, path traversal protection,
-  pluggable backends (local disk, in-memory; S3 planned).
+  pluggable backends (local disk, in-memory, S3-compatible object storage).
 - **Local user store** — Argon2id / bcrypt password hashing, admin flag, enable
   /disable, stored in an embedded JSON-backed store under `data_dir`.
 - **Session & transfer tracking** — live session registry and transfer manager
@@ -36,7 +36,12 @@ marks aspirational items from the spec as *planned*.
   admin panel with dark/light theme and responsive layout, embedded from
   `internal/webui/dist`.
 - **REST API** — auth, users, sessions, files, transfers, audit, server status
-  and metrics behind JWT-style bearer tokens.
+  and metrics behind JWT-style bearer tokens or scoped API keys.
+- **Network security** — IP allow/deny lists and per-protocol connection caps
+  on every listener, cross-protocol brute-force IP bans, password policy, and
+  CSP/HSTS headers on the WebUI (see [Security](#security)).
+- **Interop-tested** — CI drives a live server with OpenSSH `sftp`/`scp` and
+  curl (FTP, FTPS, SFTP, SCP) in addition to the unit suites.
 - **Zero external runtime deps** — only `golang.org/x/crypto` (SSH/Argon2id) and
   `gopkg.in/yaml.v3` as direct dependencies.
 
@@ -66,7 +71,7 @@ Default listeners (see [kervan.example.yaml](kervan.example.yaml)):
 |---------|-------|-----------------------------------------------|
 | FTP     | 2121  | Passive range `50000-50100`                   |
 | FTPS    | 2121 / 990 | Disabled by default; needs cert + key    |
-| SFTP    | 2222  | Ed25519 + RSA host keys in `data/host_keys/`  |
+| SFTP    | 2222  | Ed25519 host key in `data/host_keys/`         |
 | SCP     | 2222  | Shares the SFTP SSH listener                  |
 | WebUI   | 8080  | Also exposes REST `/api/*` and `/metrics`     |
 | Debug   | 6060  | Disabled by default; localhost-only `pprof`   |
@@ -278,9 +283,15 @@ privileged ports like `990` without running as root.
 
 - Authentication, navigation (`CWD`, `PWD`, `LIST`, `NLST`), upload (`STOR`,
   `APPE`), download (`RETR`), rename, delete, mkdir / rmdir.
-- Active and passive data channels (`PORT`, `PASV`). Configurable passive port
-  range and advertised passive IP for NAT/firewall scenarios.
-- ASCII and binary (`TYPE I`) transfer modes.
+- Passive (`PASV`, `EPSV`) and active (`PORT`, `EPRT`) data channels.
+  Configurable passive port range and advertised passive IP for NAT/firewall
+  scenarios. Active mode can be turned off with `ftp.active_mode: false`; when
+  on, the server only connects back to the control connection's own address
+  on an unprivileged port (FTP bounce protection), and passive data
+  connections are only accepted from the control connection's address.
+- `TYPE A` is accepted for client compatibility; data is always transferred
+  byte-for-byte (binary).
+- `MLSD` / `MLST` machine-readable listings, `SIZE`, `MDTM`, `REST`, `APPE`.
 - Per-connection idle and transfer timeouts.
 
 ### FTPS (RFC 4217)
@@ -291,19 +302,27 @@ privileged ports like `990` without running as root.
 - Configurable minimum / maximum TLS version and optional client-certificate
   authentication (`none` / `request` / `require` with `client_ca_file`).
 - Enable by setting `ftps.enabled: true` and providing `cert_file` + `key_file`.
+  A certificate configured only for `webui.tls` does not turn FTPS on.
 
 ### SFTP (SSH File Transfer Protocol)
 
-- SSH transport built on `golang.org/x/crypto/ssh` with Ed25519 and RSA-4096
-  host keys auto-generated on first run (or via `kervan keygen`).
-- SFTP subsystem handler covering open/close/read/write, stat, readdir,
-  mkdir/rmdir, remove, rename and realpath.
-- Password authentication against the local user store (public-key auth is
-  stubbed out per the spec roadmap).
+- SSH transport built on `golang.org/x/crypto/ssh` with an Ed25519 host key
+  auto-generated on first run (or pre-created with `kervan keygen`).
+- SFTP v3 subsystem covering open/close/read/write, stat/lstat/fstat,
+  setstat/fsetstat (truncate; permissions and times best-effort), readdir,
+  mkdir/rmdir, remove, rename and realpath. Symlinks and extensions are
+  reported as unsupported.
+- Password and public-key authentication. Users' `authorized_keys` entries are
+  standard OpenSSH lines (comments and options allowed); import them in bulk
+  with `kervan migrate ssh-keys`.
+- Works with OpenSSH `sftp`, OpenSSH 9+ `scp` (which uses SFTP by default),
+  and libssh2-based clients such as curl.
 
 ### SCP (OpenSSH-compatible)
 
-- Source and sink modes for file and directory copies.
+- Legacy SCP protocol (`scp -O`, libssh2/curl) in source and sink mode for
+  single files, including `-p` time preservation. Recursive copies (`-r`) are
+  not supported over legacy SCP; OpenSSH 9+ `scp` uses SFTP and is unaffected.
 - Shares the SSH listener with SFTP; no separate port.
 - Operates through the same VFS and audit pipeline as SFTP.
 
@@ -330,12 +349,16 @@ All protocols share a common VFS layer ([internal/vfs](internal/vfs)):
 - **Local provider** — users stored in the embedded JSON store under
   `server.data_dir`, protected by Argon2id (default) or bcrypt password hashes.
 - **Admin flag** — admin users can manage other users through the REST API.
-- **Brute-force lockout** — configurable `max_attempts` and `lockout_duration`
-  enforced by the auth engine.
+- **LDAP provider** — optional bind-based LDAP/AD authentication with group
+  mapping; LDAP users are mirrored into the local store.
+- **SSH public keys** and **WebUI TOTP** two-factor authentication.
+- **Brute-force protection** — see [Security](#security).
 - **Per-user home directory** — surfaced to every protocol as the VFS chroot.
-- **Planned:** LDAP/AD provider, OIDC WebUI SSO, SSH public-key auth, TOTP 2FA,
-  per-user quotas, rate limiting, IP allowlists, groups and account expiry
-  (Spec §5).
+- The CLI (`kervan user …`, `kervan admin …`, `kervan apikey …`) can be used
+  while the server is running: the store is shared safely between processes
+  and changes are visible to the server immediately.
+- **Not supported in this release:** OIDC WebUI SSO, groups, SSH certificate
+  and keyboard-interactive authentication, account expiry.
 
 ---
 
@@ -461,19 +484,21 @@ The management API is served from the same process as the WebUI (default
 | `GET`  | `/api/v1/audit/events`       | Paginated audit events                    |
 | `GET`  | `/api/v1/ws?types=server,sessions,transfers,audit` | WebSocket live snapshots |
 
-WebSocket clients should present the bearer token through the
-`Sec-WebSocket-Protocol` offer (the bundled WebUI uses `kervan.v1` plus an
-`auth.<token>` subprotocol) instead of putting tokens into the URL.
+WebSocket clients authenticate with an `Authorization: Bearer` header or, from
+browsers (which cannot set that header), by offering `auth.<token>` in
+`Sec-WebSocket-Protocol` alongside `kervan.v1`, as the bundled WebUI does.
+Tokens are never accepted in the URL, and the server only echoes `kervan.v1`.
 Bearer token signing keys are persisted under `data_dir`, so valid sessions now
 survive normal process restarts as long as the same data directory is reused.
 
 The full `/api/v1/...` surface from Spec §8.4 still has planned gaps (groups,
 bulk import/export, advanced server config editing).
-The reload endpoint now applies runtime-safe API settings immediately
-(`webui.session_timeout`, `webui.totp_enabled`, `webui.cors_origins`,
-`security.brute_force.enabled`, `security.brute_force.max_attempts`,
-`security.brute_force.lockout_duration`) and returns `applied_paths` /
-`restart_paths` so callers can see what still needs a restart.
+The reload endpoint applies runtime-safe settings immediately —
+`webui.session_timeout`, `webui.totp_enabled`, `webui.cors_origins`,
+`auth.min_password_length`, `auth.require_special_char`,
+`security.allowed_ips`, `security.denied_ips` and every
+`security.brute_force.*` key — and returns `applied_paths` / `restart_paths`
+so callers can see what still needs a restart.
 
 ---
 
@@ -495,8 +520,8 @@ The binary embeds a React 19 WebUI from [webui](webui) at runtime through
 The full configuration schema with defaults lives in
 [kervan.example.yaml](kervan.example.yaml). On first run, if `kervan.yaml` does
 not exist, the server writes a default copy and continues startup. Every config
-key can be overridden with a `KERVAN_<SECTION>_<KEY>` environment variable
-(Spec §10.2).
+key can be overridden with a `KERVAN_<SECTION>__<KEY>` environment variable
+(double underscore between levels, e.g. `KERVAN_FTP__PORT=2221`).
 
 For secure first startup, `webui.admin_password` now defaults to empty and
 cross-origin access is disabled by default. Either create the admin explicitly
@@ -513,7 +538,10 @@ Key sections: `server`, `ftp`, `ftps`, `sftp`, `scp`, `webui`, `auth`,
 ### FTPS notes
 
 - Set `ftps.enabled: true` and provide both `ftps.cert_file` and
-  `ftps.key_file` (auto-cert via ACME is planned, Spec §3.2).
+  `ftps.key_file`, or enable the experimental ACME client with
+  `ftps.auto_cert`.
+- `ftps.client_auth: request|require` verifies client certificates against
+  `ftps.client_ca_file` on the FTPS listeners only (the WebUI is unaffected).
 - Pick `ftps.mode` as `explicit`, `implicit`, or `both`.
 - Implicit mode listens on `ftps.implicit_port` (default `990`).
 - `ftps.min_tls_version` / `ftps.max_tls_version` accept `"1.2"` / `"1.3"`.
@@ -522,7 +550,41 @@ Key sections: `server`, `ftp`, `ftps`, `sftp`, `scp`, `webui`, `auth`,
 
 - Host keys are stored under `sftp.host_key_dir` and auto-generated on first
   start if missing. Use `kervan keygen` to pre-create them.
-- Set `sftp.disable_shell: true` to only expose the SFTP and SCP subsystems.
+- Interactive shells and port forwarding are never offered; only the SFTP
+  subsystem and `scp` exec requests are served.
+
+---
+
+## Security
+
+All listeners (FTP, FTPS, SFTP/SCP and the WebUI/API) share these controls:
+
+- **IP filtering** — `security.allowed_ips` / `security.denied_ips` accept IPs
+  and CIDRs (IPv4 and IPv6). A deny entry always wins; a non-empty allow list
+  admits only matching clients. Rejected FTP/SSH connections are closed before
+  any banner; the API answers `403`. `/health` stays reachable for local probes.
+  Both lists are reloadable at runtime. Behind a reverse proxy the API sees the
+  proxy's address, so filter WebUI clients at the proxy.
+- **Connection caps** — `ftp.max_connections` and `sftp.max_connections`
+  bound concurrent control/SSH connections (`0` = unlimited). Over-limit FTP
+  clients get `421`; each rejection is audited as `connection.rejected`.
+- **Brute-force protection** (`security.brute_force`) — per-account lockout
+  after `max_attempts` failures for `lockout_duration`, plus a per-address ban
+  after `ip_ban_threshold` failed logins within `ip_ban_duration`. The address
+  ban is shared by FTP, SFTP and the API, so failures on one protocol lock the
+  address out of all of them; IPv6 clients are grouped per /64.
+  `whitelist_ips` exempts addresses from the ban.
+- **Password policy** — `auth.min_password_length` and
+  `auth.require_special_char` apply to the API, the WebUI and the CLI.
+- **HTTP hardening** — strict `Content-Security-Policy` (no inline scripts
+  beyond the hashed theme bootstrap), `X-Frame-Options: DENY`, `nosniff`,
+  `Referrer-Policy`, and `Strict-Transport-Security` on TLS connections.
+- **Settings without effect** — a few keys are accepted for compatibility but
+  do nothing in this release (`ftp.ascii_transfer`,
+  `sftp.host_key_algorithms`, `sftp.disable_shell`, `auth.default_provider`,
+  `auth.ldap.connection_pool_size`, `quota.default_max_files`,
+  `quota.check_interval`, `mcp.transport` other than `stdio`). The server logs
+  a warning at startup when one of them is changed from its default.
 
 ---
 
@@ -558,24 +620,18 @@ kervan.example.yaml      # Reference configuration
 
 ## Roadmap
 
-Tracked against [.project/SPECIFICATION.md](.project/SPECIFICATION.md):
+Shipped in the current release: FTP/FTPS/SFTP/SCP, local + LDAP auth with
+TOTP and SSH keys, local/memory/S3 storage, quotas, share links, API keys,
+audit file + webhook sinks, backup/restore, migrations, the WebUI with live
+WebSocket updates, Prometheus metrics, and the `stdio` MCP server.
 
-- **Storage:** S3-compatible backend with multipart upload + metadata sidecar.
-- **Auth:** LDAP/AD, OIDC WebUI SSO, SSH public-key auth, TOTP 2FA, groups,
-  per-user quotas, rate limiting, IP allow/deny, geo-blocking.
-- **Protocols:** ACME auto-TLS (Let's Encrypt), MLSD/MLST, virtual hosting
-  (`HOST` command), FTP/FTPS and SFTP/SCP support.
-- **WebUI:** React 19 dashboard, live WebSocket events, file-share links,
-  chunked resumable uploads, inline editor.
-- **API:** Broad `/api/v1/...` surface for users, files, sessions, transfers,
-  audit, API keys, bulk import/export, and config operations.
-- **Audit:** File + HTTP/webhook sinks today; queryable storage, syslog/CEF,
-  HMAC-chained immutable logs and session recording remain planned.
-- **Ops:** Runtime-safe config reload via `/api/v1/server/reload`,
-  Prometheus metrics parity with the spec goals, migration tools
-  (`migrate vsftpd|proftpd|ssh-keys`).
-- **MCP server:** `stdio` MCP server exposing users, sessions, transfers and
-  audit queries for AI/LLM integration.
+Planned beyond v1.0 (see [.project/SPECIFICATION.md](.project/SPECIFICATION.md)):
+
+- OIDC WebUI SSO, groups and a policy model.
+- Recursive legacy SCP (`scp -O -r`), FTP `HOST` virtual hosting.
+- Event-driven WebSocket updates (today: periodic snapshots).
+- Syslog/CEF and queryable audit storage, HMAC-chained logs.
+- A database-backed metadata store for large installations.
 
 ---
 

@@ -1,5 +1,73 @@
 # Changelog
 
+## Unreleased — production-readiness pass
+
+Verified end to end against a running server with real clients: OpenSSH
+`sftp`/`scp` (SFTP and legacy modes), curl (FTP in EPSV/PASV/PORT/EPRT, FTPS
+explicit/implicit, SFTP, SCP), a headless browser for the WebUI, and the
+Docker image. Those client runs are now part of the test suite
+(`internal/server/interop_test.go`).
+
+### Fixed
+
+- **SFTP:** reverted the v0.0.2 DATA/NAME packet-type swap. The draft and
+  OpenSSH use DATA=103 and NAME=104; v0.0.2 broke every real client
+  ("Expected SSH2_FXP_NAME(104) packet, got 103") while the wire tests,
+  which encoded the same misreading, stayed green.
+- **SFTP:** SETSTAT/FSETSTAT are implemented (truncate; best-effort
+  permissions/times). OpenSSH 9+ `scp` failed every upload with
+  "remote fsetstat: Operation unsupported".
+- **SFTP:** the session sends `exit-status`, so `scp` no longer exits 1 after
+  a successful transfer.
+- **SSH:** authorized_keys entries with a comment or options now match.
+  Before this, only keys imported through `migrate ssh-keys` worked.
+- **SCP:** shell-quoted targets are unquoted, so curl and libssh2 uploads no
+  longer land in a file literally named `'/path'`. `-p` sends the `T` time
+  record that libssh2 requires and applies incoming times. Completed
+  transfers are no longer failed when libssh2 closes without the final ack.
+  Ambiguous multi-word targets are refused, as OpenSSH does.
+- **store:** the JSON store is safe to share between the server and CLI
+  commands. Writes are locked read-modify-writes of the file, and reads pick
+  up external changes. Before this, a user created with `kervan user create`
+  against a running server could not log in, and the server's next write
+  silently deleted it.
+- **WebUI:** live updates work in browsers. The server rejected the
+  `auth.<token>` WebSocket subprotocol that the WebUI (and README) use, so
+  the dashboard was stuck in snapshot mode.
+- **WebUI:** page content now starts at the top of the viewport instead of
+  one screen height down, and the compact sidebar links are styled again.
+  A Radix tooltip had stringified NavLink's className callback.
+- **config:** `ftps.enabled: false` disables FTPS even when a certificate is
+  configured. `audit.enabled: false` disables the audit sinks.
+- **CI:** fixed the gofmt and staticcheck failures on master. The
+  cross-protocol tests use ephemeral ports instead of fixed ones.
+
+### Added
+
+- **security:** `security.allowed_ips` / `denied_ips` are enforced on FTP,
+  FTPS, SFTP/SCP and the API, and can be reloaded at runtime.
+  `ftp.max_connections` / `sftp.max_connections` are enforced. Over-limit
+  FTP clients get `421` and the rejection is audited.
+- **security:** a per-address login ban (`ip_ban_threshold`,
+  `ip_ban_duration`, `whitelist_ips`) shared by FTP, SFTP and the API, with
+  IPv6 grouped per /64. `brute_force.enabled` now also controls account
+  lockout, and every `brute_force.*` key is reloadable.
+- **security:** `auth.require_special_char` is enforced, CSP (hash-pinned
+  inline script) and HSTS (on TLS) headers are sent, and `ftps.client_auth`
+  / `client_ca_file` add client-certificate verification for FTPS.
+- **FTP:** `EPSV`, `PORT`/`EPRT` (with `ftp.active_mode` and bounce
+  protection), `REST` resume for `RETR`/`STOR`, `CDUP`.
+- **ops:** `server.pid_file` is written and removed on shutdown, and a
+  startup warning is logged for settings that have no effect. Session
+  `last_seen_at` is updated on activity, accept loops back off on errors,
+  and the health check `cobaltdb` was renamed to `store`.
+- **CI:** a `go test -race` job.
+
+### Removed
+
+- Build and coverage artifacts that had been committed (`dist/`,
+  `kervan.exe`, root-level coverage profiles).
+
 ## v0.0.2 (2026-09-25)
 
 Seven post-release defects fixed by bug-hunt rounds 26-48. Every fix was

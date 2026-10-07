@@ -1,5 +1,12 @@
 ﻿# KERVAN â€” TASKS
 
+> **Note (2026-10-07):** The checkboxes below were not kept in sync with the
+> code, and many implemented tasks are still unchecked (all FTP, SFTP, VFS
+> and auth tasks, for example). Treat this file as the original plan, not a
+> progress tracker. README.md describes the shipped feature set, CHANGELOG.md
+> lists changes, and ROADMAP.md lists what remains.
+
+
 ## Implementation Task List v1.0
 
 **Total Tasks:** 127

@@ -1,5 +1,15 @@
 # Project Roadmap
 
+> **Status update (2026-10-07):** Phase 1 is complete: API-key auth,
+> enforced IP allow/deny and connection limits, password policy,
+> "CobaltDB" labels, and `status --insecure`. From Phase 3, CSP/HSTS,
+> session `last_seen_at`, and the dead-config audit are done (unsupported
+> keys now log a startup warning). From Phase 4, the race-detector CI job and
+> real-client interop tests are done. Phase 2 is rescoped: OIDC and groups
+> are out of v1.0, and the JSON store is the adopted persistence layer (now
+> safe for concurrent CLI/server use). See CHANGELOG.md "Unreleased" for
+> details.
+
 > Based on comprehensive codebase analysis performed on 2026-04-11
 > This roadmap prioritizes work needed to bring the project to production quality.
 
