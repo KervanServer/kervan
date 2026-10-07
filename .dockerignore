@@ -12,3 +12,6 @@ data
 webui/node_modules
 webui/dist
 internal/webui/dist
+dist
+.temp_files
+.wrongstack

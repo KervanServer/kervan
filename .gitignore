@@ -17,3 +17,11 @@ node_modules/
 !/.wrongstack/
 /.wrongstack/*
 !/.wrongstack/project.json
+
+# build & coverage artifacts
+/dist/
+/kervan
+*.out
+*.coverprofile
+/cover
+/coverage
