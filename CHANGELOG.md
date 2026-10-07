@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.1.1 (2026-10-08)
 
 ### Added
 
@@ -9,6 +9,9 @@
   and an existing one receives it as a subdirectory. Directory times are
   kept with `-p`, a directory is refused without `-r`, and nesting is capped
   at 128 levels. Covered by an OpenSSH interop test.
+- **release:** the Release workflow publishes multi-arch (`linux/amd64`,
+  `linux/arm64`) images to `ghcr.io/kervanserver/kervan`. The Dockerfile
+  cross-compiles on the build host, so only the final stage is emulated.
 
 ## v0.1.0 (2026-10-07)
 

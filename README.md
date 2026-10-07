@@ -183,7 +183,13 @@ gh workflow run CI -f docker=true    # additionally build the Docker image
 ```
 
 The Release workflow runs only when a `v*` tag is pushed (or manually), so
-it also stays idle during normal development.
+it also stays idle during normal development. It drafts the GitHub release
+with the binaries and pushes the multi-arch container image to GHCR. To
+(re)publish only the image for an existing tag:
+
+```bash
+gh workflow run Release --ref vX.Y.Z -f image_only=true   # tags from v0.1.1 on
+```
 
 ## Logging
 
@@ -223,6 +229,15 @@ make release-snapshot
 
 ## Docker
 
+Release images for `linux/amd64` and `linux/arm64` are published to GHCR by
+the Release workflow, tagged `<version>`, `<major>.<minor>` and `latest`:
+
+```bash
+docker pull ghcr.io/kervanserver/kervan:latest
+```
+
+Or build the image locally:
+
 ```bash
 # Build the production image
 docker build -t kervan:dev .
@@ -247,6 +262,9 @@ Container defaults:
   (`8080`) and the passive FTP range (`50000-50100`).
 - Ships with a `HEALTHCHECK` against `http://127.0.0.1:8080/health`.
 - Does not expose the optional debug/`pprof` listener by default.
+- Passive FTP clients connect to the address in `ftp.passive_ip`; set it to
+  the Docker host's reachable IP, since the container's own address is not
+  routable from outside.
 
 Optional environment variables:
 

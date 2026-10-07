@@ -4,7 +4,9 @@ ARG GO_VERSION=1.26.8
 ARG NODE_VERSION=22-alpine
 ARG ALPINE_VERSION=3.22
 
-FROM node:${NODE_VERSION} AS webui-build
+# Build stages run on the build host and cross-compile, so multi-arch builds
+# only emulate the small final stage.
+FROM --platform=$BUILDPLATFORM node:${NODE_VERSION} AS webui-build
 WORKDIR /src/webui
 
 COPY webui/package.json webui/package-lock.json ./
@@ -13,7 +15,7 @@ RUN npm ci
 COPY webui/ ./
 RUN npm run build
 
-FROM golang:${GO_VERSION}-alpine AS go-build
+FROM --platform=$BUILDPLATFORM golang:${GO_VERSION}-alpine AS go-build
 WORKDIR /src
 
 COPY go.mod go.sum ./
@@ -22,8 +24,8 @@ RUN go mod download
 COPY . .
 COPY --from=webui-build /src/webui/dist ./internal/webui/dist
 
-ARG TARGETOS=linux
-ARG TARGETARCH=amd64
+ARG TARGETOS
+ARG TARGETARCH
 ARG VERSION=dev
 ARG COMMIT=unknown
 ARG DATE=unknown
