@@ -11,6 +11,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/kervanserver/kervan/internal/audit"
 	"github.com/kervanserver/kervan/internal/transfer"
@@ -42,8 +43,8 @@ const (
 
 	fxpStatus   = 101
 	fxpHandle   = 102
-	fxpData     = 104
-	fxpName     = 103
+	fxpData     = 103
+	fxpName     = 104
 	fxpAttrs    = 105
 	fxpExtended = 200
 
@@ -156,7 +157,11 @@ func (h *sftpHandler) loop() error {
 			_ = h.handleRename(payload)
 		case fxpRealpath:
 			_ = h.handleRealpath(payload)
-		case fxpSetstat, fxpFsetstat, fxpReadlink, fxpSymlink, fxpExtended:
+		case fxpSetstat:
+			_ = h.handleSetstat(payload, false)
+		case fxpFsetstat:
+			_ = h.handleSetstat(payload, true)
+		case fxpReadlink, fxpSymlink, fxpExtended:
 			_ = h.replyStatus(idFromPayload(payload), fxOpUnsupported, "operation unsupported")
 		default:
 			_ = h.replyStatus(idFromPayload(payload), fxBadMessage, "unknown packet")
@@ -439,6 +444,136 @@ func (h *sftpHandler) handleReadDir(payload []byte) error {
 		body.rawBytes(entry)
 	}
 	return writePacket(h.ch, fxpName, body.buf)
+}
+
+// sftpAttrs is the subset of an ATTRS block SETSTAT/FSETSTAT act on.
+type sftpAttrs struct {
+	size         *uint64
+	perm         *uint32
+	atime, mtime *uint32
+}
+
+func (r *packetReader) attrs() (sftpAttrs, error) {
+	var a sftpAttrs
+	flags, err := r.uint32()
+	if err != nil {
+		return a, err
+	}
+	if flags&0x00000001 != 0 {
+		v, err := r.uint64()
+		if err != nil {
+			return a, err
+		}
+		a.size = &v
+	}
+	if flags&0x00000002 != 0 { // uid/gid: meaningless on a virtual FS, ignored
+		if _, err := r.uint32(); err != nil {
+			return a, err
+		}
+		if _, err := r.uint32(); err != nil {
+			return a, err
+		}
+	}
+	if flags&0x00000004 != 0 {
+		v, err := r.uint32()
+		if err != nil {
+			return a, err
+		}
+		a.perm = &v
+	}
+	if flags&0x00000008 != 0 {
+		at, err := r.uint32()
+		if err != nil {
+			return a, err
+		}
+		mt, err := r.uint32()
+		if err != nil {
+			return a, err
+		}
+		a.atime, a.mtime = &at, &mt
+	}
+	return a, nil
+}
+
+// handleSetstat implements SETSTAT (by path) and FSETSTAT (by open handle).
+// A size attribute truncates and its errors are reported. Permissions and
+// times are metadata applied best-effort: OpenSSH scp/sftp send them
+// unprompted after every upload and fail the whole transfer on an error
+// reply, so a backend that cannot store them, or a user without the chmod
+// permission, gets OK with the change skipped. Only a missing target is
+// reported.
+func (h *sftpHandler) handleSetstat(payload []byte, byHandle bool) error {
+	r := packetReader{buf: payload}
+	id, err := r.uint32()
+	if err != nil {
+		return err
+	}
+	target, err := r.string()
+	if err != nil {
+		return h.replyStatus(id, fxBadMessage, "bad setstat request")
+	}
+	attrs, err := r.attrs()
+	if err != nil {
+		return h.replyStatus(id, fxBadMessage, "bad attrs")
+	}
+
+	var p string
+	var handleFile vfs.File
+	if byHandle {
+		entry, ok := h.handles[target]
+		if !ok {
+			return h.replyStatus(id, fxFailure, "invalid handle")
+		}
+		switch e := entry.(type) {
+		case *openFile:
+			p, handleFile = e.path, e.file
+		case *openDir:
+			p = e.path
+		}
+	} else {
+		p = h.normalizePath(target)
+		if _, err := h.fsys.Stat(p); err != nil {
+			return h.replyStatus(id, mapStatus(err), err.Error())
+		}
+	}
+
+	if attrs.size != nil {
+		size, err := sftpFileOffset(*attrs.size)
+		if err != nil {
+			return h.replyStatus(id, fxFailure, err.Error())
+		}
+		if handleFile != nil {
+			err = handleFile.Truncate(size)
+		} else {
+			var f vfs.File
+			f, err = h.fsys.Open(p, os.O_WRONLY, 0)
+			if err == nil {
+				err = f.Truncate(size)
+				if closeErr := f.Close(); err == nil {
+					err = closeErr
+				}
+			}
+		}
+		if err != nil {
+			return h.replyStatus(id, mapStatus(err), err.Error())
+		}
+	}
+	if attrs.perm != nil {
+		if err := h.fsys.Chmod(p, os.FileMode(*attrs.perm&0o7777)); err != nil && isHardSetstatError(err) {
+			return h.replyStatus(id, mapStatus(err), err.Error())
+		}
+	}
+	if attrs.mtime != nil {
+		at, mt := time.Unix(int64(*attrs.atime), 0), time.Unix(int64(*attrs.mtime), 0)
+		if err := h.fsys.Chtimes(p, at, mt); err != nil && isHardSetstatError(err) {
+			return h.replyStatus(id, mapStatus(err), err.Error())
+		}
+	}
+	return h.replyStatus(id, fxOK, "ok")
+}
+
+func isHardSetstatError(err error) bool {
+	return errors.Is(err, os.ErrNotExist)
 }
 
 func (h *sftpHandler) handleRemove(payload []byte) error {

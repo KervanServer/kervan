@@ -199,7 +199,7 @@ func TestHandleHealthBuildsStructuredSubsystemChecks(t *testing.T) {
 	assertCheckStatus(t, checks, "sftp", "up")
 	assertCheckStatus(t, checks, "scp", "up")
 	assertCheckStatus(t, checks, "storage", "up")
-	assertCheckStatus(t, checks, "cobaltdb", "up")
+	assertCheckStatus(t, checks, "store", "up")
 	assertCheckStatus(t, checks, "audit", "up")
 	assertCheckStatus(t, checks, "tls_certificate", "up")
 	assertCheckStatus(t, checks, "debug", "disabled")
@@ -207,7 +207,7 @@ func TestHandleHealthBuildsStructuredSubsystemChecks(t *testing.T) {
 		t.Fatalf("expected top-level tls_certificate to be redacted, got %v", payload["tls_certificate"])
 	}
 
-	for _, checkName := range []string{"storage", "cobaltdb", "audit", "tls_certificate"} {
+	for _, checkName := range []string{"storage", "store", "audit", "tls_certificate"} {
 		check := checks[checkName].(map[string]any)
 		if _, ok := check["path"]; ok {
 			t.Fatalf("expected %s check path to be redacted", checkName)

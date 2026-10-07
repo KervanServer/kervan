@@ -151,6 +151,30 @@ func (c *Config) Validate() error {
 			errs = append(errs, "security.denied_ips contains invalid entry: "+ip)
 		}
 	}
+	switch strings.ToLower(strings.TrimSpace(c.FTPS.ClientAuth)) {
+	case "", "none":
+	case "request", "require":
+		if strings.TrimSpace(c.FTPS.ClientCAFile) == "" {
+			errs = append(errs, "ftps.client_ca_file is required when ftps.client_auth is request|require")
+		}
+	default:
+		errs = append(errs, "ftps.client_auth must be none|request|require")
+	}
+	bf := c.Security.BruteForce
+	for _, ip := range bf.WhitelistIPs {
+		if !validIPOrCIDR(ip) {
+			errs = append(errs, "security.brute_force.whitelist_ips contains invalid entry: "+ip)
+		}
+	}
+	if bf.MaxAttempts < 0 {
+		errs = append(errs, "security.brute_force.max_attempts must be >= 0")
+	}
+	if bf.IPBanThreshold < 0 {
+		errs = append(errs, "security.brute_force.ip_ban_threshold must be >= 0")
+	}
+	if bf.LockoutDuration < 0 || bf.IPBanDuration < 0 {
+		errs = append(errs, "security.brute_force durations must be >= 0")
+	}
 	for i, output := range c.Audit.Outputs {
 		prefix := fmt.Sprintf("audit.outputs[%d]", i)
 		outputType := strings.ToLower(strings.TrimSpace(output.Type))

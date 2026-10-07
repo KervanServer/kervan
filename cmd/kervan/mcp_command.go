@@ -2,8 +2,8 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"flag"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"

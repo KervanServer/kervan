@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -32,9 +33,7 @@ const (
 	crossProtoStatusOK    = 0
 	crossProtoFxpSetstat  = 9
 	crossProtoFxpRealpath = 16
-	crossProtoFxpName     = 103
-
-	crossProtoStatusUnsupported = 8
+	crossProtoFxpName     = 104
 )
 
 func crossProtoU32(v uint32) []byte { return binary.BigEndian.AppendUint32(nil, v) }
@@ -79,6 +78,21 @@ func crossProtoSFTPRecv(t *testing.T, ch ssh.Channel, wantID uint32) (byte, []by
 	return typ, payload
 }
 
+// crossProtoFreePort reserves an ephemeral port so the suite never collides
+// with a locally running server or a parallel test run.
+func crossProtoFreePort() int {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		panic(err)
+	}
+	defer ln.Close()
+	return ln.Addr().(*net.TCPAddr).Port
+}
+
+func crossProtoAddr(port int) string {
+	return net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+}
+
 func crossProtoConfig(dir string) *config.Config {
 	cfg := config.DefaultConfig()
 	cfg.Server.ListenAddress = "127.0.0.1"
@@ -86,14 +100,14 @@ func crossProtoConfig(dir string) *config.Config {
 	cfg.Storage.DefaultBackend = "mem"
 	cfg.Storage.Backends = map[string]config.BackendConfig{"mem": {Type: "memory"}}
 	cfg.FTP.Enabled = true
-	cfg.FTP.Port = 22121
+	cfg.FTP.Port = crossProtoFreePort()
 	cfg.FTP.PassiveIP = "127.0.0.1"
 	cfg.SFTP.Enabled = true
-	cfg.SFTP.Port = 22122
+	cfg.SFTP.Port = crossProtoFreePort()
 	cfg.SFTP.IdleTimeout = 10 * time.Minute
 	cfg.WebUI.Enabled = true
 	cfg.WebUI.BindAddress = "127.0.0.1"
-	cfg.WebUI.Port = 22123
+	cfg.WebUI.Port = crossProtoFreePort()
 	cfg.WebUI.AdminPassword = "bootstrap-admin-pw"
 	return cfg
 }
@@ -155,7 +169,7 @@ func TestCrossProtocolSFTPFTPAPIOverSharedMemoryBackend(t *testing.T) {
 	t.Cleanup(func() { cancel(); _ = srv.Close() })
 
 	// 1. SFTP upload /f.txt = "cross-protocol".
-	transport, err := net.DialTimeout("tcp", "127.0.0.1:22122", 10*time.Second)
+	transport, err := net.DialTimeout("tcp", crossProtoAddr(cfg.SFTP.Port), 10*time.Second)
 	if err != nil {
 		t.Fatalf("sftp dial: %v", err)
 	}
@@ -166,7 +180,7 @@ func TestCrossProtocolSFTPFTPAPIOverSharedMemoryBackend(t *testing.T) {
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 		Timeout:         10 * time.Second,
 	}
-	conn, newChannels, reqs, err := ssh.NewClientConn(transport, "127.0.0.1:22122", clientCfg)
+	conn, newChannels, reqs, err := ssh.NewClientConn(transport, crossProtoAddr(cfg.SFTP.Port), clientCfg)
 	if err != nil {
 		t.Fatalf("sftp handshake: %v", err)
 	}
@@ -232,7 +246,7 @@ func TestCrossProtocolSFTPFTPAPIOverSharedMemoryBackend(t *testing.T) {
 	}
 
 	// 2. FTP LIST must show /f.txt over the PASV data connection.
-	ftpConn, err := net.DialTimeout("tcp", "127.0.0.1:22121", 10*time.Second)
+	ftpConn, err := net.DialTimeout("tcp", crossProtoAddr(cfg.FTP.Port), 10*time.Second)
 	if err != nil {
 		t.Fatalf("ftp dial: %v", err)
 	}
@@ -277,7 +291,7 @@ func TestCrossProtocolSFTPFTPAPIOverSharedMemoryBackend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal login body: %v", err)
 	}
-	resp, err := (&http.Client{Timeout: 10 * time.Second}).Post("http://127.0.0.1:22123/api/login", "application/json", bytes.NewReader(loginBody))
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Post("http://"+crossProtoAddr(cfg.WebUI.Port)+"/api/login", "application/json", bytes.NewReader(loginBody))
 	if err != nil {
 		t.Fatalf("api login: %v", err)
 	}
@@ -288,7 +302,7 @@ func TestCrossProtocolSFTPFTPAPIOverSharedMemoryBackend(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&login); err != nil || login.Token == "" {
 		t.Fatalf("api login decode (status %d): %v", resp.StatusCode, err)
 	}
-	req, _ := http.NewRequest(http.MethodGet, "http://127.0.0.1:22123/api/files/download?path=/f.txt", nil)
+	req, _ := http.NewRequest(http.MethodGet, "http://"+crossProtoAddr(cfg.WebUI.Port)+"/api/files/download?path=/f.txt", nil)
 	req.Header.Set("Authorization", "Bearer "+login.Token)
 	resp2, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
 	if err != nil {
@@ -334,12 +348,12 @@ func TestCrossProtocolSetstatToleranceMlstDownload(t *testing.T) {
 	t.Cleanup(func() { cancel(); _ = srv.Close() })
 
 	// 1. SFTP upload /f.txt = "cross-protocol".
-	transport, err := net.DialTimeout("tcp", "127.0.0.1:22122", 10*time.Second)
+	transport, err := net.DialTimeout("tcp", crossProtoAddr(cfg.SFTP.Port), 10*time.Second)
 	if err != nil {
 		t.Fatalf("sftp dial: %v", err)
 	}
 	defer transport.Close()
-	conn, newChannels, reqs, err := ssh.NewClientConn(transport, "127.0.0.1:22122", &ssh.ClientConfig{
+	conn, newChannels, reqs, err := ssh.NewClientConn(transport, crossProtoAddr(cfg.SFTP.Port), &ssh.ClientConfig{
 		User:            "alice",
 		Auth:            []ssh.AuthMethod{ssh.Password(crossProtoAlicePassword)},
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
@@ -396,8 +410,9 @@ func TestCrossProtocolSetstatToleranceMlstDownload(t *testing.T) {
 		t.Fatalf("upload CLOSE status wrong")
 	}
 
-	// 2. SETSTAT is unsupported: STATUS 8, tolerated — the connection and the
-	// file stay intact (round-49 contract, mid-flow).
+	// 2. A permissions SETSTAT from a user without the chmod permission is
+	// accepted (STATUS OK) with the change skipped — OpenSSH clients send it
+	// after every upload — and the connection and file stay intact.
 	var setstat []byte
 	setstat = append(setstat, crossProtoU32(103)...)
 	setstat = append(setstat, crossProtoStr("/f.txt")...)
@@ -405,8 +420,8 @@ func TestCrossProtocolSetstatToleranceMlstDownload(t *testing.T) {
 	setstat = append(setstat, crossProtoU32(0o644)...) // mode
 	crossProtoSFTPSend(t, ch, crossProtoFxpSetstat, setstat)
 	typ, payload = crossProtoSFTPRecv(t, ch, 103)
-	if typ != crossProtoFxpStatus || binary.BigEndian.Uint32(payload[4:8]) != crossProtoStatusUnsupported {
-		t.Fatalf("SETSTAT status = %d/%d, want STATUS %d (unsupported, tolerated)", typ, binary.BigEndian.Uint32(payload[4:8]), crossProtoStatusUnsupported)
+	if typ != crossProtoFxpStatus || binary.BigEndian.Uint32(payload[4:8]) != crossProtoStatusOK {
+		t.Fatalf("SETSTAT status = %d/%d, want STATUS %d (ok, change skipped)", typ, binary.BigEndian.Uint32(payload[4:8]), crossProtoStatusOK)
 	}
 
 	// 3. The connection survived: REALPATH still answers with a NAME entry.
@@ -424,7 +439,7 @@ func TestCrossProtocolSetstatToleranceMlstDownload(t *testing.T) {
 
 	// 4. FTP MLST lists the uploaded file on the control channel (round-46
 	// contract, in a cross-protocol flow).
-	ftpConn, err := net.DialTimeout("tcp", "127.0.0.1:22121", 10*time.Second)
+	ftpConn, err := net.DialTimeout("tcp", crossProtoAddr(cfg.FTP.Port), 10*time.Second)
 	if err != nil {
 		t.Fatalf("ftp dial: %v", err)
 	}
@@ -458,7 +473,7 @@ func TestCrossProtocolSetstatToleranceMlstDownload(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal login body: %v", err)
 	}
-	resp, err := (&http.Client{Timeout: 10 * time.Second}).Post("http://127.0.0.1:22123/api/login", "application/json", strings.NewReader(string(loginBody)))
+	resp, err := (&http.Client{Timeout: 10 * time.Second}).Post("http://"+crossProtoAddr(cfg.WebUI.Port)+"/api/login", "application/json", strings.NewReader(string(loginBody)))
 	if err != nil {
 		t.Fatalf("api login: %v", err)
 	}
@@ -469,7 +484,7 @@ func TestCrossProtocolSetstatToleranceMlstDownload(t *testing.T) {
 	if err := json.NewDecoder(resp.Body).Decode(&login); err != nil || login.Token == "" {
 		t.Fatalf("api login decode (status %d): %v", resp.StatusCode, err)
 	}
-	req, _ := http.NewRequest(http.MethodGet, "http://127.0.0.1:22123/api/files/download?path=/f.txt", nil)
+	req, _ := http.NewRequest(http.MethodGet, "http://"+crossProtoAddr(cfg.WebUI.Port)+"/api/files/download?path=/f.txt", nil)
 	req.Header.Set("Authorization", "Bearer "+login.Token)
 	resp2, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
 	if err != nil {

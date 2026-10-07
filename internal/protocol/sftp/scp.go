@@ -10,6 +10,7 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/kervanserver/kervan/internal/audit"
 	"github.com/kervanserver/kervan/internal/transfer"
@@ -33,30 +34,118 @@ func parseExecPayload(payload []byte) (string, error) {
 	return string(payload[4 : 4+n]), nil
 }
 
-func parseSCPExec(command string) (mode, target string, err error) {
-	args := strings.Fields(command)
-	if len(args) == 0 || args[0] != "scp" {
-		return "", "", errors.New("unsupported exec command")
+// scpRequest is a parsed "scp -t|-f [-p] target" exec command.
+type scpRequest struct {
+	mode     string
+	target   string
+	preserve bool // -p: times travel as a "T" record before each file
+}
+
+func parseSCPExec(command string) (scpRequest, error) {
+	var req scpRequest
+	args, err := splitShellWords(command)
+	if err != nil {
+		return req, err
 	}
+	if len(args) == 0 || args[0] != "scp" {
+		return req, errors.New("unsupported exec command")
+	}
+	optionsDone := false
+	var targets []string
 	for _, arg := range args[1:] {
-		if strings.HasPrefix(arg, "-") {
+		if !optionsDone && arg == "--" {
+			optionsDone = true
+			continue
+		}
+		if !optionsDone && strings.HasPrefix(arg, "-") {
 			if strings.Contains(arg, "f") {
-				mode = scpModeSource
+				req.mode = scpModeSource
 			}
 			if strings.Contains(arg, "t") {
-				mode = scpModeSink
+				req.mode = scpModeSink
+			}
+			if strings.Contains(arg, "p") {
+				req.preserve = true
 			}
 			continue
 		}
-		target = arg
+		targets = append(targets, arg)
 	}
-	if mode == "" {
-		return "", "", errors.New("scp mode is missing")
+	if req.mode == "" {
+		return req, errors.New("scp mode is missing")
 	}
-	if target == "" {
-		target = "."
+	switch len(targets) {
+	case 0:
+		req.target = "."
+	case 1:
+		req.target = targets[0]
+	default:
+		// Matches OpenSSH: an unquoted path with spaces reaches the remote
+		// side as several words, which must not be silently truncated.
+		return req, errors.New("ambiguous target")
 	}
-	return mode, target, nil
+	return req, nil
+}
+
+// splitShellWords splits an exec request the way the remote POSIX shell would
+// for the quoting forms scp clients emit: OpenSSH and libssh2/curl wrap paths
+// in single quotes (an embedded quote is closed, backslash-escaped and
+// reopened), and some clients use backslash escapes or double quotes. No
+// expansion is performed.
+func splitShellWords(s string) ([]string, error) {
+	var (
+		words   []string
+		cur     strings.Builder
+		inWord  bool
+		inQuote rune
+	)
+	runes := []rune(s)
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		switch {
+		case inQuote == '\'':
+			if r == '\'' {
+				inQuote = 0
+			} else {
+				cur.WriteRune(r)
+			}
+		case inQuote == '"':
+			switch {
+			case r == '"':
+				inQuote = 0
+			case r == '\\' && i+1 < len(runes) && strings.ContainsRune("$`\"\\\n", runes[i+1]):
+				i++
+				cur.WriteRune(runes[i])
+			default:
+				cur.WriteRune(r)
+			}
+		case r == '\'' || r == '"':
+			inQuote = r
+			inWord = true
+		case r == '\\':
+			if i+1 < len(runes) {
+				i++
+				cur.WriteRune(runes[i])
+			}
+			inWord = true
+		case r == ' ' || r == '\t' || r == '\n':
+			if inWord {
+				words = append(words, cur.String())
+				cur.Reset()
+				inWord = false
+			}
+		default:
+			cur.WriteRune(r)
+			inWord = true
+		}
+	}
+	if inQuote != 0 {
+		return nil, errors.New("unterminated quote in exec command")
+	}
+	if inWord {
+		words = append(words, cur.String())
+	}
+	return words, nil
 }
 
 // touchReader renews the control-connection idle deadline whenever the SCP
@@ -89,18 +178,18 @@ func (t touchWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
-func (s *Server) runSCP(ch ssh.Channel, fsys vfs.FileSystem, mode, target, username, remoteAddr string, touch func()) error {
-	switch mode {
+func (s *Server) runSCP(ch ssh.Channel, fsys vfs.FileSystem, req scpRequest, username, remoteAddr string, touch func()) error {
+	switch req.mode {
 	case scpModeSource:
-		return s.runSCPSource(ch, fsys, normalizeSCPPath(target), username, remoteAddr, touch)
+		return s.runSCPSource(ch, fsys, normalizeSCPPath(req.target), req.preserve, username, remoteAddr, touch)
 	case scpModeSink:
-		return s.runSCPSink(ch, fsys, normalizeSCPPath(target), username, remoteAddr, touch)
+		return s.runSCPSink(ch, fsys, normalizeSCPPath(req.target), username, remoteAddr, touch)
 	default:
-		return fmt.Errorf("unknown scp mode: %s", mode)
+		return fmt.Errorf("unknown scp mode: %s", req.mode)
 	}
 }
 
-func (s *Server) runSCPSource(ch ssh.Channel, fsys vfs.FileSystem, filePath, username, remoteAddr string, touch func()) error {
+func (s *Server) runSCPSource(ch ssh.Channel, fsys vfs.FileSystem, filePath string, preserve bool, username, remoteAddr string, touch func()) error {
 	br := bufio.NewReader(touchReader{r: ch, touch: touch})
 	if err := readSCPAck(br); err != nil {
 		return err
@@ -124,6 +213,17 @@ func (s *Server) runSCPSource(ch ssh.Channel, fsys vfs.FileSystem, filePath, use
 		return err
 	}
 
+	if preserve {
+		// libssh2 (curl) requests -p and rejects a "C" record that is not
+		// preceded by the "T" times record.
+		mtime := info.ModTime().Unix()
+		if _, err := fmt.Fprintf(ch, "T%d 0 %d 0\n", mtime, mtime); err != nil {
+			return err
+		}
+		if err := readSCPAck(br); err != nil {
+			return err
+		}
+	}
 	if _, err := fmt.Fprintf(ch, "C%04o %d %s\n", info.Mode().Perm(), info.Size(), info.Name()); err != nil {
 		return err
 	}
@@ -149,7 +249,10 @@ func (s *Server) runSCPSource(ch ssh.Channel, fsys vfs.FileSystem, filePath, use
 		}
 		return err
 	}
-	if err := readSCPAck(br); err != nil {
+	// libssh2 (curl, PHP ssh2, ...) closes the channel after receiving the
+	// whole file instead of sending the final ack; every byte has been
+	// delivered at this point, so EOF is a completed download.
+	if err := readSCPAck(br); err != nil && !errors.Is(err, io.EOF) {
 		if s.xfer != nil && transferID != "" {
 			s.xfer.AddBytes(transferID, n)
 			s.xfer.End(transferID, transfer.StatusFailed, err.Error())
@@ -167,6 +270,7 @@ func (s *Server) runSCPSource(ch ssh.Channel, fsys vfs.FileSystem, filePath, use
 
 func (s *Server) runSCPSink(ch ssh.Channel, fsys vfs.FileSystem, target, username, remoteAddr string, touch func()) error {
 	br := bufio.NewReader(touchReader{r: ch, touch: touch})
+	var pendingTimes *[2]time.Time // atime, mtime from a preceding "T" record
 	if _, err := ch.Write([]byte{0}); err != nil {
 		return err
 	}
@@ -188,6 +292,7 @@ func (s *Server) runSCPSink(ch ssh.Channel, fsys vfs.FileSystem, target, usernam
 		case 0:
 			continue
 		case 'T':
+			pendingTimes = parseSCPTimes(header)
 			if _, err := ch.Write([]byte{0}); err != nil {
 				return err
 			}
@@ -231,6 +336,13 @@ func (s *Server) runSCPSink(ch ssh.Channel, fsys vfs.FileSystem, target, usernam
 				return closeErr
 			}
 			trailer, err := br.ReadByte()
+			peerClosed := errors.Is(err, io.EOF)
+			if peerClosed {
+				// libssh2 senders may close right after the payload without
+				// the trailing status byte; the full size has arrived, so the
+				// upload is complete.
+				trailer, err = 0, nil
+			}
 			if err != nil {
 				if s.xfer != nil && transferID != "" {
 					s.xfer.AddBytes(transferID, n)
@@ -247,7 +359,7 @@ func (s *Server) runSCPSink(ch ssh.Channel, fsys vfs.FileSystem, target, usernam
 				_ = writeSCPError(ch, true, err.Error())
 				return err
 			}
-			if _, err := ch.Write([]byte{0}); err != nil {
+			if _, err := ch.Write([]byte{0}); err != nil && !peerClosed {
 				if s.xfer != nil && transferID != "" {
 					s.xfer.AddBytes(transferID, n)
 					s.xfer.End(transferID, transfer.StatusFailed, err.Error())
@@ -257,6 +369,10 @@ func (s *Server) runSCPSink(ch ssh.Channel, fsys vfs.FileSystem, target, usernam
 			if s.xfer != nil && transferID != "" {
 				s.xfer.AddBytes(transferID, n)
 				s.xfer.End(transferID, transfer.StatusCompleted, "")
+			}
+			if pendingTimes != nil {
+				_ = fsys.Chtimes(dst, pendingTimes[0], pendingTimes[1])
+				pendingTimes = nil
 			}
 			s.emitAudit(audit.EventFileWrite, username, "scp", dst, remoteAddr, "ok", "scp upload")
 		case 'E':
@@ -310,6 +426,20 @@ func validateSCPFileName(name string) error {
 		}
 		return nil
 	}
+}
+
+// parseSCPTimes parses "T<mtime> <usec> <atime> <usec>"; nil when malformed.
+func parseSCPTimes(header string) *[2]time.Time {
+	fields := strings.Fields(strings.TrimPrefix(header, "T"))
+	if len(fields) != 4 {
+		return nil
+	}
+	mtime, err1 := strconv.ParseInt(fields[0], 10, 64)
+	atime, err2 := strconv.ParseInt(fields[2], 10, 64)
+	if err1 != nil || err2 != nil || mtime < 0 || atime < 0 {
+		return nil
+	}
+	return &[2]time.Time{time.Unix(atime, 0), time.Unix(mtime, 0)}
 }
 
 func resolveSCPSinkPath(fsys vfs.FileSystem, target, fileName string) string {

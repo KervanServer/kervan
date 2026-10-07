@@ -214,7 +214,7 @@ func (s *Server) buildHealthResponse() map[string]any {
 	checks := map[string]any{
 		"auth":            subsystemCheck(s.auth != nil, "local"),
 		"user_repository": subsystemCheck(s.users != nil, "embedded"),
-		"cobaltdb":        s.storeCheck(snapshot),
+		"store":           s.storeCheck(snapshot),
 		"filesystem":      subsystemCheck(s.fsBuilder != nil, "user_vfs"),
 		"audit":           s.auditCheck(),
 		"storage":         storageCheck(snapshot),
@@ -634,7 +634,7 @@ func summarizeHealth(checks map[string]any) string {
 	required := map[string]struct{}{
 		"auth":            {},
 		"user_repository": {},
-		"cobaltdb":        {},
+		"store":           {},
 		"filesystem":      {},
 	}
 	degraded := false

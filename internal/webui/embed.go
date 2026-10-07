@@ -1,11 +1,14 @@
 package webui
 
 import (
+	"crypto/sha256"
 	"embed"
+	"encoding/base64"
 	"io/fs"
 	"net/http"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -77,4 +80,32 @@ func setIndexCacheHeaders(w http.ResponseWriter) {
 
 func setImmutableCacheHeaders(w http.ResponseWriter) {
 	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+}
+
+var inlineScriptRe = regexp.MustCompile(`(?s)<script>(.*?)</script>`)
+
+// ContentSecurityPolicy returns the CSP for the embedded WebUI. Inline
+// <script> blocks in index.html (the pre-paint theme bootstrap) are allowed by
+// hash, so no 'unsafe-inline' is needed for scripts. Inline styles stay
+// allowed because Radix/shadcn components set style attributes at runtime.
+func ContentSecurityPolicy() string {
+	scriptSrc := []string{"'self'"}
+	if raw, err := fs.ReadFile(embedded, "dist/index.html"); err == nil {
+		for _, m := range inlineScriptRe.FindAllSubmatch(raw, -1) {
+			sum := sha256.Sum256(m[1])
+			scriptSrc = append(scriptSrc, "'sha256-"+base64.StdEncoding.EncodeToString(sum[:])+"'")
+		}
+	}
+	return strings.Join([]string{
+		"default-src 'self'",
+		"script-src " + strings.Join(scriptSrc, " "),
+		"style-src 'self' 'unsafe-inline'",
+		"img-src 'self' data: blob:",
+		"font-src 'self' data:",
+		"connect-src 'self'",
+		"object-src 'none'",
+		"base-uri 'self'",
+		"form-action 'self'",
+		"frame-ancestors 'none'",
+	}, "; ")
 }

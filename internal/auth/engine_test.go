@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"strings"
 	"testing"
 	"time"
 
@@ -33,7 +34,7 @@ func TestAuthenticatePublicKey(t *testing.T) {
 	user := &User{
 		Username:       "alice",
 		PasswordHash:   "$2a$10$abcdefghijklmnopqrstuuuuuuuuuuuuuuuuuuuuuuuuuuuuuu",
-		AuthorizedKeys: []string{normalizeAuthorizedKey(ssh.MarshalAuthorizedKey(publicKey))},
+		AuthorizedKeys: []string{strings.TrimSpace(string(ssh.MarshalAuthorizedKey(publicKey)))},
 		HomeDir:        "/",
 		Enabled:        true,
 		Type:           UserTypeVirtual,

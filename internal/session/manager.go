@@ -53,6 +53,30 @@ func (m *Manager) End(id string) {
 	m.mu.Unlock()
 }
 
+// touchGranularity bounds how often Touch takes the write lock: per-packet
+// activity on a busy transfer only needs second-level resolution.
+const touchGranularity = time.Second
+
+// Touch records activity on a session, updating LastSeenAt.
+func (m *Manager) Touch(id string) {
+	if m == nil || id == "" {
+		return
+	}
+	now := time.Now().UTC()
+	m.mu.RLock()
+	s, ok := m.sessions[id]
+	fresh := ok && now.Sub(s.LastSeenAt) < touchGranularity
+	m.mu.RUnlock()
+	if !ok || fresh {
+		return
+	}
+	m.mu.Lock()
+	if s, ok := m.sessions[id]; ok {
+		s.LastSeenAt = now
+	}
+	m.mu.Unlock()
+}
+
 func (m *Manager) AttachTerminator(id string, fn func()) bool {
 	if fn == nil {
 		return false

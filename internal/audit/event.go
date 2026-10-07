@@ -10,6 +10,9 @@ const (
 	EventFileRead    EventType = "file.read"
 	EventFileWrite   EventType = "file.write"
 	EventFileDelete  EventType = "file.delete"
+	// EventConnectionRejected records a connection refused by an admission
+	// control such as max_connections.
+	EventConnectionRejected EventType = "connection.rejected"
 )
 
 type Event struct {

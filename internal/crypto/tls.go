@@ -2,7 +2,9 @@ package crypto
 
 import (
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
+	"os"
 	"strings"
 )
 
@@ -61,4 +63,39 @@ func ParseTLSVersion(v string) (uint16, error) {
 	default:
 		return 0, fmt.Errorf("unsupported tls version: %s", v)
 	}
+}
+
+// WithClientAuth returns a copy of base that applies ftps.client_auth:
+// "none" (default), "request" (verify a client certificate when one is
+// presented) or "require" (reject clients without a valid certificate).
+// Certificates are verified against the PEM bundle in caFile.
+func WithClientAuth(base *tls.Config, mode, caFile string) (*tls.Config, error) {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if base == nil || mode == "" || mode == "none" {
+		return base, nil
+	}
+	var authType tls.ClientAuthType
+	switch mode {
+	case "request":
+		authType = tls.VerifyClientCertIfGiven
+	case "require":
+		authType = tls.RequireAndVerifyClientCert
+	default:
+		return nil, fmt.Errorf("unsupported client_auth mode %q (none|request|require)", mode)
+	}
+	if strings.TrimSpace(caFile) == "" {
+		return nil, fmt.Errorf("client_auth %q requires client_ca_file", mode)
+	}
+	pemBytes, err := os.ReadFile(caFile)
+	if err != nil {
+		return nil, fmt.Errorf("read client_ca_file: %w", err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(pemBytes) {
+		return nil, fmt.Errorf("client_ca_file %s contains no PEM certificates", caFile)
+	}
+	out := base.Clone()
+	out.ClientAuth = authType
+	out.ClientCAs = pool
+	return out, nil
 }

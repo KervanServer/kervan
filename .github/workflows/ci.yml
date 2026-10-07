@@ -51,6 +51,24 @@ jobs:
       - name: Build binary
         run: go build ./cmd/kervan
 
+  race:
+    name: Race Detector
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run Go tests with -race
+        env:
+          CGO_ENABLED: "1"
+        run: go test -race ./... -count=1
+
   webui:
     name: WebUI Checks
     runs-on: ubuntu-latest

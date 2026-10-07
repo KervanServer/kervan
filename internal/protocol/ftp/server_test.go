@@ -555,6 +555,7 @@ func startFTPWithDataPlane(t *testing.T) (net.Conn, *bufio.Reader, *vfs.UserVFS,
 		Banner:      "kervan test",
 		ListenAddr:  "127.0.0.1",
 		IdleTimeout: 30 * time.Second,
+		ActiveMode:  true,
 	}, nil, engine, session.NewManager(), nil, func(*auth.User) (vfs.FileSystem, error) {
 		return fsys, nil
 	}, nil)
@@ -848,17 +849,32 @@ func TestFTPAppeAndRestOverDataPlane(t *testing.T) {
 	if got := retr("/new.txt"); got != "C" {
 		t.Fatalf("APPE on a nonexistent file must create it: RETR = %q, want %q", got, "C")
 	}
-	if reply := ftpCmd(t, cc, r, "REST 1"); !strings.HasPrefix(reply, "502") {
-		t.Fatalf("REST reply = %q, want 502 (restart is not implemented)", reply)
+	// REST resumes a download at the marker, and applies to one transfer only.
+	if reply := ftpCmd(t, cc, r, "REST 1"); !strings.HasPrefix(reply, "350") {
+		t.Fatalf("REST reply = %q, want 350", reply)
+	}
+	if got := retr("/f.txt"); got != "B" {
+		t.Fatalf("RETR after REST 1 = %q, want %q", got, "B")
 	}
 	if got := retr("/f.txt"); got != "AB" {
-		t.Fatalf("RETR after REST = %q, want %q — REST must not change transfer state", got, "AB")
+		t.Fatalf("second RETR = %q, want %q — the marker must be consumed", got, "AB")
+	}
+	// REST + STOR resumes an interrupted upload without truncating it.
+	if reply := ftpCmd(t, cc, r, "REST 2"); !strings.HasPrefix(reply, "350") {
+		t.Fatalf("REST reply = %q, want 350", reply)
+	}
+	store("/f.txt", "CD")
+	if got := retr("/f.txt"); got != "ABCD" {
+		t.Fatalf("after resumed STOR, RETR = %q, want %q", got, "ABCD")
+	}
+	if reply := ftpCmd(t, cc, r, "REST -1"); !strings.HasPrefix(reply, "501") {
+		t.Fatalf("negative REST reply = %q, want 501", reply)
 	}
 }
 
 // TestFTPMkdirRmdirCwdOverControl drives the directory flows over the
 // authenticated control connection, including the non-empty RMD refusal and
-// the CDUP-not-implemented contract.
+// CDUP back to the parent directory.
 func TestFTPMkdirRmdirCwdOverControl(t *testing.T) {
 	cc, r, _, _ := startFTPWithDataPlane(t)
 
@@ -911,8 +927,18 @@ func TestFTPMkdirRmdirCwdOverControl(t *testing.T) {
 		t.Fatalf("CWD into removed dir reply = %q, want 550", reply)
 	}
 
-	if reply := ftpCmd(t, cc, r, "CDUP"); !strings.HasPrefix(reply, "502") {
-		t.Fatalf("CDUP reply = %q, want 502 (not implemented; document the actual behavior)", reply)
+	if reply := ftpCmd(t, cc, r, "MKD /a"); !strings.HasPrefix(reply, "257") {
+		t.Fatalf("MKD /a reply = %q", reply)
+	}
+	ftpCmd(t, cc, r, "CWD /a")
+	if reply := ftpCmd(t, cc, r, "CDUP"); !strings.HasPrefix(reply, "250") {
+		t.Fatalf("CDUP reply = %q, want 250", reply)
+	}
+	if reply := ftpCmd(t, cc, r, "PWD"); !strings.Contains(reply, `"/"`) {
+		t.Fatalf("PWD after CDUP = %q, want /", reply)
+	}
+	if reply := ftpCmd(t, cc, r, "CDUP"); !strings.HasPrefix(reply, "250") {
+		t.Fatalf("CDUP at root reply = %q, want 250 (stays at /)", reply)
 	}
 }
 

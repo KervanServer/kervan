@@ -764,6 +764,7 @@ func openCLIContext(configPath string) (*cliContext, error) {
 	repo := auth.NewUserRepository(st)
 	engine := auth.NewEngine(repo, cfg.Auth.PasswordHash, cfg.Security.BruteForce.MaxAttempts, cfg.Security.BruteForce.LockoutDuration)
 	engine.SetMinPasswordLength(cfg.Auth.MinPasswordLength)
+	engine.SetRequireSpecialChar(cfg.Auth.RequireSpecialChar)
 	return &cliContext{
 		cfg:     cfg,
 		store:   st,

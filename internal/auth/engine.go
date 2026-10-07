@@ -1,11 +1,14 @@
 package auth
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
+	"unicode"
 
 	"golang.org/x/crypto/ssh"
 )
@@ -22,12 +25,18 @@ const (
 )
 
 type Engine struct {
+	// policyMu guards the policy fields below, which config reload updates
+	// while logins are in flight.
+	policyMu          sync.RWMutex
 	repo              *UserRepository
 	hashAlgo          string
 	maxAttempts       int
 	lockDuration      time.Duration
 	minPasswordLength int
+	requireSpecial    bool
+	lockoutDisabled   bool
 	ldap              *LDAPProvider
+	ipThrottle        *IPThrottle
 }
 
 func NewEngine(repo *UserRepository, hashAlgo string, maxAttempts int, lockDuration time.Duration) *Engine {
@@ -101,9 +110,8 @@ func (e *Engine) AuthenticatePublicKey(_ context.Context, username string, key s
 		return nil, ErrUserLocked
 	}
 
-	normalized := normalizeAuthorizedKey(ssh.MarshalAuthorizedKey(key))
 	for _, authorized := range user.AuthorizedKeys {
-		if normalizeAuthorizedKey([]byte(authorized)) == normalized {
+		if authorizedKeyMatches(authorized, key) {
 			user.FailedLogins = 0
 			user.LockedUntil = nil
 			_ = e.repo.UpdateLastLogin(user.ID)
@@ -117,7 +125,49 @@ func (e *Engine) SetLDAPProvider(provider *LDAPProvider) {
 	e.ldap = provider
 }
 
+// SetLockoutEnabled toggles per-account lockout after max_attempts failures
+// (security.brute_force.enabled).
+func (e *Engine) SetLockoutEnabled(enabled bool) {
+	e.policyMu.Lock()
+	defer e.policyMu.Unlock()
+	e.lockoutDisabled = !enabled
+}
+
+// SetLockoutPolicy updates the per-account lockout thresholds at runtime.
+func (e *Engine) SetLockoutPolicy(maxAttempts int, lockDuration time.Duration) {
+	e.policyMu.Lock()
+	defer e.policyMu.Unlock()
+	if maxAttempts > 0 {
+		e.maxAttempts = maxAttempts
+	}
+	if lockDuration > 0 {
+		e.lockDuration = lockDuration
+	}
+}
+
+// SetIPThrottle installs the cross-protocol per-address login throttle.
+func (e *Engine) SetIPThrottle(t *IPThrottle) {
+	e.ipThrottle = t
+}
+
+// IPThrottle returns the shared per-address login throttle (may be nil).
+func (e *Engine) IPThrottle() *IPThrottle {
+	if e == nil {
+		return nil
+	}
+	return e.ipThrottle
+}
+
+// SetRequireSpecialChar enforces auth.require_special_char for new passwords.
+func (e *Engine) SetRequireSpecialChar(require bool) {
+	e.policyMu.Lock()
+	defer e.policyMu.Unlock()
+	e.requireSpecial = require
+}
+
 func (e *Engine) SetMinPasswordLength(length int) {
+	e.policyMu.Lock()
+	defer e.policyMu.Unlock()
 	if length < 0 {
 		length = 0
 	}
@@ -194,17 +244,38 @@ func (e *Engine) RecordFailedLogin(userID string) error {
 }
 
 func (e *Engine) validatePassword(password string) error {
-	if e == nil || e.minPasswordLength <= 0 {
+	if e == nil {
 		return nil
 	}
-	if len(password) < e.minPasswordLength {
+	e.policyMu.RLock()
+	defer e.policyMu.RUnlock()
+	if e.minPasswordLength > 0 && len(password) < e.minPasswordLength {
 		return fmt.Errorf("password must be at least %d characters", e.minPasswordLength)
+	}
+	if e.requireSpecial && !strings.ContainsFunc(password, isSpecialPasswordRune) {
+		return errors.New("password must contain at least one special character")
 	}
 	return nil
 }
 
-func normalizeAuthorizedKey(raw []byte) string {
-	return strings.TrimSpace(string(raw))
+// ValidatePassword checks password against the configured policy.
+func (e *Engine) ValidatePassword(password string) error {
+	return e.validatePassword(password)
+}
+
+func isSpecialPasswordRune(r rune) bool {
+	return !unicode.IsLetter(r) && !unicode.IsDigit(r) && !unicode.IsSpace(r)
+}
+
+// authorizedKeyMatches compares a stored authorized_keys entry with the key a
+// client proved possession of. Entries are parsed rather than string-compared
+// so the usual "type base64 comment" form (and leading options) match.
+func authorizedKeyMatches(entry string, key ssh.PublicKey) bool {
+	parsed, _, _, _, err := ssh.ParseAuthorizedKey([]byte(strings.TrimSpace(entry)))
+	if err != nil {
+		return false
+	}
+	return bytes.Equal(parsed.Marshal(), key.Marshal())
 }
 
 func (e *Engine) authenticateLDAPUser(ctx context.Context, shadow *User, username, password string) (*User, error) {
@@ -287,9 +358,12 @@ func (e *Engine) registerFailedLogin(user *User) error {
 	if user == nil {
 		return nil
 	}
+	e.policyMu.RLock()
+	lockout, maxAttempts, lockDuration := !e.lockoutDisabled, e.maxAttempts, e.lockDuration
+	e.policyMu.RUnlock()
 	user.FailedLogins++
-	if user.FailedLogins >= e.maxAttempts {
-		until := time.Now().UTC().Add(e.lockDuration)
+	if lockout && user.FailedLogins >= maxAttempts {
+		until := time.Now().UTC().Add(lockDuration)
 		user.LockedUntil = &until
 	}
 	return e.repo.Update(user)

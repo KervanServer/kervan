@@ -20,6 +20,7 @@ import (
 
 	"github.com/kervanserver/kervan/internal/audit"
 	"github.com/kervanserver/kervan/internal/auth"
+	"github.com/kervanserver/kervan/internal/netguard"
 	"github.com/kervanserver/kervan/internal/session"
 	"github.com/kervanserver/kervan/internal/transfer"
 	"github.com/kervanserver/kervan/internal/vfs"
@@ -36,6 +37,14 @@ type Config struct {
 	FTPSMode         string
 	FTPSImplicitPort int
 	TLSConfig        *tls.Config
+	// ActiveMode enables PORT/EPRT. Active data connections are only ever
+	// dialed back to the control connection's own address (no FXP/bounce).
+	ActiveMode bool
+	// IPFilter rejects control connections from denied addresses; nil admits all.
+	IPFilter *netguard.IPFilter
+	// MaxConnections caps concurrent control connections across all FTP
+	// listeners; <= 0 is unlimited.
+	MaxConnections int
 }
 
 type UserFSBuilder func(*auth.User) (vfs.FileSystem, error)
@@ -48,6 +57,7 @@ type Server struct {
 	audit    *audit.Engine
 	buildFS  UserFSBuilder
 	xfer     *transfer.Manager
+	limiter  *netguard.Limiter
 
 	listeners []net.Listener
 	wg        sync.WaitGroup
@@ -88,6 +98,7 @@ func NewServer(cfg Config, logger *slog.Logger, authEngine *auth.Engine, session
 		audit:    auditEngine,
 		buildFS:  buildFS,
 		xfer:     xfer,
+		limiter:  netguard.NewLimiter(cfg.MaxConnections),
 	}
 }
 
@@ -137,26 +148,72 @@ func (s *Server) startListener(ctx context.Context, port int, label string, impl
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
+		acceptFailures := 0
 		for {
 			conn, acceptErr := ln.Accept()
 			if acceptErr != nil {
 				if s.isClosed() {
 					return
 				}
+				acceptFailures++
 				if s.logger != nil {
 					s.logger.Error("ftp accept failed", "error", acceptErr, "listener", label)
 				}
+				time.Sleep(netguard.AcceptBackoff(acceptFailures))
+				continue
+			}
+			acceptFailures = 0
+			if !s.admit(conn) {
 				continue
 			}
 			s.wg.Add(1)
 			go func(c net.Conn) {
 				defer s.wg.Done()
+				defer s.limiter.Release()
 				defer s.recoverConnPanic(c)
 				s.handleConn(ctx, c, implicitTLS)
 			}(conn)
 		}
 	}()
 	return nil
+}
+
+// admit applies the IP filter and connection cap to a freshly accepted
+// control connection. A rejected connection is closed; on success the caller
+// owns one limiter slot and must Release it.
+func (s *Server) admit(conn net.Conn) bool {
+	remote := conn.RemoteAddr().String()
+	if !s.cfg.IPFilter.AllowedRemote(remote) {
+		// Not audited: a scanner on a denied range would flood the audit log.
+		if s.logger != nil {
+			s.logger.Debug("ftp connection rejected", "remote_addr", remote, "reason", "ip not allowed")
+		}
+		_ = conn.Close()
+		return false
+	}
+	if !s.limiter.TryAcquire() {
+		s.emitRejection(remote, "max connections reached")
+		_ = conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+		_, _ = conn.Write([]byte("421 Too many connections, try again later.\r\n"))
+		_ = conn.Close()
+		return false
+	}
+	return true
+}
+
+func (s *Server) emitRejection(remote, reason string) {
+	if s.logger != nil {
+		s.logger.Warn("ftp connection rejected", "remote_addr", remote, "reason", reason)
+	}
+	if s.audit != nil {
+		s.audit.Emit(audit.Event{
+			Type:     audit.EventConnectionRejected,
+			Protocol: "ftp",
+			IP:       remote,
+			Status:   "rejected",
+			Message:  reason,
+		})
+	}
 }
 
 func (s *Server) recoverConnPanic(conn net.Conn) {
@@ -186,6 +243,8 @@ type connState struct {
 	fs              vfs.FileSystem
 	rnfr            string
 	passiveLn       net.Listener
+	activeAddr      string
+	restOffset      int64 // REST marker for the next RETR/STOR
 	passiveIP       string
 	remoteAddr      string
 	secureControl   bool
@@ -263,6 +322,9 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, implicitTLS bool
 		if line == "" {
 			continue
 		}
+		if state.session != nil {
+			s.sessions.Touch(state.session.ID)
+		}
 
 		cmd, arg := splitCommand(line)
 		switch cmd {
@@ -274,12 +336,21 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, implicitTLS bool
 				writeReply(conn, 503, "Login with USER first.")
 				continue
 			}
+			throttle := s.auth.IPThrottle()
+			if banErr := throttle.Check(state.remoteAddr, time.Now()); banErr != nil {
+				writeReply(conn, 421, "Too many failed logins, try again later.")
+				s.emitAudit(audit.EventAuthFailure, state.username, "ftp", "", state.remoteAddr, "failed", banErr.Error())
+				s.cleanupConnState(state)
+				return
+			}
 			user, authErr := s.auth.Authenticate(ctx, state.username, arg)
 			if authErr != nil {
+				throttle.RecordFailure(state.remoteAddr, time.Now())
 				writeReply(conn, 530, "Login incorrect.")
 				s.emitAudit(audit.EventAuthFailure, state.username, "ftp", "", state.remoteAddr, "failed", authErr.Error())
 				continue
 			}
+			throttle.RecordSuccess(state.remoteAddr)
 			userFS, fsErr := s.buildFS(user)
 			if fsErr != nil {
 				writeReply(conn, 550, "Unable to mount filesystem.")
@@ -314,10 +385,15 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, implicitTLS bool
 			features := []string{
 				" UTF8",
 				" PASV",
+				" EPSV",
+				" REST STREAM",
 				" SIZE",
 				" MDTM",
 				" MLST type*;size*;modify*;",
 				" MLSD",
+			}
+			if s.cfg.ActiveMode {
+				features = append(features, " EPRT")
 			}
 			if s.ftpsExplicitEnabled() || implicitTLS {
 				features = append(features, " AUTH TLS", " PBSZ", " PROT")
@@ -345,9 +421,12 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, implicitTLS bool
 				continue
 			}
 			writeReply(conn, 200, "Type set.")
-		case "CWD":
+		case "CWD", "CDUP":
 			if !isAuthed(conn, state) {
 				continue
+			}
+			if cmd == "CDUP" {
+				arg = ".."
 			}
 			target := resolvePath(state.cwd, arg)
 			info, statErr := state.fs.Stat(target)
@@ -458,6 +537,56 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, implicitTLS bool
 			}
 			p, _ := strconv.Atoi(port)
 			writeReply(conn, 227, fmt.Sprintf("Entering Passive Mode (%s,%s,%s,%s,%d,%d).", h[0], h[1], h[2], h[3], p/256, p%256))
+		case "EPSV":
+			if !isAuthed(conn, state) {
+				continue
+			}
+			if strings.EqualFold(strings.TrimSpace(arg), "ALL") {
+				writeReply(conn, 200, "EPSV ALL ok.")
+				continue
+			}
+			if proto := strings.TrimSpace(arg); proto != "" && proto != "1" && proto != "2" {
+				writeReply(conn, 522, "Network protocol not supported, use (1,2)")
+				continue
+			}
+			if err := s.enterPassiveMode(state); err != nil {
+				writeReply(conn, 425, "Can't open passive connection.")
+				continue
+			}
+			_, port, _ := net.SplitHostPort(state.passiveLn.Addr().String())
+			writeReply(conn, 229, fmt.Sprintf("Entering Extended Passive Mode (|||%s|)", port))
+		case "PORT", "EPRT":
+			if !isAuthed(conn, state) {
+				continue
+			}
+			if !s.cfg.ActiveMode {
+				writeReply(conn, 502, "Active mode is disabled; use PASV or EPSV.")
+				continue
+			}
+			var target string
+			var parseErr error
+			if cmd == "PORT" {
+				target, parseErr = parsePORTArg(arg)
+			} else {
+				target, parseErr = parseEPRTArg(arg)
+			}
+			if parseErr != nil {
+				writeReply(conn, 501, "Syntax error in parameters.")
+				continue
+			}
+			if reason := validateActiveTarget(target, state.remoteAddr); reason != "" {
+				if s.logger != nil {
+					s.logger.Warn("rejecting ftp active data target", "target", target, "control", state.remoteAddr, "reason", reason)
+				}
+				writeReply(conn, 504, "Illegal PORT/EPRT target.")
+				continue
+			}
+			if state.passiveLn != nil {
+				_ = state.passiveLn.Close()
+				state.passiveLn = nil
+			}
+			state.activeAddr = target
+			writeReply(conn, 200, cmd+" command successful.")
 		case "LIST", "NLST", "MLSD":
 			if !isAuthed(conn, state) {
 				continue
@@ -468,7 +597,7 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, implicitTLS bool
 			}
 			dc, err := s.acceptDataConn(state)
 			if err != nil {
-				writeReply(conn, 425, "Use PASV first.")
+				writeReply(conn, 425, "Use PASV, EPSV or PORT first.")
 				continue
 			}
 			writeReply(conn, 150, "Opening data connection.")
@@ -509,14 +638,27 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, implicitTLS bool
 			}
 			_, _ = conn.Write(buf.Bytes())
 			_, _ = fmt.Fprintf(conn, "250 End\r\n")
+		case "REST":
+			if !isAuthed(conn, state) {
+				continue
+			}
+			offset, parseErr := strconv.ParseInt(strings.TrimSpace(arg), 10, 64)
+			if parseErr != nil || offset < 0 {
+				writeReply(conn, 501, "Invalid restart marker.")
+				continue
+			}
+			state.restOffset = offset
+			writeReply(conn, 350, fmt.Sprintf("Restarting at %d. Send STOR or RETR.", offset))
 		case "RETR":
 			if !isAuthed(conn, state) {
 				continue
 			}
 			p := resolvePath(state.cwd, arg)
+			offset := state.restOffset
+			state.restOffset = 0
 			dc, err := s.acceptDataConn(state)
 			if err != nil {
-				writeReply(conn, 425, "Use PASV first.")
+				writeReply(conn, 425, "Use PASV, EPSV or PORT first.")
 				continue
 			}
 			f, err := state.fs.Open(p, os.O_RDONLY, 0)
@@ -528,6 +670,21 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, implicitTLS bool
 			var total int64
 			if info, statErr := f.Stat(); statErr == nil {
 				total = info.Size()
+			}
+			if offset > 0 {
+				if offset > total {
+					_ = f.Close()
+					_ = dc.Close()
+					writeReply(conn, 554, "Restart marker beyond end of file.")
+					continue
+				}
+				if _, seekErr := f.Seek(offset, io.SeekStart); seekErr != nil {
+					_ = f.Close()
+					_ = dc.Close()
+					writeReply(conn, 554, "Cannot restart at the requested offset.")
+					continue
+				}
+				total -= offset
 			}
 			transferID := ""
 			if s.xfer != nil {
@@ -570,15 +727,18 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, implicitTLS bool
 				continue
 			}
 			p := resolvePath(state.cwd, arg)
+			offset := state.restOffset
+			state.restOffset = 0
 			dc, err := s.acceptDataConn(state)
 			if err != nil {
-				writeReply(conn, 425, "Use PASV first.")
+				writeReply(conn, 425, "Use PASV, EPSV or PORT first.")
 				continue
 			}
 			flags := os.O_CREATE | os.O_WRONLY
-			if cmd == "APPE" {
+			switch {
+			case cmd == "APPE":
 				flags |= os.O_APPEND
-			} else {
+			case offset == 0:
 				flags |= os.O_TRUNC
 			}
 			f, err := state.fs.Open(p, flags, 0o644)
@@ -586,6 +746,16 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, implicitTLS bool
 				_ = dc.Close()
 				writeReply(conn, 550, "Cannot open target file.")
 				continue
+			}
+			if cmd == "STOR" && offset > 0 {
+				// Resumed upload: keep the bytes the client already sent and
+				// continue writing at the restart marker.
+				if _, seekErr := f.Seek(offset, io.SeekStart); seekErr != nil {
+					_ = f.Close()
+					_ = dc.Close()
+					writeReply(conn, 554, "Cannot restart at the requested offset.")
+					continue
+				}
 			}
 			transferID := ""
 			if s.xfer != nil {
@@ -694,6 +864,7 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, implicitTLS bool
 }
 
 func (s *Server) cleanupConnState(state *connState) {
+	state.activeAddr = ""
 	if state.passiveLn != nil {
 		_ = state.passiveLn.Close()
 		state.passiveLn = nil
@@ -720,6 +891,7 @@ func (s *Server) emitAudit(t audit.EventType, username, protocol, p, ip, status,
 }
 
 func (s *Server) enterPassiveMode(state *connState) error {
+	state.activeAddr = ""
 	if state.passiveLn != nil {
 		_ = state.passiveLn.Close()
 		state.passiveLn = nil
@@ -744,6 +916,15 @@ func (s *Server) enterPassiveMode(state *connState) error {
 }
 
 func (s *Server) acceptDataConn(state *connState) (net.Conn, error) {
+	if state.activeAddr != "" {
+		target := state.activeAddr
+		state.activeAddr = ""
+		conn, err := net.DialTimeout("tcp", target, 30*time.Second)
+		if err != nil {
+			return nil, err
+		}
+		return s.wrapDataConn(state, conn), nil
+	}
 	if state.passiveLn == nil {
 		return nil, errors.New("passive listener not ready")
 	}
@@ -774,17 +955,92 @@ func (s *Server) acceptDataConn(state *connState) (net.Conn, error) {
 			_ = conn.Close()
 			continue
 		}
-		if state.secureControl && state.dataProtPrivate && s.cfg.TLSConfig != nil {
-			// The TLS handshake must NOT be awaited here: RFC 4217 clients
-			// start the data-TLS handshake when they connect the data
-			// channel, before (or concurrently with) the transfer command.
-			// Wrapping without an eager handshake lets it complete lazily on
-			// first I/O on either side; the transfer deadline below bounds it.
-			conn = tls.Server(conn, s.cfg.TLSConfig)
-		}
-		_ = conn.SetDeadline(time.Now().Add(s.cfg.TransferTimeout))
-		return conn, nil
+		return s.wrapDataConn(state, conn), nil
 	}
+}
+
+// wrapDataConn applies PROT P TLS and the transfer deadline to a data
+// connection. Per RFC 4217 the FTP server is always the TLS server, whichever
+// side opened the TCP connection.
+func (s *Server) wrapDataConn(state *connState, conn net.Conn) net.Conn {
+	if state.secureControl && state.dataProtPrivate && s.cfg.TLSConfig != nil {
+		// The TLS handshake must NOT be awaited here: RFC 4217 clients
+		// start the data-TLS handshake when they connect the data
+		// channel, before (or concurrently with) the transfer command.
+		// Wrapping without an eager handshake lets it complete lazily on
+		// first I/O on either side; the transfer deadline below bounds it.
+		conn = tls.Server(conn, s.cfg.TLSConfig)
+	}
+	_ = conn.SetDeadline(time.Now().Add(s.cfg.TransferTimeout))
+	return conn
+}
+
+// parsePORTArg parses "h1,h2,h3,h4,p1,p2" into host:port.
+func parsePORTArg(arg string) (string, error) {
+	parts := strings.Split(strings.TrimSpace(arg), ",")
+	if len(parts) != 6 {
+		return "", errors.New("PORT needs 6 fields")
+	}
+	nums := make([]int, 6)
+	for i, p := range parts {
+		n, err := strconv.Atoi(strings.TrimSpace(p))
+		if err != nil || n < 0 || n > 255 {
+			return "", errors.New("PORT field out of range")
+		}
+		nums[i] = n
+	}
+	ip := net.IPv4(byte(nums[0]), byte(nums[1]), byte(nums[2]), byte(nums[3]))
+	return net.JoinHostPort(ip.String(), strconv.Itoa(nums[4]*256+nums[5])), nil
+}
+
+// parseEPRTArg parses RFC 2428 "<d>proto<d>addr<d>port<d>" into host:port.
+func parseEPRTArg(arg string) (string, error) {
+	arg = strings.TrimSpace(arg)
+	if len(arg) < 7 {
+		return "", errors.New("EPRT too short")
+	}
+	fields := strings.Split(arg, arg[:1])
+	if len(fields) != 5 || fields[0] != "" || fields[4] != "" {
+		return "", errors.New("EPRT malformed")
+	}
+	ip := net.ParseIP(fields[2])
+	if ip == nil {
+		return "", errors.New("EPRT bad address")
+	}
+	switch fields[1] {
+	case "1":
+		if ip.To4() == nil {
+			return "", errors.New("EPRT protocol/address mismatch")
+		}
+	case "2":
+		if ip.To4() != nil && !strings.Contains(fields[2], ":") {
+			return "", errors.New("EPRT protocol/address mismatch")
+		}
+	default:
+		return "", errors.New("EPRT unsupported protocol")
+	}
+	port, err := strconv.Atoi(fields[3])
+	if err != nil || port < 1 || port > 65535 {
+		return "", errors.New("EPRT bad port")
+	}
+	return net.JoinHostPort(ip.String(), strconv.Itoa(port)), nil
+}
+
+// validateActiveTarget blocks FTP bounce attacks: the data connection may
+// only go back to the client's own address and to an unprivileged port.
+func validateActiveTarget(target, controlRemote string) string {
+	host, portStr, err := net.SplitHostPort(target)
+	if err != nil {
+		return "malformed target"
+	}
+	if port, _ := strconv.Atoi(portStr); port < 1024 {
+		return "privileged port"
+	}
+	controlHost := hostFromAddr(controlRemote)
+	if controlHost == "" || !hostsEqual(controlHost, host) {
+		return "address differs from control connection"
+	}
+	return ""
 }
 
 func hostFromAddr(addr string) string {

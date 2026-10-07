@@ -1,6 +1,9 @@
 package session
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestManagerLifecycleAndStats(t *testing.T) {
 	mgr := NewManager()
@@ -65,4 +68,19 @@ func TestAttachTerminatorRejectsMissingOrNil(t *testing.T) {
 	if mgr.AttachTerminator("missing", func() {}) {
 		t.Fatal("expected missing session terminator attach to fail")
 	}
+}
+
+func TestTouchUpdatesLastSeen(t *testing.T) {
+	m := NewManager()
+	s := m.Start("alice", "sftp", "127.0.0.1:1")
+	m.mu.Lock()
+	m.sessions[s.ID].LastSeenAt = s.LastSeenAt.Add(-time.Minute)
+	m.mu.Unlock()
+	m.Touch(s.ID)
+	if got := m.Get(s.ID).LastSeenAt; time.Since(got) > 5*time.Second {
+		t.Fatalf("LastSeenAt not refreshed: %v", got)
+	}
+	m.Touch("missing") // must not panic
+	var nilM *Manager
+	nilM.Touch(s.ID)
 }

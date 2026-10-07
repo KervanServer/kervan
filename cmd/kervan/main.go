@@ -11,6 +11,8 @@ import (
 	"os/signal"
 	"path/filepath"
 	"sort"
+	"strconv"
+	"strings"
 	"syscall"
 	"text/tabwriter"
 	"time"
@@ -92,6 +94,9 @@ func cmdRun(args []string) {
 		}()
 	}
 	logger := ilog.New(cfg.Server.LogLevel, cfg.Server.LogFormat, logOutput)
+	for _, warning := range config.UnsupportedSettingWarnings(cfg) {
+		logger.Warn("config setting has no effect", "detail", warning)
+	}
 
 	app, err := server.New(cfg, *configPath, logger)
 	if err != nil {
@@ -106,12 +111,36 @@ func cmdRun(args []string) {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	if err := app.Start(ctx); err != nil {
+		_ = app.Close()
 		exitf("start: %v", err)
+	}
+	if pidFile := cfg.Server.PIDFile; pidFile != "" {
+		if err := writePIDFile(pidFile); err != nil {
+			_ = app.Close()
+			exitf("write pid file: %v", err)
+		}
+		defer func() { _ = os.Remove(pidFile) }()
 	}
 
 	logger.Info("server is running", "version", build.Version)
 	<-ctx.Done()
 	logger.Info("shutdown signal received")
+}
+
+// writePIDFile records the process ID, refusing to overwrite the PID file of
+// another live kervan process.
+func writePIDFile(path string) error {
+	if raw, err := os.ReadFile(path); err == nil {
+		if pid, convErr := strconv.Atoi(strings.TrimSpace(string(raw))); convErr == nil && pid > 0 && pid != os.Getpid() && processAlive(pid) {
+			return fmt.Errorf("%s belongs to running process %d", path, pid)
+		}
+	}
+	if dir := filepath.Dir(path); dir != "" {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			return err
+		}
+	}
+	return os.WriteFile(path, []byte(strconv.Itoa(os.Getpid())+"\n"), 0o644)
 }
 
 func cmdInit(args []string) {

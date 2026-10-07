@@ -12,6 +12,7 @@ import (
 	"github.com/kervanserver/kervan/internal/audit"
 	"github.com/kervanserver/kervan/internal/auth"
 	"github.com/kervanserver/kervan/internal/crypto"
+	"github.com/kervanserver/kervan/internal/netguard"
 	"github.com/kervanserver/kervan/internal/session"
 	"github.com/kervanserver/kervan/internal/transfer"
 	"github.com/kervanserver/kervan/internal/vfs"
@@ -23,6 +24,10 @@ type Config struct {
 	Port        int
 	HostKeyDir  string
 	IdleTimeout time.Duration
+	// IPFilter rejects connections from denied addresses; nil admits all.
+	IPFilter *netguard.IPFilter
+	// MaxConnections caps concurrent SSH connections; <= 0 is unlimited.
+	MaxConnections int
 }
 
 type UserFSBuilder func(username string) (vfs.FileSystem, error)
@@ -35,6 +40,7 @@ type Server struct {
 	audit    *audit.Engine
 	buildFS  UserFSBuilder
 	xfer     *transfer.Manager
+	limiter  *netguard.Limiter
 
 	listener net.Listener
 	wg       sync.WaitGroup
@@ -63,6 +69,7 @@ func NewServer(cfg Config, logger *slog.Logger, authEngine *auth.Engine, session
 		audit:    auditEngine,
 		buildFS:  buildFS,
 		xfer:     xfer,
+		limiter:  netguard.NewLimiter(cfg.MaxConnections),
 	}
 }
 
@@ -78,11 +85,19 @@ func (s *Server) Start(ctx context.Context) error {
 
 	sshCfg := &ssh.ServerConfig{
 		PasswordCallback: func(meta ssh.ConnMetadata, pass []byte) (*ssh.Permissions, error) {
+			remote := meta.RemoteAddr().String()
+			throttle := s.auth.IPThrottle()
+			if banErr := throttle.Check(remote, time.Now()); banErr != nil {
+				s.emitAudit(audit.EventAuthFailure, meta.User(), "sftp", "", remote, "failed", banErr.Error())
+				return nil, banErr
+			}
 			user, authErr := s.auth.Authenticate(ctx, meta.User(), string(pass))
 			if authErr != nil {
-				s.emitAudit(audit.EventAuthFailure, meta.User(), "sftp", "", meta.RemoteAddr().String(), "failed", authErr.Error())
+				throttle.RecordFailure(remote, time.Now())
+				s.emitAudit(audit.EventAuthFailure, meta.User(), "sftp", "", remote, "failed", authErr.Error())
 				return nil, errors.New("invalid credentials")
 			}
+			throttle.RecordSuccess(remote)
 			_ = s.auth.RecordSuccessfulLogin(user.ID)
 			s.emitAudit(audit.EventAuthSuccess, user.Username, "sftp", "", meta.RemoteAddr().String(), "ok", "login success")
 			return &ssh.Permissions{
@@ -93,6 +108,12 @@ func (s *Server) Start(ctx context.Context) error {
 			}, nil
 		},
 		PublicKeyCallback: func(meta ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
+			// A rejected public key is a normal step of SSH auth negotiation
+			// (clients offer every key they hold), so it is not counted as a
+			// failure; only an active ban is enforced here.
+			if banErr := s.auth.IPThrottle().Check(meta.RemoteAddr().String(), time.Now()); banErr != nil {
+				return nil, banErr
+			}
 			user, authErr := s.auth.AuthenticatePublicKey(ctx, meta.User(), key)
 			if authErr != nil {
 				s.emitAudit(audit.EventAuthFailure, meta.User(), "sftp", "", meta.RemoteAddr().String(), "failed", authErr.Error())
@@ -121,26 +142,58 @@ func (s *Server) Start(ctx context.Context) error {
 	s.wg.Add(1)
 	go func() {
 		defer s.wg.Done()
+		acceptFailures := 0
 		for {
 			conn, acceptErr := ln.Accept()
 			if acceptErr != nil {
 				if s.isClosed() {
 					return
 				}
+				acceptFailures++
 				if s.logger != nil {
 					s.logger.Error("sftp accept failed", "error", acceptErr)
 				}
+				time.Sleep(netguard.AcceptBackoff(acceptFailures))
+				continue
+			}
+			acceptFailures = 0
+			if !s.admit(conn) {
 				continue
 			}
 			s.wg.Add(1)
 			go func(c net.Conn) {
 				defer s.wg.Done()
+				defer s.limiter.Release()
 				defer s.recoverConnPanic(c)
 				s.handleConn(sshCfg, c)
 			}(conn)
 		}
 	}()
 	return nil
+}
+
+// admit applies the IP filter and connection cap to a freshly accepted
+// connection. A rejected connection is closed; on success the caller owns one
+// limiter slot and must Release it.
+func (s *Server) admit(conn net.Conn) bool {
+	remote := conn.RemoteAddr().String()
+	if !s.cfg.IPFilter.AllowedRemote(remote) {
+		// Not audited: a scanner on a denied range would flood the audit log.
+		if s.logger != nil {
+			s.logger.Debug("sftp connection rejected", "remote_addr", remote, "reason", "ip not allowed")
+		}
+		_ = conn.Close()
+		return false
+	}
+	if !s.limiter.TryAcquire() {
+		if s.logger != nil {
+			s.logger.Warn("sftp connection rejected", "remote_addr", remote, "reason", "max connections reached")
+		}
+		s.emitAudit(audit.EventConnectionRejected, "", "sftp", "", remote, "rejected", "max connections reached")
+		_ = conn.Close()
+		return false
+	}
+	return true
 }
 
 func (s *Server) recoverConnPanic(conn net.Conn) {
@@ -192,6 +245,11 @@ func (s *Server) handleConn(cfg *ssh.ServerConfig, c net.Conn) {
 		_ = sshConn.Close()
 	})
 	defer s.sessions.End(sess.ID)
+	renewDeadline := touch
+	touch = func() {
+		renewDeadline()
+		s.sessions.Touch(sess.ID)
+	}
 	go ssh.DiscardRequests(reqs)
 
 	for ch := range chans {
@@ -215,6 +273,9 @@ func (s *Server) handleSessionChannel(ch ssh.Channel, requests <-chan *ssh.Reque
 			if len(req.Payload) >= 4 && string(req.Payload[4:]) == "sftp" {
 				_ = req.Reply(true, nil)
 				s.runSFTP(ch, fsys, username, remoteAddr, touch)
+				// Without an exit-status the OpenSSH client reports failure
+				// (scp exits 1) even though every operation succeeded.
+				_, _ = ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{0}))
 				return
 			}
 			_ = req.Reply(false, nil)
@@ -224,15 +285,22 @@ func (s *Server) handleSessionChannel(ch ssh.Channel, requests <-chan *ssh.Reque
 				_ = req.Reply(false, nil)
 				return
 			}
-			mode, target, err := parseSCPExec(command)
+			scpReq, err := parseSCPExec(command)
 			if err != nil {
 				_ = req.Reply(false, nil)
 				return
 			}
 			_ = req.Reply(true, nil)
-			if runErr := s.runSCP(ch, fsys, mode, target, username, remoteAddr, touch); runErr != nil && s.logger != nil {
-				s.logger.Debug("scp request failed", "error", runErr, "user", username, "mode", mode, "target", target)
+			exitStatus := uint32(0)
+			if runErr := s.runSCP(ch, fsys, scpReq, username, remoteAddr, touch); runErr != nil {
+				exitStatus = 1
+				if s.logger != nil {
+					s.logger.Debug("scp request failed", "error", runErr, "user", username, "mode", scpReq.mode, "target", scpReq.target)
+				}
 			}
+			// Report the outcome like a real remote scp process would, so
+			// clients surface failures instead of assuming success.
+			_, _ = ch.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{exitStatus}))
 			return
 		case "shell":
 			_ = req.Reply(false, nil)

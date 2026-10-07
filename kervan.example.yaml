@@ -15,9 +15,9 @@ ftp:
   banner: Welcome to Kervan File Server
   passive_port_range: 50000-50100
   passive_ip: ""
-  active_mode: true
-  ascii_transfer: true
-  max_connections: 500
+  active_mode: true          # PORT/EPRT; data connections only go back to the client's own IP
+  ascii_transfer: true       # no effect: TYPE A is accepted, data is always sent as-is
+  max_connections: 500       # concurrent control connections, 0 = unlimited
   idle_timeout: 300s
   transfer_timeout: 1h
 
@@ -29,20 +29,19 @@ ftps:
   max_tls_version: "1.3"
   cert_file: ""
   key_file: ""
-  client_auth: none
+  client_auth: none          # none | request | require (needs client_ca_file)
   client_ca_file: ""
 
 sftp:
   enabled: true
   port: 2222
   host_key_dir: ./data/host_keys
-  host_key_algorithms:
+  host_key_algorithms:       # no effect: a single ed25519 host key is used
     - ed25519
     - rsa
-  max_connections: 500
+  max_connections: 500       # concurrent SSH connections, 0 = unlimited
   idle_timeout: 300s
-  max_packet_size: 32768
-  disable_shell: true
+  disable_shell: true        # no effect: shells are never offered
 
 scp:
   enabled: true
@@ -69,7 +68,7 @@ debug:
   pprof: true
 
 auth:
-  default_provider: local
+  default_provider: local    # no effect: local users first, then LDAP when enabled
   password_hash: argon2id
   min_password_length: 8
   require_special_char: false
@@ -91,8 +90,8 @@ storage:
 quota:
   enabled: true
   default_max_storage: 1073741824
-  default_max_files: 100000
-  check_interval: 60s
+  default_max_files: 100000  # no effect: only default_max_storage is enforced
+  check_interval: 60s        # no effect: usage is tracked on every write
 
 audit:
   enabled: true
@@ -109,16 +108,18 @@ audit:
     #   retry_count: 3
 
 security:
+  # IPs or CIDRs, applied to FTP, SFTP/SCP and the WebUI/API; deny wins.
+  # An empty allowed_ips admits everyone. Reloadable at runtime.
   allowed_ips: []
   denied_ips: []
   brute_force:
     enabled: true
-    max_attempts: 5
+    max_attempts: 5          # per-account failures before lockout
     lockout_duration: 15m
-    ip_ban_threshold: 20
+    ip_ban_threshold: 20     # per-address failures (all protocols) before a ban
     ip_ban_duration: 1h
-    whitelist_ips: []
+    whitelist_ips: []        # never banned
 
 mcp:
   enabled: true
-  transport: stdio
+  transport: stdio           # only stdio is supported

@@ -9,12 +9,14 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-// Contract: SFTP reply packet types follow draft-ietf-secsh-filexfer-02 on the
-// wire — SSH_FXP_STATUS=101, SSH_FXP_HANDLE=102, SSH_FXP_NAME=103,
-// SSH_FXP_DATA=104. These tests assert SPEC LITERALS, not the package's
-// fxp* constants: the constants were once swapped (fxpData=103, fxpName=104),
-// which typed every READ reply as NAME and every READDIR/REALPATH reply as
-// DATA, and the package-constant tests could not detect it.
+// Contract: SFTP reply packet types follow draft-ietf-secsh-filexfer-02
+// section 3 on the wire — SSH_FXP_STATUS=101, SSH_FXP_HANDLE=102,
+// SSH_FXP_DATA=103, SSH_FXP_NAME=104, SSH_FXP_ATTRS=105 (the same values
+// OpenSSH's sftp.h uses). These tests assert SPEC LITERALS, not the package's
+// fxp* constants. v0.0.2 swapped DATA and NAME based on a misreading of the
+// draft, and this file encoded the wrong literals, so every real client
+// (OpenSSH: "Expected SSH2_FXP_NAME(104) packet, got 103") broke while the
+// suite stayed green; TestSFTPOpenSSHInterop now guards against that.
 
 const (
 	wireFxpRead           = 5
@@ -25,8 +27,8 @@ const (
 	wireFxpRename         = 18
 	wireFxpStatus         = 101
 	wireFxpHandle         = 102
-	wireFxpName           = 103
-	wireFxpData           = 104
+	wireFxpData           = 103
+	wireFxpName           = 104
 	wireNoSuchFile        = 2
 	wireFxpStat           = 17
 	wireFxpFStat          = 8
@@ -159,7 +161,7 @@ func TestSFTPWriteRenameRemoveWireTypes(t *testing.T) {
 	wireSend(t, ch, wireFxpRename, 13, wireStr("/a.txt"), wireStr("/renamed.txt"))
 	wireExpectStatus(t, ch, 13, wireStatusOK)
 
-	// READ /renamed.txt: HANDLE (102), then DATA (104) with the moved content.
+	// READ /renamed.txt: HANDLE (102), then DATA (103) with the moved content.
 	var openR []byte
 	openR = append(openR, wireStr("/renamed.txt")...)
 	openR = append(openR, wireU32(1)...)
@@ -199,7 +201,7 @@ func TestSFTPWriteRenameRemoveWireTypes(t *testing.T) {
 }
 
 // Contract: SFTP directory operations follow draft-ietf-secsh-filexfer-02 on
-// the wire — REALPATH replies NAME (103) with the normalized path, OPENDIR
+// the wire — REALPATH replies NAME (104) with the normalized path, OPENDIR
 // replies HANDLE (102), READDIR replies NAME packets carrying the directory
 // children and a terminating STATUS EOF (1), MKDIR and RMDIR round-trip, and
 // OPENDIR on a file is an error.
@@ -323,7 +325,7 @@ func TestSFTPRealpathReaddirWireTypes(t *testing.T) {
 	wireExpectStatus(t, ch, id, wireStatusOK)
 	id++
 
-	// REALPATH: NAME (103) with exactly one normalized entry.
+	// REALPATH: NAME (104) with exactly one normalized entry.
 	wireSend(t, ch, wireFxpRealpath, id, wireStr("/dir/file.txt"))
 	typ, payload = wireRecv(t, ch, id)
 	if typ != wireFxpName {
@@ -344,7 +346,7 @@ func TestSFTPRealpathReaddirWireTypes(t *testing.T) {
 	dirHandle := string(payload[4 : 4+binary.BigEndian.Uint32(payload)])
 	id++
 
-	// READDIR: NAME (103) with the directory child.
+	// READDIR: NAME (104) with the directory child.
 	wireSend(t, ch, wireFxpReadDir, id, wireStr(dirHandle))
 	typ, payload = wireRecv(t, ch, id)
 	if typ != wireFxpName {
@@ -457,10 +459,11 @@ func TestStatAttrsAndBogusHandles(t *testing.T) {
 	wireExpectStatus(t, ch, 28, wireStatusFail)
 }
 
-// TestUnsupportedOpsWireContract pins the round-49 contract: SETSTAT,
-// FSETSTAT, READLINK, SYMLINK and EXTENDED reply STATUS with
-// SSH_FX_OP_UNSUPPORTED (including truncated payloads — the handler must not
-// crash and must echo the request id), unknown packet types reply
+// TestUnsupportedOpsWireContract pins the reply contract for malformed and
+// unsupported requests: a truncated SETSTAT answers SSH_FX_BAD_MESSAGE with
+// the id echoed (no crash), SETSTAT on a missing path answers NO_SUCH_FILE,
+// FSETSTAT on an unknown handle answers FAILURE, READLINK, SYMLINK and
+// EXTENDED answer SSH_FX_OP_UNSUPPORTED, unknown packet types answer
 // SSH_FX_BAD_MESSAGE, and the connection stays fully functional afterwards.
 func TestUnsupportedOpsWireContract(t *testing.T) {
 	srv, sshCfg := sftpIdleServer(t, 30*time.Second)
@@ -474,17 +477,13 @@ func TestUnsupportedOpsWireContract(t *testing.T) {
 		t.Fatalf("init round trip: %v", err)
 	}
 
-	// Truncated SETSTAT: id-only payload, no path or attrs. The handler must
-	// reply STATUS(unsupported) with the id echoed — a crash here would kill
-	// the connection goroutine.
 	wireSend(t, ch, wireFxpSetstat, 31)
-	wireExpectStatus(t, ch, 31, wireStatusUnsupported)
+	wireExpectStatus(t, ch, 31, wireBadMessage)
 
-	// Well-formed payloads for all five unsupported ops.
-	wireSend(t, ch, wireFxpSetstat, 32, wireStr("/f.txt"), wireU32(0), wireU64(0), wireU32(0), wireU32(0), wireU32(0), wireU32(0))
-	wireExpectStatus(t, ch, 32, wireStatusUnsupported)
-	wireSend(t, ch, wireFxpFsetstat, 33, wireStr("handle-x"), wireU32(0), wireU64(0), wireU32(0), wireU32(0), wireU32(0), wireU32(0))
-	wireExpectStatus(t, ch, 33, wireStatusUnsupported)
+	wireSend(t, ch, wireFxpSetstat, 32, wireStr("/f.txt"), wireU32(0))
+	wireExpectStatus(t, ch, 32, wireNoSuchFile)
+	wireSend(t, ch, wireFxpFsetstat, 33, wireStr("handle-x"), wireU32(0))
+	wireExpectStatus(t, ch, 33, wireStatusFail)
 	wireSend(t, ch, wireFxpReadlink, 34, wireStr("/link"))
 	wireExpectStatus(t, ch, 34, wireStatusUnsupported)
 	wireSend(t, ch, wireFxpSymlink, 35, wireStr("/link"), wireStr("/target"))
@@ -503,4 +502,42 @@ func TestUnsupportedOpsWireContract(t *testing.T) {
 		t.Fatalf("REALPATH reply type = %d, want NAME (%d)", typ, wireFxpName)
 	}
 	_ = payload
+}
+
+// TestSFTPSetstatAppliesSizeAndToleratesMetadata covers the calls OpenSSH
+// scp/sftp issue after an upload: FSETSTAT truncation is applied, and
+// permission/time changes the user may not make are skipped with STATUS OK
+// rather than failing the transfer.
+func TestSFTPSetstatAppliesSizeAndToleratesMetadata(t *testing.T) {
+	s, sshCfg := sftpIdleServer(t, 30*time.Second)
+	cc := sftpStartListener(t, s, sshCfg)
+	sshConn, ch, err := sftpClientHandshake(t, cc)
+	if err != nil {
+		t.Fatalf("handshake: %v", err)
+	}
+	defer sshConn.Close()
+	if err := sftpInitRoundTrip(t, ch); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	wireSend(t, ch, wireFxpOpen, 1, wireStr("/s.txt"), wireU32(2|8|16), wireU32(0))
+	h := wireExpectHandle(t, ch, 1)
+	wireSend(t, ch, wireFxpWrite, 2, wireStr(h), wireU64(0), wireStr("payload"))
+	wireExpectStatus(t, ch, 2, wireStatusOK)
+	// FSETSTAT size=3, permissions=0600, atime/mtime.
+	wireSend(t, ch, wireFxpFsetstat, 3, wireStr(h), wireU32(0x1|0x4|0x8), wireU64(3), wireU32(0o600), wireU32(1_600_000_000), wireU32(1_600_000_000))
+	wireExpectStatus(t, ch, 3, wireStatusOK)
+	wireSend(t, ch, wireFxpClose, 4, wireStr(h))
+	wireExpectStatus(t, ch, 4, wireStatusOK)
+	// Path-based SETSTAT with uid/gid + permissions.
+	wireSend(t, ch, wireFxpSetstat, 5, wireStr("/s.txt"), wireU32(0x2|0x4), wireU32(1000), wireU32(1000), wireU32(0o644))
+	wireExpectStatus(t, ch, 5, wireStatusOK)
+
+	wireSend(t, ch, wireFxpOpen, 6, wireStr("/s.txt"), wireU32(1), wireU32(0))
+	rh := wireExpectHandle(t, ch, 6)
+	wireSend(t, ch, wireFxpRead, 7, wireStr(rh), wireU64(0), wireU32(100))
+	typ, payload := wireRecv(t, ch, 7)
+	if typ != wireFxpData || len(payload) < 4 || string(payload[4:]) != "pay" {
+		t.Fatalf("after FSETSTAT size=3 read type %d payload %q, want DATA \"pay\"", typ, payload)
+	}
 }

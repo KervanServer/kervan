@@ -130,7 +130,7 @@ type attrsGoodEntry struct{ name string }
 func (e attrsGoodEntry) Name() string               { return e.name }
 func (e attrsGoodEntry) IsDir() bool                { return false }
 func (e attrsGoodEntry) Type() fs.FileMode          { return 0 }
-func (e attrsGoodEntry) Info() (os.FileInfo, error) { return attrsStubInfo{name: e.name}, nil }
+func (e attrsGoodEntry) Info() (os.FileInfo, error) { return attrsStubInfo(e), nil }
 
 // attrsBadEntry models an entry whose stat fails after the directory scan,
 // e.g. a file removed between ReadDir and the per-entry Info() call.

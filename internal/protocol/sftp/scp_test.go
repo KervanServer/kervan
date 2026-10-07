@@ -25,7 +25,8 @@ func TestParseExecPayload(t *testing.T) {
 }
 
 func TestParseSCPExec(t *testing.T) {
-	mode, target, err := parseSCPExec("scp -t /upload")
+	req, err := parseSCPExec("scp -t /upload")
+	mode, target := req.mode, req.target
 	if err != nil {
 		t.Fatalf("parseSCPExec error: %v", err)
 	}
@@ -33,7 +34,8 @@ func TestParseSCPExec(t *testing.T) {
 		t.Fatalf("unexpected parse result: mode=%q target=%q", mode, target)
 	}
 
-	mode, target, err = parseSCPExec("scp -f /download/file.txt")
+	req, err = parseSCPExec("scp -f /download/file.txt")
+	mode, target = req.mode, req.target
 	if err != nil {
 		t.Fatalf("parseSCPExec error: %v", err)
 	}
@@ -184,5 +186,32 @@ func TestReadSCPAckErrorMessageBounded(t *testing.T) {
 	}
 	if len(err.Error()) > 70000 {
 		t.Fatalf("ack error message is %d bytes — the SCP line length cap is not enforced, so an authenticated scp client can make the server materialize unbounded error strings", len(err.Error()))
+	}
+}
+
+func TestParseSCPExecShellQuoting(t *testing.T) {
+	cases := []struct {
+		cmd, mode, target string
+	}{
+		{"scp -t '/scp.pem'", scpModeSink, "/scp.pem"},                          // libssh2 / curl
+		{`scp -f '/dir/it'\''s here.txt'`, scpModeSource, "/dir/it's here.txt"}, // OpenSSH escaping
+		{`scp -t "/a b/c.txt"`, scpModeSink, "/a b/c.txt"},
+		{`scp -t /a\ b`, scpModeSink, "/a b"},
+		{"scp -v -p -t -- -dash.txt", scpModeSink, "-dash.txt"},
+		{"scp -t", scpModeSink, "."},
+	}
+	for _, tc := range cases {
+		req, err := parseSCPExec(tc.cmd)
+		if err != nil || req.mode != tc.mode || req.target != tc.target {
+			t.Errorf("parseSCPExec(%q) = %+v, %v; want %q, %q", tc.cmd, req, err, tc.mode, tc.target)
+		}
+	}
+	if req, _ := parseSCPExec("scp -pf '/x'"); !req.preserve {
+		t.Error("-p not detected")
+	}
+	for _, bad := range []string{"scp -t 'unterminated", "ls -la", "scp /x", "scp -t /with space.txt"} {
+		if _, err := parseSCPExec(bad); err == nil {
+			t.Errorf("parseSCPExec(%q) accepted", bad)
+		}
 	}
 }

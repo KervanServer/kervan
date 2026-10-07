@@ -25,6 +25,7 @@ import (
 	"github.com/kervanserver/kervan/internal/build"
 	"github.com/kervanserver/kervan/internal/config"
 	icrypto "github.com/kervanserver/kervan/internal/crypto"
+	"github.com/kervanserver/kervan/internal/netguard"
 	"github.com/kervanserver/kervan/internal/protocol/ftp"
 	"github.com/kervanserver/kervan/internal/protocol/sftp"
 	"github.com/kervanserver/kervan/internal/quota"
@@ -61,6 +62,7 @@ type App struct {
 	acmeMgr    *acme.Manager
 	acmeHTTP   *http.Server
 	debugHTTP  *http.Server
+	ipFilter   *netguard.IPFilter
 
 	cancel context.CancelFunc
 	start  time.Time
@@ -87,6 +89,14 @@ func New(cfg *config.Config, configPath string, logger *slog.Logger) (*App, erro
 		cfg.Security.BruteForce.LockoutDuration,
 	)
 	engine.SetMinPasswordLength(cfg.Auth.MinPasswordLength)
+	engine.SetRequireSpecialChar(cfg.Auth.RequireSpecialChar)
+	engine.SetLockoutEnabled(cfg.Security.BruteForce.Enabled)
+	ipThrottle, err := auth.NewIPThrottle(ipThrottleConfig(cfg))
+	if err != nil {
+		_ = st.Close()
+		return nil, fmt.Errorf("security.brute_force: %w", err)
+	}
+	engine.SetIPThrottle(ipThrottle)
 	if cfg.Auth.LDAP.Enabled {
 		ldapProvider := auth.NewLDAPProvider(cfg.Auth.LDAP)
 		if logger != nil {
@@ -103,6 +113,12 @@ func New(cfg *config.Config, configPath string, logger *slog.Logger) (*App, erro
 		_ = st.Close()
 		return nil, err
 	}
+	if !cfg.Audit.Enabled {
+		for _, sink := range auditSinks {
+			_ = sink.Close()
+		}
+		auditSinks, primaryAuditPath = nil, ""
+	}
 	if primaryAuditPath != "" {
 		sinkPath = primaryAuditPath
 	} else {
@@ -110,7 +126,14 @@ func New(cfg *config.Config, configPath string, logger *slog.Logger) (*App, erro
 	}
 	auditEngine := audit.NewEngine(logger, auditSinks...)
 
+	ipFilter, err := netguard.NewIPFilter(cfg.Security.AllowedIPs, cfg.Security.DeniedIPs)
+	if err != nil {
+		_ = st.Close()
+		return nil, fmt.Errorf("security ip filter: %w", err)
+	}
+
 	app := &App{
+		ipFilter:  ipFilter,
 		cfg:       cfg,
 		logger:    logger,
 		store:     st,
@@ -170,6 +193,17 @@ func New(cfg *config.Config, configPath string, logger *slog.Logger) (*App, erro
 		sharedTLSConfig = tlsCfg
 	}
 
+	// FTPS is only offered when ftps.enabled is set; the certificate alone
+	// may exist purely for WebUI TLS.
+	var ftpTLSConfig *tls.Config
+	if cfg.FTPS.Enabled {
+		ftpTLSConfig, err = icrypto.WithClientAuth(sharedTLSConfig, cfg.FTPS.ClientAuth, cfg.FTPS.ClientCAFile)
+		if err != nil {
+			_ = app.Close()
+			return nil, fmt.Errorf("ftps client auth: %w", err)
+		}
+	}
+
 	app.ftpServer = ftp.NewServer(
 		ftp.Config{
 			ListenAddr:       cfg.Server.ListenAddress,
@@ -181,7 +215,10 @@ func New(cfg *config.Config, configPath string, logger *slog.Logger) (*App, erro
 			TransferTimeout:  cfg.FTP.TransferTimeout,
 			FTPSMode:         cfg.FTPS.Mode,
 			FTPSImplicitPort: cfg.FTPS.ImplicitPort,
-			TLSConfig:        sharedTLSConfig,
+			TLSConfig:        ftpTLSConfig,
+			ActiveMode:       cfg.FTP.ActiveMode,
+			IPFilter:         ipFilter,
+			MaxConnections:   cfg.FTP.MaxConnections,
 		},
 		logger,
 		engine,
@@ -193,10 +230,12 @@ func New(cfg *config.Config, configPath string, logger *slog.Logger) (*App, erro
 
 	app.sftpServer = sftp.NewServer(
 		sftp.Config{
-			ListenAddr:  cfg.Server.ListenAddress,
-			Port:        cfg.SFTP.Port,
-			HostKeyDir:  cfg.SFTP.HostKeyDir,
-			IdleTimeout: cfg.SFTP.IdleTimeout,
+			ListenAddr:     cfg.Server.ListenAddress,
+			Port:           cfg.SFTP.Port,
+			HostKeyDir:     cfg.SFTP.HostKeyDir,
+			IdleTimeout:    cfg.SFTP.IdleTimeout,
+			IPFilter:       ipFilter,
+			MaxConnections: cfg.SFTP.MaxConnections,
 		},
 		logger,
 		engine,
@@ -231,6 +270,7 @@ func New(cfg *config.Config, configPath string, logger *slog.Logger) (*App, erro
 			BruteForceEnabled:    cfg.Security.BruteForce.Enabled,
 			LoginMaxAttempts:     cfg.Security.BruteForce.MaxAttempts,
 			LoginLockoutDuration: cfg.Security.BruteForce.LockoutDuration,
+			IPFilter:             ipFilter,
 		},
 		logger,
 		engine,
@@ -978,6 +1018,12 @@ var runtimeReloadablePaths = map[string]struct{}{
 	"security.brute_force.enabled":          {},
 	"security.brute_force.max_attempts":     {},
 	"security.brute_force.lockout_duration": {},
+	"security.allowed_ips":                  {},
+	"security.brute_force.ip_ban_threshold": {},
+	"security.brute_force.ip_ban_duration":  {},
+	"security.brute_force.whitelist_ips":    {},
+	"auth.require_special_char":             {},
+	"security.denied_ips":                   {},
 }
 
 func classifyRuntimeChanges(currentCfg, nextCfg *config.Config) ([]string, []string) {
@@ -1076,8 +1122,27 @@ func (a *App) applyRuntimeConfig(nextCfg *config.Config) ([]string, []string) {
 	a.cfg.Security.BruteForce.Enabled = nextCfg.Security.BruteForce.Enabled
 	a.cfg.Security.BruteForce.MaxAttempts = nextCfg.Security.BruteForce.MaxAttempts
 	a.cfg.Security.BruteForce.LockoutDuration = nextCfg.Security.BruteForce.LockoutDuration
+	a.cfg.Auth.RequireSpecialChar = nextCfg.Auth.RequireSpecialChar
+	a.cfg.Security.BruteForce.IPBanThreshold = nextCfg.Security.BruteForce.IPBanThreshold
+	a.cfg.Security.BruteForce.IPBanDuration = nextCfg.Security.BruteForce.IPBanDuration
+	a.cfg.Security.BruteForce.WhitelistIPs = append([]string(nil), nextCfg.Security.BruteForce.WhitelistIPs...)
 	if a.auth != nil {
 		a.auth.SetMinPasswordLength(nextCfg.Auth.MinPasswordLength)
+		a.auth.SetRequireSpecialChar(nextCfg.Auth.RequireSpecialChar)
+		a.auth.SetLockoutEnabled(nextCfg.Security.BruteForce.Enabled)
+		a.auth.SetLockoutPolicy(nextCfg.Security.BruteForce.MaxAttempts, nextCfg.Security.BruteForce.LockoutDuration)
+		if err := a.auth.IPThrottle().Configure(ipThrottleConfig(nextCfg)); err != nil && a.logger != nil {
+			a.logger.Error("ip throttle reload failed", "error", err)
+		}
+	}
+	if a.ipFilter != nil {
+		// nextCfg passed validation, so the entries parse.
+		if err := a.ipFilter.Update(nextCfg.Security.AllowedIPs, nextCfg.Security.DeniedIPs); err == nil {
+			a.cfg.Security.AllowedIPs = append([]string(nil), nextCfg.Security.AllowedIPs...)
+			a.cfg.Security.DeniedIPs = append([]string(nil), nextCfg.Security.DeniedIPs...)
+		} else if a.logger != nil {
+			a.logger.Error("ip filter reload failed", "error", err)
+		}
 	}
 
 	if a.apiServer != nil {
@@ -1092,6 +1157,16 @@ func (a *App) applyRuntimeConfig(nextCfg *config.Config) ([]string, []string) {
 	}
 
 	return appliedPaths, restartPaths
+}
+
+func ipThrottleConfig(cfg *config.Config) auth.IPThrottleConfig {
+	bf := cfg.Security.BruteForce
+	return auth.IPThrottleConfig{
+		Enabled:   bf.Enabled,
+		Threshold: bf.IPBanThreshold,
+		Duration:  bf.IPBanDuration,
+		Whitelist: bf.WhitelistIPs,
+	}
 }
 
 func buildAuditSinks(cfg *config.Config) ([]audit.Sink, string, error) {

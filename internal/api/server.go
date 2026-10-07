@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/kervanserver/kervan/internal/auth"
+	"github.com/kervanserver/kervan/internal/netguard"
 	"github.com/kervanserver/kervan/internal/session"
 	"github.com/kervanserver/kervan/internal/store"
 	"github.com/kervanserver/kervan/internal/transfer"
@@ -55,6 +56,10 @@ type Config struct {
 	BruteForceEnabled    bool
 	LoginMaxAttempts     int
 	LoginLockoutDuration time.Duration
+	// IPFilter rejects requests from addresses outside security.allowed_ips or
+	// inside security.denied_ips. It is consulted per request, so updating
+	// the filter in place takes effect immediately. nil admits everything.
+	IPFilter *netguard.IPFilter
 }
 
 type StatusProvider func() map[string]any
@@ -206,6 +211,12 @@ func (s *Server) currentConfig() Config {
 	s.cfgMu.RLock()
 	defer s.cfgMu.RUnlock()
 	return cloneAPIConfig(s.cfg)
+}
+
+func (s *Server) ipFilter() *netguard.IPFilter {
+	s.cfgMu.RLock()
+	defer s.cfgMu.RUnlock()
+	return s.cfg.IPFilter
 }
 
 func (s *Server) ApplyRuntimeConfig(cfg Config) {
@@ -413,9 +424,15 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
 		return
 	}
+	throttle := s.auth.IPThrottle()
+	if banErr := throttle.Check(r.RemoteAddr, time.Now()); banErr != nil {
+		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "too many login attempts"})
+		return
+	}
 	user, err := s.auth.Authenticate(r.Context(), req.Username, req.Password)
 	if err != nil {
 		s.recordLoginFailure(clientIP, time.Now().UTC())
+		throttle.RecordFailure(r.RemoteAddr, time.Now())
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid credentials"})
 		return
 	}
@@ -423,6 +440,9 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		if !auth.ValidateTOTP(user.TOTPSecret, req.OTP, time.Now().UTC(), 1) {
 			_ = s.auth.RecordFailedLogin(user.ID)
 			s.recordLoginFailure(clientIP, time.Now().UTC())
+			if strings.TrimSpace(req.OTP) != "" {
+				throttle.RecordFailure(r.RemoteAddr, time.Now())
+			}
 			writeJSON(w, http.StatusUnauthorized, map[string]string{
 				"error": "two-factor code required",
 				"code":  "totp_required",
@@ -431,6 +451,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	s.clearLoginFailures(clientIP)
+	throttle.RecordSuccess(r.RemoteAddr)
 	token, err := signToken(s.secret, user.Username, cfg.SessionTimeout)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "token generation failed"})
@@ -1775,8 +1796,17 @@ func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
+// contentSecurityPolicy is computed once from the embedded index.html.
+var contentSecurityPolicy = webui.ContentSecurityPolicy()
+
 func (s *Server) withMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// /health stays reachable so local container/LB probes keep working
+		// under a restrictive allow list; it exposes no sensitive data.
+		if r.URL.Path != "/health" && !s.ipFilter().AllowedRemote(r.RemoteAddr) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
 		requestID := requestIDFromHeader(r.Header.Get("X-Request-ID"))
 		if requestID == "" {
 			requestID = newRequestID()
@@ -1793,6 +1823,10 @@ func (s *Server) withMiddleware(next http.Handler) http.Handler {
 		recorder.Header().Set("Referrer-Policy", "no-referrer")
 		recorder.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
 		recorder.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+		recorder.Header().Set("Content-Security-Policy", contentSecurityPolicy)
+		if r.TLS != nil {
+			recorder.Header().Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		}
 		recorder.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, X-API-Key, X-Request-ID, Traceparent")
 		recorder.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 		recorder.Header().Set("Access-Control-Expose-Headers", "X-Request-ID, Traceparent, X-Trace-ID")
@@ -2350,22 +2384,6 @@ func (f auditEventFilterFields) matches(username, protocol, eventType, status, q
 		}
 	}
 	return true
-}
-
-func paginateAudit(in []map[string]any, page, size int) ([]map[string]any, int) {
-	total := len(in)
-	if total == 0 {
-		return []map[string]any{}, 0
-	}
-	start := (page - 1) * size
-	if start >= total {
-		return []map[string]any{}, total
-	}
-	end := start + size
-	if end > total {
-		end = total
-	}
-	return in[start:end], total
 }
 
 func strField(m map[string]any, key string) string {
