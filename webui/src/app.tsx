@@ -30,27 +30,28 @@ export function App() {
   return (
     <Suspense fallback={<div className="min-h-screen bg-[var(--background)] p-4 sm:p-6 lg:p-8"><PageSkeleton /></div>}>
       <RouteAnnouncer />
-      <AppShell currentUser={auth.user.username} onLogout={logout} />
-      <main id="main-content" className="md:pl-16 lg:pl-64">
-        <div className="p-4 sm:p-6 lg:p-8">
-          <ErrorBoundary FallbackComponent={RouteErrorBoundary}>
-            <Suspense fallback={<PageSkeleton />}>
-              <Routes>
-                <Route path="/" element={<DashboardPage token={auth.token} />} />
-                <Route path="/users" element={<UsersPage token={auth.token} />} />
-                <Route path="/sessions" element={<SessionsPage token={auth.token} />} />
-                <Route path="/files" element={<FilesPage token={auth.token} />} />
-                <Route path="/transfers" element={<TransfersPage token={auth.token} />} />
-                <Route path="/audit" element={<AuditPage token={auth.token} />} />
-                <Route path="/configuration" element={<ConfigurationPage token={auth.token} />} />
-                <Route path="/monitoring" element={<MonitoringPage token={auth.token} />} />
-                <Route path="/apikeys" element={<ApiKeysPage token={auth.token} />} />
-                <Route path="*" element={<Navigate to="/" replace />} />
-              </Routes>
-            </Suspense>
-          </ErrorBoundary>
-        </div>
-      </main>
+      <AppShell currentUser={auth.user.username} onLogout={logout}>
+        <main id="main-content" className="md:pl-16 lg:pl-64">
+          <div className="p-4 sm:p-6 lg:p-8">
+            <ErrorBoundary FallbackComponent={RouteErrorBoundary}>
+              <Suspense fallback={<PageSkeleton />}>
+                <Routes>
+                  <Route path="/" element={<DashboardPage token={auth.token} />} />
+                  <Route path="/users" element={<UsersPage token={auth.token} />} />
+                  <Route path="/sessions" element={<SessionsPage token={auth.token} />} />
+                  <Route path="/files" element={<FilesPage token={auth.token} />} />
+                  <Route path="/transfers" element={<TransfersPage token={auth.token} />} />
+                  <Route path="/audit" element={<AuditPage token={auth.token} />} />
+                  <Route path="/configuration" element={<ConfigurationPage token={auth.token} />} />
+                  <Route path="/monitoring" element={<MonitoringPage token={auth.token} />} />
+                  <Route path="/apikeys" element={<ApiKeysPage token={auth.token} />} />
+                  <Route path="*" element={<Navigate to="/" replace />} />
+                </Routes>
+              </Suspense>
+            </ErrorBoundary>
+          </div>
+        </main>
+      </AppShell>
     </Suspense>
   )
 }

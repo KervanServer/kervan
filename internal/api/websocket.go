@@ -48,11 +48,14 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	protocols := parseWebSocketProtocols(r.Header.Get("Sec-WebSocket-Protocol"))
-	if hasWebSocketAuthProtocol(protocols) {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "websocket auth protocol is not supported"})
-		return
-	}
+	// Browsers cannot set Authorization on a WebSocket handshake, so the
+	// WebUI offers its bearer token as an "auth.<token>" subprotocol. It is
+	// never echoed back (only kervan.v1 is selected) and request headers are
+	// not logged.
 	token := bearerToken(r.Header.Get("Authorization"))
+	if token == "" {
+		token = webSocketProtocolToken(protocols)
+	}
 	if token == "" {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing token"})
 		return
@@ -209,13 +212,13 @@ func parseWebSocketProtocols(raw string) []string {
 	return protocols
 }
 
-func hasWebSocketAuthProtocol(protocols []string) bool {
+func webSocketProtocolToken(protocols []string) string {
 	for _, protocol := range protocols {
-		if strings.HasPrefix(protocol, "auth.") {
-			return true
+		if token, ok := strings.CutPrefix(protocol, "auth."); ok {
+			return strings.TrimSpace(token)
 		}
 	}
-	return false
+	return ""
 }
 
 func websocketProtocolHeader(protocols []string) string {

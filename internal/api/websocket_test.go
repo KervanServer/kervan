@@ -3,6 +3,7 @@ package api
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -13,8 +14,8 @@ func TestWebSocketProtocolHelpers(t *testing.T) {
 	if len(protocols) != 2 {
 		t.Fatalf("expected 2 protocols, got %d", len(protocols))
 	}
-	if !hasWebSocketAuthProtocol(protocols) {
-		t.Fatal("expected auth.* websocket protocol to be detected")
+	if got := webSocketProtocolToken(protocols); got != "header.payload.signature" {
+		t.Fatalf("auth.* websocket protocol token = %q", got)
 	}
 	if got := websocketProtocolHeader(protocols); got != "\r\nSec-WebSocket-Protocol: kervan.v1" {
 		t.Fatalf("unexpected websocket protocol header: %q", got)
@@ -100,20 +101,36 @@ func TestHandleWebSocketRejectsDisabledUserToken(t *testing.T) {
 	}
 }
 
-func TestHandleWebSocketRejectsProtocolTokenAuth(t *testing.T) {
+// Browsers can only authenticate a WebSocket through the subprotocol list;
+// the token offered there must be validated like a bearer header.
+func TestHandleWebSocketAcceptsProtocolTokenAuth(t *testing.T) {
 	srv, _ := newAuthTestServer(t, false)
 
-	req := httptest.NewRequest(http.MethodGet, "http://kervan.local/api/v1/ws", nil)
-	req.Host = "kervan.local"
-	req.Header.Set("Connection", "Upgrade")
-	req.Header.Set("Upgrade", "websocket")
-	req.Header.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
-	req.Header.Set("Sec-WebSocket-Protocol", "kervan.v1, auth.header.payload.signature")
+	newReq := func(protocols string) *http.Request {
+		req := httptest.NewRequest(http.MethodGet, "http://kervan.local/api/v1/ws", nil)
+		req.Host = "kervan.local"
+		req.Header.Set("Connection", "Upgrade")
+		req.Header.Set("Upgrade", "websocket")
+		req.Header.Set("Sec-WebSocket-Key", "dGhlIHNhbXBsZSBub25jZQ==")
+		req.Header.Set("Sec-WebSocket-Protocol", protocols)
+		return req
+	}
 
 	rec := httptest.NewRecorder()
-	srv.handleWebSocket(rec, req)
+	srv.handleWebSocket(rec, newReq("kervan.v1, auth.header.payload.signature"))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("forged protocol token: expected 401, got %d: %s", rec.Code, rec.Body.String())
+	}
 
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d: %s", rec.Code, rec.Body.String())
+	token, err := signToken(srv.secret, "alice", time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec = httptest.NewRecorder()
+	srv.handleWebSocket(rec, newReq("kervan.v1, auth."+token))
+	// Authentication passed; the recorder cannot be hijacked, which is the
+	// next step of a successful upgrade.
+	if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), "hijacking") {
+		t.Fatalf("valid protocol token: expected to reach hijack, got %d: %s", rec.Code, rec.Body.String())
 	}
 }
