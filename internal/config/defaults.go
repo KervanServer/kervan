@@ -60,6 +60,14 @@ func DefaultConfig() *Config {
 			ReadHeaderTimeout: 10 * time.Second,
 			WriteTimeout:      60 * time.Second,
 			IdleTimeout:       120 * time.Second,
+			OIDC: OIDCConfig{
+				Scopes:        []string{"openid", "profile", "email"},
+				ButtonLabel:   "Sign in with SSO",
+				UsernameClaim: "preferred_username,email",
+				GroupsClaim:   "groups",
+				AutoCreate:    true,
+				HomeDir:       "/{username}",
+			},
 		},
 		Debug: DebugConfig{
 			Enabled:     false,

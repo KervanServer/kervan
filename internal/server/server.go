@@ -26,6 +26,7 @@ import (
 	"github.com/kervanserver/kervan/internal/config"
 	icrypto "github.com/kervanserver/kervan/internal/crypto"
 	"github.com/kervanserver/kervan/internal/netguard"
+	"github.com/kervanserver/kervan/internal/oidc"
 	"github.com/kervanserver/kervan/internal/protocol/ftp"
 	"github.com/kervanserver/kervan/internal/protocol/sftp"
 	"github.com/kervanserver/kervan/internal/quota"
@@ -256,6 +257,12 @@ func New(cfg *config.Config, configPath string, logger *slog.Logger) (*App, erro
 		app.transfers,
 	)
 
+	oidcSettings, err := buildOIDCSettings(cfg.WebUI.OIDC)
+	if err != nil {
+		_ = app.Close()
+		return nil, fmt.Errorf("webui.oidc: %w", err)
+	}
+
 	app.apiServer, err = api.NewServer(
 		api.Config{
 			BindAddress:          cfg.WebUI.BindAddress,
@@ -275,6 +282,7 @@ func New(cfg *config.Config, configPath string, logger *slog.Logger) (*App, erro
 			IPFilter:             ipFilter,
 			QuotaEnabled:         cfg.Quota.Enabled,
 			DefaultMaxStorage:    cfg.Quota.DefaultMaxStorage,
+			OIDC:                 oidcSettings,
 		},
 		logger,
 		engine,
@@ -1168,6 +1176,34 @@ func (a *App) applyRuntimeConfig(nextCfg *config.Config) ([]string, []string) {
 	}
 
 	return appliedPaths, restartPaths
+}
+
+func buildOIDCSettings(c config.OIDCConfig) (*api.OIDCSettings, error) {
+	if !c.Enabled {
+		return nil, nil
+	}
+	provider, err := oidc.NewProvider(oidc.Config{
+		Issuer:       c.Issuer,
+		ClientID:     c.ClientID,
+		ClientSecret: c.ClientSecret,
+		RedirectURL:  c.RedirectURL,
+		Scopes:       c.Scopes,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &api.OIDCSettings{
+		Provider:      provider,
+		ButtonLabel:   c.ButtonLabel,
+		UsernameClaim: c.UsernameClaim,
+		GroupsClaim:   c.GroupsClaim,
+		AllowedGroups: c.AllowedGroups,
+		AdminGroups:   c.AdminGroups,
+		GroupMapping:  c.GroupMapping,
+		AutoCreate:    c.AutoCreate,
+		HomeDir:       c.HomeDir,
+		SecureCookie:  strings.HasPrefix(strings.ToLower(strings.TrimSpace(c.RedirectURL)), "https://"),
+	}, nil
 }
 
 func ipThrottleConfig(cfg *config.Config) auth.IPThrottleConfig {

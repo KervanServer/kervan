@@ -64,6 +64,8 @@ type Config struct {
 	// quota.default_max_storage for reporting effective user quotas.
 	QuotaEnabled      bool
 	DefaultMaxStorage int64
+	// OIDC enables WebUI sign-in through an OpenID provider; nil disables it.
+	OIDC *OIDCSettings
 }
 
 type StatusProvider func() map[string]any
@@ -87,6 +89,8 @@ type Server struct {
 	configCheck  ConfigValidateProvider
 	apiKeys      *APIKeyRepository
 	groups       *auth.GroupRepository
+	oidc         *OIDCSettings
+	oidcGrants   oidcGrants
 	shareLinks   *shareLinkRepository
 	fsBuilder    UserFSBuilder
 	store        *store.Store
@@ -201,6 +205,7 @@ func NewServer(
 		configCheck:  validateProvider,
 		apiKeys:      NewAPIKeyRepository(keyStore),
 		groups:       auth.NewGroupRepository(keyStore, userRepo),
+		oidc:         cfg.OIDC,
 		shareLinks:   newShareLinkRepository(keyStore),
 		fsBuilder:    fsBuilder,
 		store:        keyStore,
@@ -300,6 +305,10 @@ func (s *Server) Start(ctx context.Context) error {
 
 	mux.HandleFunc("/api/login", s.handleLogin)
 	mux.HandleFunc("/api/v1/auth/login", s.handleLogin)
+	mux.HandleFunc("/api/v1/auth/methods", s.handleAuthMethods)
+	mux.HandleFunc("/api/v1/auth/oidc/login", s.handleOIDCLogin)
+	mux.HandleFunc("/api/v1/auth/oidc/callback", s.handleOIDCCallback)
+	mux.HandleFunc("/api/v1/auth/oidc/exchange", s.handleOIDCExchange)
 	mux.HandleFunc("/api/v1/auth/totp", s.withAuth(s.handleTOTP))
 	mux.HandleFunc("/api/v1/auth/totp/setup", s.withAuth(s.handleTOTPSetup))
 	mux.HandleFunc("/api/v1/auth/totp/enable", s.withAuth(s.handleTOTPEnable))
@@ -363,6 +372,16 @@ func (s *Server) Start(ctx context.Context) error {
 		IdleTimeout:       cfg.IdleTimeout,
 	}
 
+	if cfg.TLS && s.httpServer.TLSConfig == nil {
+		return errors.New("webui tls is enabled but no tls config is configured")
+	}
+	// Bind synchronously so Start reports a busy port to the caller and the
+	// API is reachable as soon as Start returns.
+	ln, err := net.Listen("tcp", s.httpServer.Addr)
+	if err != nil {
+		return err
+	}
+
 	// #nosec G118 -- server shutdown intentionally uses a detached context.
 	go func() {
 		<-ctx.Done()
@@ -371,17 +390,13 @@ func (s *Server) Start(ctx context.Context) error {
 
 	go func() {
 		if s.logger != nil {
-			s.logger.Info("API server started", "addr", s.httpServer.Addr)
+			s.logger.Info("API server started", "addr", ln.Addr().String())
 		}
 		var err error
 		if cfg.TLS {
-			if s.httpServer.TLSConfig == nil {
-				err = errors.New("webui tls is enabled but no tls config is configured")
-			} else {
-				err = s.httpServer.ListenAndServeTLS("", "")
-			}
+			err = s.httpServer.ServeTLS(ln, "", "")
 		} else {
-			err = s.httpServer.ListenAndServe()
+			err = s.httpServer.Serve(ln)
 		}
 		if err != nil && !errors.Is(err, http.ErrServerClosed) && s.logger != nil {
 			s.logger.Error("api server failed", "error", err)

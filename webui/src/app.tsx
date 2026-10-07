@@ -1,4 +1,4 @@
-import { Suspense, lazy } from "react"
+import { Suspense, lazy, useEffect } from "react"
 import { ErrorBoundary } from "react-error-boundary"
 import { Navigate, Route, Routes } from "react-router-dom"
 
@@ -8,7 +8,7 @@ import { RouteErrorBoundary } from "@/components/shared/route-error-boundary"
 import { RouteAnnouncer } from "@/components/shared/route-announcer"
 import { LoginForm } from "@/components/login-form"
 import { routeModules } from "@/lib/route-modules"
-import { useAuthStore } from "@/stores/auth-store"
+import { describeOIDCError, useAuthStore } from "@/stores/auth-store"
 
 const DashboardPage = lazy(routeModules["/"])
 const UsersPage = lazy(routeModules["/users"])
@@ -22,7 +22,24 @@ const MonitoringPage = lazy(routeModules["/monitoring"])
 const ApiKeysPage = lazy(routeModules["/apikeys"])
 
 export function App() {
-  const { auth, authError, authLoading, requiresOTP, login, logout } = useAuthStore()
+  const { auth, authError, authLoading, requiresOTP, login, logout, completeOIDC, setAuthError } = useAuthStore()
+
+  // Finish an SSO round trip: the server redirects back with a one-time
+  // code (or an error code), which is removed from the address bar at once.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const code = params.get("oidc_code")
+    const error = params.get("oidc_error")
+    if (!code && !error) {
+      return
+    }
+    window.history.replaceState(null, "", window.location.pathname)
+    if (code) {
+      void completeOIDC(code)
+    } else if (error) {
+      setAuthError(describeOIDCError(error))
+    }
+  }, [completeOIDC, setAuthError])
 
   if (!auth) {
     return <LoginForm onSubmit={login} loading={authLoading} error={authError} requiresOTP={requiresOTP} />

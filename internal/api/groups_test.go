@@ -145,3 +145,22 @@ func TestUserImportAssignsGroupAndQuota(t *testing.T) {
 		t.Fatal("user created despite invalid group")
 	}
 }
+
+func TestUsernameFromClaims(t *testing.T) {
+	cases := []struct {
+		claims map[string]any
+		want   string
+	}{
+		{map[string]any{"preferred_username": "ann", "email": "a@x"}, "ann"},
+		{map[string]any{"email": "a@x", "email_verified": true}, "a@x"},
+		{map[string]any{"email": "a@x"}, "a@x"},
+		{map[string]any{"email": "a@x", "email_verified": false}, ""},
+		{map[string]any{"preferred_username": "bad name", "email": "a@x"}, "a@x"},
+		{map[string]any{"preferred_username": "../x"}, ""},
+	}
+	for _, tc := range cases {
+		if got := usernameFromClaims(tc.claims, "preferred_username, email"); got != tc.want {
+			t.Errorf("%v -> %q, want %q", tc.claims, got, tc.want)
+		}
+	}
+}

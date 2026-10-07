@@ -86,6 +86,11 @@ func (e *Engine) authenticateLocalUser(user *User, password string) (*User, erro
 	if err := e.ensureLoginAllowed(user); err != nil {
 		return nil, err
 	}
+	// External (OIDC) accounts have no password; refuse explicitly rather
+	// than relying on the unusable hash.
+	if strings.EqualFold(user.AuthProvider, AuthProviderOIDC) {
+		return nil, ErrInvalidCredentials
+	}
 	if !VerifyPassword(password, user.PasswordHash) {
 		_ = e.registerFailedLogin(user)
 		return nil, ErrInvalidCredentials

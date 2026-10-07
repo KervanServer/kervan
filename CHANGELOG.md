@@ -4,6 +4,19 @@
 
 ### Added
 
+- **OIDC single sign-on** for the WebUI with any OpenID Connect provider.
+  Uses discovery, the authorization-code flow with PKCE, and JWKS-verified
+  ID tokens (RS/PS/ES/EdDSA; `none` and HMAC are rejected); the
+  implementation is standard library only.
+  - Accounts are provisioned on first sign-in and bound to the provider
+    subject. Local and LDAP accounts cannot be taken over.
+  - `allowed_groups` restricts who may sign in, `admin_groups` syncs the
+    role, and `group_mapping` maps provider groups to Kervan groups.
+  - The session reaches the SPA through a one-time code, never in a URL.
+  - Verified against Dex in a real browser.
+- **API:** `Start` now binds the WebUI/API port synchronously, so a busy
+  port fails startup instead of only being logged.
+
 - **groups:** permission and storage-quota templates. A user's primary group
   supplies permissions and quota for every protocol and the API, with
   per-user overrides (`custom_permissions`, `max_storage`). Per-user quotas

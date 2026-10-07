@@ -401,10 +401,62 @@ All protocols share a common VFS layer ([internal/vfs](internal/vfs)):
   while the server is running: the store is shared safely between processes
   and changes are visible to the server immediately.
 - **Groups** — permission and quota templates; see [Groups](#groups).
-- **Not supported in this release:** OIDC WebUI SSO, SSH certificate
+- **OIDC single sign-on** for the WebUI; see [Single sign-on](#single-sign-on-oidc).
+- **Not supported in this release:** SSH certificate
   and keyboard-interactive authentication, account expiry.
 
 ---
+
+## Single sign-on (OIDC)
+
+The WebUI can sign users in through any OpenID Connect provider (Keycloak,
+Authentik, Okta, Microsoft Entra ID, Google, Dex, ...). It uses discovery,
+the authorization-code flow with PKCE, and verifies ID tokens against the
+provider's JWKS (RS/PS/ES/EdDSA). SSO covers the WebUI and API session only;
+FTP/SFTP users keep signing in with passwords or SSH keys.
+
+```yaml
+webui:
+  oidc:
+    enabled: true
+    issuer: https://login.example.com/realms/acme
+    client_id: kervan
+    client_secret: change-me            # or KERVAN_WEBUI__OIDC__CLIENT_SECRET
+    redirect_url: https://files.example.com/api/v1/auth/oidc/callback
+    scopes: [openid, profile, email, groups]
+    button_label: Sign in with Acme
+    username_claim: preferred_username,email   # tried in order
+    groups_claim: groups
+    allowed_groups: [kervan-users]      # optional: restrict who may sign in
+    admin_groups: [kervan-admins]       # optional: role synced at each sign-in
+    group_mapping:                      # provider group -> Kervan group
+      Engineering: eng
+    auto_create: true
+    home_dir: /{username}
+```
+
+Register `redirect_url` as the client's redirect URI at the provider.
+
+- **Accounts:** on first sign-in an account with `auth_provider: oidc` is
+  created (`auto_create: false` requires an admin to create it). It is bound
+  to the provider's `sub` and has no usable password.
+- **Takeover protection:** a provider can never sign in to an existing local
+  or LDAP account with the same username, nor to an OIDC account bound to a
+  different subject (`account_conflict`).
+- **Email as username:** an `email` claim is used only when the provider
+  marks it verified or does not say.
+- **Roles:** with `admin_groups` set, the role is recomputed at every
+  sign-in, so leaving the group demotes the user. Without it, new users are
+  regular users and an admin-granted role is kept.
+- **Groups:** provider groups map to Kervan groups through `group_mapping`,
+  or by identical name. The first match becomes the primary group. The
+  memberships are synced only when the token carries the groups claim.
+- **Sessions and MFA:** sign-in hands the session to the WebUI through a
+  one-time code, so the token never appears in a URL. Kervan's own TOTP is
+  not applied to SSO sign-ins; enforce MFA at the provider.
+- **Troubleshooting:** failures land on the login screen with a short reason
+  (`not_allowed`, `account_conflict`, `invalid_state`, ...). Details, such
+  as which claims the token carried, are logged at `WARN`.
 
 ## Groups
 
@@ -704,7 +756,6 @@ WebSocket updates, Prometheus metrics, and the `stdio` MCP server.
 
 Planned beyond v1.0 (see [.project/SPECIFICATION.md](.project/SPECIFICATION.md)):
 
-- OIDC WebUI SSO.
 - FTP `HOST` virtual hosting.
 - Event-driven WebSocket updates (today: periodic snapshots).
 - Syslog/CEF and queryable audit storage, HMAC-chained logs.

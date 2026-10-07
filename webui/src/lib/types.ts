@@ -4,6 +4,11 @@ export type AuthUser = {
   type: string
 }
 
+export type AuthMethods = {
+  password: boolean
+  oidc: { enabled: boolean; label?: string; login_url?: string }
+}
+
 export type LoginResponse = {
   token: string
   user: AuthUser

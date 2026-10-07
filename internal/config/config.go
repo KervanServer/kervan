@@ -92,6 +92,40 @@ type WebUIConfig struct {
 	ReadHeaderTimeout time.Duration `yaml:"read_header_timeout"`
 	WriteTimeout      time.Duration `yaml:"write_timeout"`
 	IdleTimeout       time.Duration `yaml:"idle_timeout"`
+	OIDC              OIDCConfig    `yaml:"oidc"`
+}
+
+// OIDCConfig enables WebUI sign-in through an OpenID Connect provider.
+// Protocol (FTP/SFTP) access is unaffected.
+type OIDCConfig struct {
+	Enabled      bool   `yaml:"enabled"`
+	Issuer       string `yaml:"issuer"`
+	ClientID     string `yaml:"client_id"`
+	ClientSecret string `yaml:"client_secret"`
+	// RedirectURL is this server's callback, registered at the provider:
+	// https://<host>/api/v1/auth/oidc/callback
+	RedirectURL string   `yaml:"redirect_url"`
+	Scopes      []string `yaml:"scopes"`
+	ButtonLabel string   `yaml:"button_label"`
+	// UsernameClaim lists claim names tried in order (comma-separated); a
+	// verified email works with providers that omit preferred_username.
+	UsernameClaim string `yaml:"username_claim"`
+	GroupsClaim   string `yaml:"groups_claim"`
+	// AllowedGroups, when non-empty, restricts sign-in to members of at
+	// least one of these provider groups.
+	AllowedGroups []string `yaml:"allowed_groups"`
+	// AdminGroups, when non-empty, makes members administrators and
+	// everyone else a regular user, re-evaluated at every sign-in.
+	AdminGroups []string `yaml:"admin_groups"`
+	// GroupMapping maps provider group names to Kervan group names. Without
+	// an entry, a provider group applies when a Kervan group has the same
+	// name.
+	GroupMapping map[string]string `yaml:"group_mapping"`
+	// AutoCreate provisions accounts on first sign-in; when false, an admin
+	// must create the oidc account first.
+	AutoCreate bool `yaml:"auto_create"`
+	// HomeDir for auto-created users; "{username}" is replaced.
+	HomeDir string `yaml:"home_dir"`
 }
 
 type DebugConfig struct {

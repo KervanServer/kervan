@@ -1,5 +1,6 @@
+import { useEffect, useState } from "react"
 import { zodResolver } from "@hookform/resolvers/zod"
-import { Loader2, ShieldCheck } from "lucide-react"
+import { KeyRound, Loader2, ShieldCheck } from "lucide-react"
 import { useForm } from "react-hook-form"
 import { z } from "zod"
 
@@ -8,6 +9,8 @@ import { StatusMessage } from "@/components/shared/status-message"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
+import { api } from "@/lib/api"
+import type { AuthMethods } from "@/lib/types"
 
 type Props = {
   onSubmit: (username: string, password: string, otp?: string) => Promise<void>
@@ -38,6 +41,21 @@ export function LoginForm({ onSubmit, loading, error, requiresOTP }: Props) {
       otp: "",
     },
   })
+
+  const [methods, setMethods] = useState<AuthMethods | null>(null)
+  useEffect(() => {
+    let active = true
+    api
+      .authMethods()
+      .then((result) => {
+        if (active) setMethods(result)
+      })
+      .catch(() => undefined)
+    return () => {
+      active = false
+    }
+  }, [])
+  const sso = methods?.oidc.enabled ? methods.oidc : null
 
   const submit = async (values: LoginValues) => {
     await onSubmit(values.username.trim(), values.password, values.otp?.trim())
@@ -105,6 +123,21 @@ export function LoginForm({ onSubmit, loading, error, requiresOTP }: Props) {
               {loading ? (requiresOTP ? "Verifying..." : "Signing in...") : requiresOTP ? "Verify code" : "Sign in"}
             </Button>
           </form>
+          {sso && !requiresOTP ? (
+            <div className="mt-4 space-y-4">
+              <div className="flex items-center gap-3 text-xs text-[var(--text-secondary)]">
+                <span className="h-px flex-1 bg-[var(--border)]" />
+                or
+                <span className="h-px flex-1 bg-[var(--border)]" />
+              </div>
+              <Button asChild variant="outline" className="w-full">
+                <a href={sso.login_url ?? "/api/v1/auth/oidc/login"}>
+                  <KeyRound className="mr-2 h-4 w-4" />
+                  {sso.label || "Sign in with SSO"}
+                </a>
+              </Button>
+            </div>
+          ) : null}
         </CardContent>
       </Card>
     </main>

@@ -62,6 +62,22 @@ func (c *Config) Validate() error {
 	if c.WebUI.TLS && !c.FTPS.AutoCert.Enabled && (strings.TrimSpace(c.FTPS.CertFile) == "" || strings.TrimSpace(c.FTPS.KeyFile) == "") {
 		errs = append(errs, "webui.tls requires ftps cert_file/key_file or ftps.auto_cert.enabled=true")
 	}
+	if o := c.WebUI.OIDC; o.Enabled {
+		if issuer, err := url.Parse(strings.TrimSpace(o.Issuer)); err != nil || issuer.Host == "" || (issuer.Scheme != "https" && !isLoopbackHost(issuer.Hostname())) {
+			errs = append(errs, "webui.oidc.issuer must be an https:// URL (http:// is allowed only for localhost)")
+		}
+		if strings.TrimSpace(o.ClientID) == "" {
+			errs = append(errs, "webui.oidc.client_id is required")
+		}
+		if redirect, err := url.Parse(strings.TrimSpace(o.RedirectURL)); err != nil || redirect.Host == "" || (redirect.Scheme != "https" && redirect.Scheme != "http") {
+			errs = append(errs, "webui.oidc.redirect_url must be an absolute URL ending in /api/v1/auth/oidc/callback")
+		} else if !strings.HasSuffix(redirect.Path, "/api/v1/auth/oidc/callback") {
+			errs = append(errs, "webui.oidc.redirect_url must end in /api/v1/auth/oidc/callback")
+		}
+		if strings.TrimSpace(o.UsernameClaim) == "" {
+			errs = append(errs, "webui.oidc.username_claim is required")
+		}
+	}
 	if c.WebUI.Enabled && (c.WebUI.Port < 1 || c.WebUI.Port > 65535) {
 		errs = append(errs, "webui.port must be 1-65535")
 	}
@@ -234,6 +250,14 @@ func validatePortRange(s string) error {
 		return fmt.Errorf("ports must be in 1024-65535 and start<=end")
 	}
 	return nil
+}
+
+func isLoopbackHost(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 func validIPOrCIDR(raw string) bool {

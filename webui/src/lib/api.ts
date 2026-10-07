@@ -9,6 +9,7 @@ import type {
   ApiGroup,
   ApiPermissions,
   ApiUserPolicyPatch,
+  AuthMethods,
   AuditEvent,
   LoginResponse,
   ServerStatus,
@@ -95,6 +96,27 @@ async function requestBlob(
 }
 
 export const api = {
+  async authMethods(): Promise<AuthMethods> {
+    const res = await fetch("/api/v1/auth/methods")
+    if (!res.ok) {
+      return { password: true, oidc: { enabled: false } }
+    }
+    return (await res.json()) as AuthMethods
+  },
+
+  async oidcExchange(code: string): Promise<LoginResponse> {
+    const res = await fetch("/api/v1/auth/oidc/exchange", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code }),
+    })
+    const payload = (await res.json()) as LoginResponse & { error?: unknown }
+    if (!res.ok) {
+      throw new RequestError(asMessage(payload.error))
+    }
+    return payload
+  },
+
   async login(username: string, password: string, otp?: string): Promise<LoginResponse> {
     const res = await fetch("/api/v1/auth/login", {
       method: "POST",
