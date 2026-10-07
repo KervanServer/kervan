@@ -42,12 +42,13 @@ marks aspirational items from the spec as *planned*.
   CSP/HSTS headers on the WebUI (see [Security](#security)).
 - **Interop-tested** — CI drives a live server with OpenSSH `sftp`/`scp` and
   curl (FTP, FTPS, SFTP, SCP) in addition to the unit suites.
-- **Zero external runtime deps** — only `golang.org/x/crypto` (SSH/Argon2id) and
-  `gopkg.in/yaml.v3` as direct dependencies.
+- **Zero external runtime deps** — only `golang.org/x/crypto` (SSH/Argon2id),
+  `golang.org/x/sys` (file locking on Windows) and `gopkg.in/yaml.v3` as
+  direct dependencies.
 
 ## Requirements
 
-- **Go 1.26.1+** (toolchain pinned to `go1.26.2` in [go.mod](go.mod))
+- **Go 1.26.1+** (toolchain pinned to `go1.26.8` in [go.mod](go.mod))
 - Linux, macOS or Windows (tested on Windows 11, Linux amd64/arm64)
 
 ---
@@ -165,6 +166,9 @@ Verify changes locally with:
 make check   # gofmt, vet, staticcheck, tests, -race tests, WebUI tests,
              # and a check that internal/webui/dist matches webui/src
 ```
+
+Run `make audit` before a release (or periodically) to scan for known
+vulnerabilities with `govulncheck` and `npm audit`.
 
 `make check` needs `staticcheck` (`go install honnef.co/go/tools/cmd/staticcheck@latest`),
 Node.js for the WebUI, and a C toolchain for `-race`. The interop tests also

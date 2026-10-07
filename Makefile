@@ -6,7 +6,7 @@ LDFLAGS := -s -w \
   -X github.com/kervanserver/kervan/internal/build.Commit=$(COMMIT) \
   -X github.com/kervanserver/kervan/internal/build.Date=$(DATE)
 
-.PHONY: build webui test check clean docker-build compose-config compose-up compose-down release-snapshot release-check
+.PHONY: build webui test check audit clean docker-build compose-config compose-up compose-down release-snapshot release-check
 
 build: webui
 	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/kervan ./cmd/kervan
@@ -31,6 +31,13 @@ check:
 	cd webui && npm test
 	go run ./scripts
 	git diff --exit-code -- internal/webui/dist
+
+# audit scans Go code (reachable stdlib/module vulnerabilities) and the WebUI
+# dependency tree for known security advisories.
+audit:
+	@if command -v govulncheck >/dev/null 2>&1; then govulncheck ./...; \
+	  else echo "govulncheck not installed: go install golang.org/x/vuln/cmd/govulncheck@latest"; exit 1; fi
+	cd webui && npm audit
 
 clean:
 	rm -rf bin
