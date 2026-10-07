@@ -5,6 +5,7 @@ import {
   FolderKanban,
   House,
   KeyRound,
+  Layers,
   LogOut,
   Menu,
   ScrollText,
@@ -27,6 +28,7 @@ type NavItem = { to: AppRoutePath; icon: LucideIcon; label: string }
 const items: NavItem[] = [
   { to: "/", icon: House, label: "Dashboard" },
   { to: "/users", icon: UsersRound, label: "Users" },
+  { to: "/groups", icon: Layers, label: "Groups" },
   { to: "/sessions", icon: ServerCog, label: "Sessions" },
   { to: "/files", icon: FolderKanban, label: "Files" },
   { to: "/transfers", icon: ArrowLeftRight, label: "Transfers" },

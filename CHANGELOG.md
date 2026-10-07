@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **groups:** permission and storage-quota templates. A user's primary group
+  supplies permissions and quota for every protocol and the API, with
+  per-user overrides (`custom_permissions`, `max_storage`). Per-user quotas
+  are new: previously every user had `quota.default_max_storage`.
+  - Managed through `/api/v1/groups`, `kervan group list|create|delete`
+    (and `kervan user create --group`), and a new WebUI Groups page.
+  - The Users page gains an Edit dialog for group, quota and permissions.
+  - Renames carry memberships along; deleting a group that has members
+    needs `force`.
+  - User import/export carries `primary_group` and `max_storage`.
+
 ## v0.1.1 (2026-10-08)
 
 ### Added

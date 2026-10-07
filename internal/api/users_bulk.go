@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/kervanserver/kervan/internal/auth"
@@ -26,6 +27,8 @@ type userImportRecord struct {
 	Type         string `json:"type,omitempty"`
 	HomeDir      string `json:"home_dir,omitempty"`
 	Enabled      *bool  `json:"enabled,omitempty"`
+	PrimaryGroup string `json:"primary_group,omitempty"`
+	MaxStorage   int64  `json:"max_storage,omitempty"`
 }
 
 type userImportError struct {
@@ -50,6 +53,8 @@ type userExportRecord struct {
 	Type         string `json:"type"`
 	HomeDir      string `json:"home_dir"`
 	Enabled      bool   `json:"enabled"`
+	PrimaryGroup string `json:"primary_group,omitempty"`
+	MaxStorage   int64  `json:"max_storage,omitempty"`
 	PasswordHash string `json:"password_hash,omitempty"`
 }
 
@@ -130,12 +135,14 @@ func (s *Server) handleUsersExport(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		record := userExportRecord{
-			Username: user.Username,
-			Email:    user.Email,
-			Role:     exportRoleForUser(user),
-			Type:     string(user.Type),
-			HomeDir:  user.HomeDir,
-			Enabled:  user.Enabled,
+			Username:     user.Username,
+			Email:        user.Email,
+			Role:         exportRoleForUser(user),
+			Type:         string(user.Type),
+			HomeDir:      user.HomeDir,
+			Enabled:      user.Enabled,
+			PrimaryGroup: user.PrimaryGroup,
+			MaxStorage:   user.MaxStorage,
 		}
 		if includePasswordHashes {
 			record.PasswordHash = user.PasswordHash
@@ -251,12 +258,20 @@ func loadUserImportRecords(reader io.Reader, format string) ([]userImportRecord,
 				Role:         csvValue(row, header, "role"),
 				Type:         csvValue(row, header, "type"),
 				HomeDir:      csvValue(row, header, "home_dir"),
+				PrimaryGroup: csvValue(row, header, "primary_group"),
 			}
 			enabled, err := parseOptionalBool(csvValue(row, header, "enabled"))
 			if err != nil {
 				return nil, fmt.Errorf("row %d: %w", record.Row, err)
 			}
 			record.Enabled = enabled
+			if raw := strings.TrimSpace(csvValue(row, header, "max_storage")); raw != "" {
+				v, err := strconv.ParseInt(raw, 10, 64)
+				if err != nil {
+					return nil, fmt.Errorf("row %d: invalid max_storage %q", record.Row, raw)
+				}
+				record.MaxStorage = v
+			}
 			records = append(records, record)
 		}
 		return records, nil
@@ -280,6 +295,17 @@ func (s *Server) createImportedUser(record userImportRecord) (*auth.User, error)
 	}
 	homeDir, err = auth.NormalizeHomeDir(homeDir)
 	if err != nil {
+		return nil, err
+	}
+	// Validate group and quota before creating anything.
+	var policy userPolicyPatch
+	if g := strings.TrimSpace(record.PrimaryGroup); g != "" {
+		policy.PrimaryGroup = &g
+	}
+	if record.MaxStorage != 0 {
+		policy.MaxStorage = &record.MaxStorage
+	}
+	if err := s.applyUserPolicyPatch(&auth.User{}, policy); err != nil {
 		return nil, err
 	}
 
@@ -325,6 +351,12 @@ func (s *Server) createImportedUser(record userImportRecord) (*auth.User, error)
 	}
 	if user.HomeDir != homeDir {
 		user.HomeDir = homeDir
+		needsUpdate = true
+	}
+	if policy.set() {
+		if err := s.applyUserPolicyPatch(user, policy); err != nil {
+			return nil, err
+		}
 		needsUpdate = true
 	}
 	if needsUpdate {
@@ -382,7 +414,7 @@ func exportRoleForUser(user *auth.User) string {
 
 func writeUserExportCSV(w io.Writer, records []userExportRecord, includePasswordHashes bool) error {
 	writer := csv.NewWriter(w)
-	header := []string{"username", "email", "role", "type", "home_dir", "enabled"}
+	header := []string{"username", "email", "role", "type", "home_dir", "enabled", "primary_group", "max_storage"}
 	if includePasswordHashes {
 		header = append(header, "password_hash")
 	}
@@ -397,6 +429,8 @@ func writeUserExportCSV(w io.Writer, records []userExportRecord, includePassword
 			record.Type,
 			record.HomeDir,
 			fmt.Sprintf("%t", record.Enabled),
+			record.PrimaryGroup,
+			strconv.FormatInt(record.MaxStorage, 10),
 		}
 		if includePasswordHashes {
 			row = append(row, record.PasswordHash)

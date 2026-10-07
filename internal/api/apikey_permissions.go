@@ -51,8 +51,8 @@ var apiKeyReadScopes = []string{
 var apiKeyScopeDescriptions = map[string]APIKeyScopeInfo{
 	"server:read":    {Name: "server:read", Resource: "server", Access: "read", Description: "Read health, status, and runtime metadata."},
 	"server:write":   {Name: "server:write", Resource: "server", Access: "write", Description: "Change runtime config or trigger reload actions."},
-	"users:read":     {Name: "users:read", Resource: "users", Access: "read", Description: "List and export user accounts."},
-	"users:write":    {Name: "users:write", Resource: "users", Access: "write", Description: "Create, update, import, or delete users."},
+	"users:read":     {Name: "users:read", Resource: "users", Access: "read", Description: "List and export user accounts and groups."},
+	"users:write":    {Name: "users:write", Resource: "users", Access: "write", Description: "Create, update, import, or delete users and groups."},
 	"apikeys:read":   {Name: "apikeys:read", Resource: "apikeys", Access: "read", Description: "List existing API keys."},
 	"apikeys:write":  {Name: "apikeys:write", Resource: "apikeys", Access: "write", Description: "Create or revoke API keys."},
 	"sessions:read":  {Name: "sessions:read", Resource: "sessions", Access: "read", Description: "View live protocol sessions."},
@@ -240,7 +240,7 @@ func requiredAPIKeyScopes(method, path string) []string {
 		return []string{"server:write"}
 	case path == "/api/v1/server/config/validate" || path == "/api/v1/server/reload":
 		return []string{"server:write"}
-	case path == "/api/users" || path == "/api/v1/users":
+	case path == "/api/users" || path == "/api/v1/users" || path == "/api/groups" || path == "/api/v1/groups":
 		if method == http.MethodGet {
 			return []string{"users:read"}
 		}

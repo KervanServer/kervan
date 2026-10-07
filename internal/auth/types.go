@@ -29,6 +29,30 @@ type User struct {
 	LockedUntil    *time.Time      `json:"locked_until,omitempty" yaml:"locked_until,omitempty"`
 	PrimaryGroup   string          `json:"primary_group,omitempty" yaml:"primary_group,omitempty"`
 	SecondaryGrps  []string        `json:"secondary_groups,omitempty" yaml:"secondary_groups,omitempty"`
+	// CustomPermissions makes Permissions authoritative even when the
+	// primary group defines a permission template.
+	CustomPermissions bool `json:"custom_permissions,omitempty" yaml:"custom_permissions,omitempty"`
+	// MaxStorage is the user's storage quota in bytes: 0 inherits from the
+	// primary group (then quota.default_max_storage), -1 is unlimited.
+	MaxStorage int64 `json:"max_storage,omitempty" yaml:"max_storage,omitempty"`
+	// ExternalID is the identity provider's stable subject for externally
+	// authenticated accounts (OIDC "sub").
+	ExternalID string `json:"external_id,omitempty" yaml:"external_id,omitempty"`
+}
+
+// Group is a permission and quota template shared by its members. Users
+// reference groups by name through PrimaryGroup (which supplies the
+// template) and SecondaryGrps (membership only).
+type Group struct {
+	ID          string          `json:"id" yaml:"id"`
+	Name        string          `json:"name" yaml:"name"`
+	Description string          `json:"description,omitempty" yaml:"description,omitempty"`
+	Permissions UserPermissions `json:"permissions" yaml:"permissions"`
+	// MaxStorage is the members' default quota in bytes: 0 falls back to
+	// quota.default_max_storage, -1 is unlimited.
+	MaxStorage int64     `json:"max_storage,omitempty" yaml:"max_storage,omitempty"`
+	CreatedAt  time.Time `json:"created_at" yaml:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at" yaml:"updated_at"`
 }
 
 type UserPermissions struct {

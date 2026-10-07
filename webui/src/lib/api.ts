@@ -6,6 +6,9 @@ import type {
   ApiTransfer,
   ApiUserImportReport,
   ApiUser,
+  ApiGroup,
+  ApiPermissions,
+  ApiUserPolicyPatch,
   AuditEvent,
   LoginResponse,
   ServerStatus,
@@ -192,14 +195,20 @@ export const api = {
     return request<void>(`/api/v1/apikeys?id=${encodeURIComponent(id)}`, token, { method: "DELETE" })
   },
 
-  createUser(token: string, payload: { username: string; password: string; home_dir: string; admin: boolean }): Promise<void> {
+  createUser(
+    token: string,
+    payload: { username: string; password: string; home_dir: string; admin: boolean } & ApiUserPolicyPatch,
+  ): Promise<void> {
     return request<void>("/api/v1/users", token, {
       method: "POST",
       body: JSON.stringify(payload),
     })
   },
 
-  updateUser(token: string, payload: { id: string; enabled?: boolean; home_dir?: string; admin?: boolean }): Promise<void> {
+  updateUser(
+    token: string,
+    payload: { id: string; enabled?: boolean; home_dir?: string; admin?: boolean } & ApiUserPolicyPatch,
+  ): Promise<void> {
     return request<void>("/api/v1/users", token, {
       method: "PUT",
       body: JSON.stringify(payload),
@@ -208,6 +217,35 @@ export const api = {
 
   deleteUser(token: string, id: string): Promise<void> {
     return request<void>(`/api/v1/users?id=${encodeURIComponent(id)}`, token, { method: "DELETE" })
+  },
+
+  groups(token: string): Promise<{ groups: ApiGroup[] }> {
+    return request<{ groups: ApiGroup[] }>("/api/v1/groups", token)
+  },
+
+  createGroup(
+    token: string,
+    payload: { name: string; description?: string; permissions: ApiPermissions; max_storage: number },
+  ): Promise<ApiGroup> {
+    return request<ApiGroup>("/api/v1/groups", token, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    })
+  },
+
+  updateGroup(
+    token: string,
+    payload: { id: string; name?: string; description?: string; permissions?: ApiPermissions; max_storage?: number },
+  ): Promise<ApiGroup> {
+    return request<ApiGroup>("/api/v1/groups", token, {
+      method: "PUT",
+      body: JSON.stringify(payload),
+    })
+  },
+
+  deleteGroup(token: string, id: string, force = false): Promise<void> {
+    const suffix = force ? "&force=true" : ""
+    return request<void>(`/api/v1/groups?id=${encodeURIComponent(id)}${suffix}`, token, { method: "DELETE" })
   },
 
   sessions(token: string): Promise<{ sessions: ApiSession[] }> {

@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
 import { toast } from "sonner"
 
 import { api } from "@/lib/api"
-import type { ApiUserImportReport } from "@/lib/types"
+import type { ApiUserImportReport, ApiUserPolicyPatch } from "@/lib/types"
 
 export function useUsers(token: string) {
   return useQuery({
@@ -15,7 +15,7 @@ export function useCreateUser(token: string) {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: (payload: { username: string; password: string; home_dir: string; admin: boolean }) =>
+    mutationFn: (payload: { username: string; password: string; home_dir: string; admin: boolean } & ApiUserPolicyPatch) =>
       api.createUser(token, payload),
     onSuccess: async () => {
       toast.success("User created successfully.")
@@ -31,7 +31,7 @@ export function useUpdateUser(token: string) {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: (payload: { id: string; enabled?: boolean; home_dir?: string; admin?: boolean }) =>
+    mutationFn: (payload: { id: string; enabled?: boolean; home_dir?: string; admin?: boolean } & ApiUserPolicyPatch) =>
       api.updateUser(token, payload),
     onSuccess: async () => {
       toast.success("User updated.")

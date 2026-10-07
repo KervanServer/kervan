@@ -60,6 +60,10 @@ type Config struct {
 	// inside security.denied_ips. It is consulted per request, so updating
 	// the filter in place takes effect immediately. nil admits everything.
 	IPFilter *netguard.IPFilter
+	// QuotaEnabled and DefaultMaxStorage mirror quota.enabled and
+	// quota.default_max_storage for reporting effective user quotas.
+	QuotaEnabled      bool
+	DefaultMaxStorage int64
 }
 
 type StatusProvider func() map[string]any
@@ -82,6 +86,7 @@ type Server struct {
 	configUpdate ConfigUpdateProvider
 	configCheck  ConfigValidateProvider
 	apiKeys      *APIKeyRepository
+	groups       *auth.GroupRepository
 	shareLinks   *shareLinkRepository
 	fsBuilder    UserFSBuilder
 	store        *store.Store
@@ -195,6 +200,7 @@ func NewServer(
 		configUpdate: updateProvider,
 		configCheck:  validateProvider,
 		apiKeys:      NewAPIKeyRepository(keyStore),
+		groups:       auth.NewGroupRepository(keyStore, userRepo),
 		shareLinks:   newShareLinkRepository(keyStore),
 		fsBuilder:    fsBuilder,
 		store:        keyStore,
@@ -312,6 +318,8 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/api/v1/users/import", s.withAuth(s.handleUsersImport))
 	mux.HandleFunc("/api/users/export", s.withAuth(s.handleUsersExport))
 	mux.HandleFunc("/api/v1/users/export", s.withAuth(s.handleUsersExport))
+	mux.HandleFunc("/api/groups", s.withAuth(s.handleGroups))
+	mux.HandleFunc("/api/v1/groups", s.withAuth(s.handleGroups))
 	mux.HandleFunc("/api/apikeys", s.withAuth(s.handleAPIKeys))
 	mux.HandleFunc("/api/v1/apikeys", s.withAuth(s.handleAPIKeys))
 
@@ -743,27 +751,12 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "list users failed"})
 			return
 		}
-		type userResp struct {
-			ID       string    `json:"id"`
-			Username string    `json:"username"`
-			Type     string    `json:"type"`
-			Enabled  bool      `json:"enabled"`
-			HomeDir  string    `json:"home_dir"`
-			LastSeen time.Time `json:"updated_at"`
-		}
-		out := make([]userResp, 0, len(users))
+		out := make([]userResponse, 0, len(users))
 		for _, u := range users {
 			if u == nil {
 				continue
 			}
-			out = append(out, userResp{
-				ID:       u.ID,
-				Username: u.Username,
-				Type:     string(u.Type),
-				Enabled:  u.Enabled,
-				HomeDir:  u.HomeDir,
-				LastSeen: u.UpdatedAt,
-			})
+			out = append(out, s.userResponse(u))
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"users": out})
 	case http.MethodPost:
@@ -772,6 +765,7 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 			Password string `json:"password"`
 			HomeDir  string `json:"home_dir"`
 			Admin    bool   `json:"admin"`
+			userPolicyPatch
 		}
 		if err := decodeJSONBody(w, r, &req, false); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
@@ -780,22 +774,34 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 		if req.HomeDir == "" {
 			req.HomeDir = "/"
 		}
+		probe := &auth.User{}
+		if err := s.applyUserPolicyPatch(probe, req.userPolicyPatch); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
 		user, err := s.auth.CreateUser(req.Username, req.Password, req.HomeDir, req.Admin)
 		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
-		writeJSON(w, http.StatusCreated, map[string]any{
-			"id":       user.ID,
-			"username": user.Username,
-			"type":     user.Type,
-		})
+		if req.userPolicyPatch.set() {
+			err := s.applyUserPolicyPatch(user, req.userPolicyPatch)
+			if err == nil {
+				err = s.users.Update(user)
+			}
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+		}
+		writeJSON(w, http.StatusCreated, s.userResponse(user))
 	case http.MethodPut:
 		var req struct {
 			ID      string `json:"id"`
 			HomeDir string `json:"home_dir"`
 			Enabled *bool  `json:"enabled"`
 			Admin   *bool  `json:"admin"`
+			userPolicyPatch
 		}
 		if err := decodeJSONBody(w, r, &req, false); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
@@ -825,6 +831,10 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 		if req.Enabled != nil {
 			user.Enabled = *req.Enabled
 		}
+		if err := s.applyUserPolicyPatch(user, req.userPolicyPatch); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
 		if req.Admin != nil {
 			if *req.Admin {
 				user.Type = auth.UserTypeAdmin
@@ -839,13 +849,7 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 		if req.Enabled != nil && !*req.Enabled {
 			s.terminateUserSessions(user.Username)
 		}
-		writeJSON(w, http.StatusOK, map[string]any{
-			"id":       user.ID,
-			"username": user.Username,
-			"type":     user.Type,
-			"enabled":  user.Enabled,
-			"home_dir": user.HomeDir,
-		})
+		writeJSON(w, http.StatusOK, s.userResponse(user))
 	case http.MethodDelete:
 		id := r.URL.Query().Get("id")
 		if id == "" {

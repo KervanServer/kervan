@@ -24,6 +24,19 @@ export type TOTPSetupResponse = TOTPStatus & {
 
 export type ServerStatus = Record<string, unknown>
 
+export type ApiPermissions = {
+  upload: boolean
+  download: boolean
+  delete: boolean
+  rename: boolean
+  create_dir: boolean
+  list_dir: boolean
+  chmod: boolean
+  max_file_size?: number
+  allowed_ext?: string[]
+  denied_ext?: string[]
+}
+
 export type ApiUser = {
   id: string
   username: string
@@ -31,6 +44,38 @@ export type ApiUser = {
   enabled: boolean
   home_dir: string
   updated_at: string
+  auth_provider?: string
+  primary_group?: string
+  secondary_groups?: string[]
+  /** Bytes; 0 inherits from the group/default, -1 is unlimited. */
+  max_storage?: number
+  custom_permissions?: boolean
+  permissions?: ApiPermissions
+  effective?: {
+    permissions: ApiPermissions
+    /** Enforced quota in bytes; 0 means unlimited. */
+    max_storage: number
+    group?: string
+  }
+}
+
+export type ApiGroup = {
+  id: string
+  name: string
+  description?: string
+  permissions: ApiPermissions
+  /** Bytes; 0 falls back to the server default, -1 is unlimited. */
+  max_storage?: number
+  member_count: number
+  created_at: string
+  updated_at: string
+}
+
+export type ApiUserPolicyPatch = {
+  primary_group?: string
+  max_storage?: number
+  custom_permissions?: boolean
+  permissions?: ApiPermissions
 }
 
 type ApiUserImportError = {

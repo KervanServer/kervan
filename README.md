@@ -400,8 +400,42 @@ All protocols share a common VFS layer ([internal/vfs](internal/vfs)):
 - The CLI (`kervan user …`, `kervan admin …`, `kervan apikey …`) can be used
   while the server is running: the store is shared safely between processes
   and changes are visible to the server immediately.
-- **Not supported in this release:** OIDC WebUI SSO, groups, SSH certificate
+- **Groups** — permission and quota templates; see [Groups](#groups).
+- **Not supported in this release:** OIDC WebUI SSO, SSH certificate
   and keyboard-interactive authentication, account expiry.
+
+---
+
+## Groups
+
+Groups are permission and storage-quota templates:
+
+- A user's **primary group** supplies their permissions (upload, download,
+  delete, rename, create folders, list, chmod) and quota. Set
+  `custom_permissions` on the user to use the user's own permissions instead,
+  and `max_storage` to give them their own quota (`0` inherits, `-1` is
+  unlimited). A group's `max_storage` of `0` falls back to
+  `quota.default_max_storage`. Quotas only apply when `quota.enabled` is
+  true, and never to admins.
+- **Secondary groups** record membership only.
+- Renaming a group updates its members. A group with members can only be
+  deleted with `force`, which removes the memberships.
+- A primary group that does not exist in Kervan (e.g. a raw LDAP group name)
+  is ignored, and the user keeps their own permissions. Create a Kervan group
+  with the same name to apply a template to LDAP users.
+
+Manage groups in the WebUI (**Groups** page, plus the **Edit** dialog on the
+Users page), through `/api/v1/groups` (`users:read` / `users:write` API key
+scopes), or from the CLI:
+
+```bash
+kervan group create --name readonly --permissions download,list_dir --max-storage 524288000
+kervan user create --username ann --password 'S3cure-pass!' --group readonly
+kervan group list
+kervan group delete --name readonly --force
+```
+
+User import/export carries `primary_group` and `max_storage`.
 
 ---
 
@@ -670,7 +704,7 @@ WebSocket updates, Prometheus metrics, and the `stdio` MCP server.
 
 Planned beyond v1.0 (see [.project/SPECIFICATION.md](.project/SPECIFICATION.md)):
 
-- OIDC WebUI SSO, groups and a policy model.
+- OIDC WebUI SSO.
 - FTP `HOST` virtual hosting.
 - Event-driven WebSocket updates (today: periodic snapshots).
 - Syslog/CEF and queryable audit storage, HMAC-chained logs.

@@ -203,7 +203,7 @@ func TestUserImportExportHelpers(t *testing.T) {
 		t.Fatalf("write csv: %v", err)
 	}
 	output := buf.String()
-	if !strings.Contains(output, "password_hash") || !strings.Contains(output, "alice,alice@example.com,admin,admin,/root,true,hash") {
+	if !strings.Contains(output, "password_hash") || !strings.Contains(output, "alice,alice@example.com,admin,admin,/root,true,,0,hash") {
 		t.Fatalf("unexpected csv export output: %q", output)
 	}
 

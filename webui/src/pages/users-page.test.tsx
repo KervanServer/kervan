@@ -1,4 +1,4 @@
-import { screen, waitFor } from "@testing-library/react"
+import { screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
@@ -14,6 +14,7 @@ vi.mock("@/lib/api", () => ({
     deleteUser: vi.fn(),
     importUsers: vi.fn(),
     exportUsers: vi.fn(),
+    groups: vi.fn(),
   },
 }))
 
@@ -44,6 +45,19 @@ describe("UsersPage", () => {
   beforeEach(() => {
     vi.clearAllMocks()
     mockedAPI.users.mockResolvedValue(fixtures)
+    mockedAPI.groups.mockResolvedValue({
+      groups: [
+        {
+          id: "g-1",
+          name: "readers",
+          permissions: { upload: false, download: true, delete: false, rename: false, create_dir: false, list_dir: true, chmod: false },
+          max_storage: 0,
+          member_count: 0,
+          created_at: "2026-10-01T00:00:00Z",
+          updated_at: "2026-10-01T00:00:00Z",
+        },
+      ],
+    })
     mockedAPI.createUser.mockResolvedValue(undefined)
     mockedAPI.updateUser.mockResolvedValue(undefined)
     mockedAPI.deleteUser.mockResolvedValue(undefined)
@@ -106,5 +120,28 @@ describe("UsersPage", () => {
     await user.click(await screen.findByRole("button", { name: "Delete user" }))
 
     await waitFor(() => expect(mockedAPI.deleteUser).toHaveBeenCalledWith("token-123", "user-2"))
+  })
+
+  it("assigns a group and quota from the edit dialog", async () => {
+    const user = userEvent.setup()
+    renderWithProviders(<UsersPage token="token-123" />)
+
+    await screen.findByText("bob")
+    await user.click(screen.getByRole("button", { name: "Edit user bob" }))
+    const dialog = await screen.findByRole("dialog")
+    await user.selectOptions(within(dialog).getByLabelText("Primary group"), "readers")
+    // The group's template replaces the per-user permission editor.
+    expect(within(dialog).getByText(/Permissions from/)).toBeInTheDocument()
+    await user.selectOptions(within(dialog).getByLabelText("Storage quota"), "custom")
+    await user.clear(within(dialog).getByLabelText("Quota size"))
+    await user.type(within(dialog).getByLabelText("Quota size"), "2")
+    await user.click(within(dialog).getByRole("button", { name: "Save" }))
+
+    await waitFor(() =>
+      expect(mockedAPI.updateUser).toHaveBeenCalledWith(
+        "token-123",
+        expect.objectContaining({ id: "user-2", primary_group: "readers", max_storage: 2 * 1024 * 1024 * 1024, custom_permissions: false }),
+      ),
+    )
   })
 })

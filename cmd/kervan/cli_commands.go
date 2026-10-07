@@ -476,6 +476,7 @@ func runUserCreateCommand(stdout io.Writer, args []string) error {
 	password := fs.String("password", "", "Password")
 	homeDir := fs.String("home-dir", "/", "Home directory")
 	admin := fs.Bool("admin", false, "Create as admin user")
+	group := fs.String("group", "", "Primary group (must exist)")
 	jsonOut := fs.Bool("json", false, "Output JSON")
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("parse user create flags: %w", err)
@@ -493,9 +494,25 @@ func runUserCreateCommand(stdout io.Writer, args []string) error {
 	}
 	defer ctx.close()
 
+	var primary *auth.Group
+	if name := strings.TrimSpace(*group); name != "" {
+		if primary, err = ctx.groups.GetByName(name); err != nil {
+			return fmt.Errorf("look up group %s: %w", name, err)
+		}
+		if primary == nil {
+			return fmt.Errorf("group %q does not exist (create it with 'kervan group create')", name)
+		}
+	}
+
 	user, err := ctx.engine.CreateUser(strings.TrimSpace(*username), *password, *homeDir, *admin)
 	if err != nil {
 		return fmt.Errorf("create user %s: %w", strings.TrimSpace(*username), err)
+	}
+	if primary != nil {
+		user.PrimaryGroup = primary.Name
+		if err := ctx.repo.Update(user); err != nil {
+			return fmt.Errorf("assign group %s: %w", primary.Name, err)
+		}
 	}
 
 	if *jsonOut {
@@ -750,6 +767,7 @@ type cliContext struct {
 	repo    *auth.UserRepository
 	engine  *auth.Engine
 	apiKeys *iapi.APIKeyRepository
+	groups  *auth.GroupRepository
 }
 
 func openCLIContext(configPath string) (*cliContext, error) {
@@ -771,6 +789,7 @@ func openCLIContext(configPath string) (*cliContext, error) {
 		repo:    repo,
 		engine:  engine,
 		apiKeys: iapi.NewAPIKeyRepository(st),
+		groups:  auth.NewGroupRepository(st, repo),
 	}, nil
 }
 

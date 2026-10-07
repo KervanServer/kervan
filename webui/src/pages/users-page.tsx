@@ -1,6 +1,6 @@
 import { useState } from "react"
 import { zodResolver } from "@hookform/resolvers/zod"
-import { Download, Loader2, RefreshCw, Shield, Trash2, Upload, UserPlus, UsersRound } from "lucide-react"
+import { Download, Loader2, Pencil, RefreshCw, Shield, Trash2, Upload, UserPlus, UsersRound } from "lucide-react"
 import { useForm } from "react-hook-form"
 import { toast } from "sonner"
 import { z } from "zod"
@@ -8,12 +8,16 @@ import { z } from "zod"
 import { ConfirmDialog } from "@/components/shared/confirm-dialog"
 import { EmptyState } from "@/components/shared/empty-state"
 import { PageHeader } from "@/components/shared/page-header"
+import { DEFAULT_PERMISSIONS, PermissionsEditor, QuotaField, permissionSummary } from "@/components/shared/policy-fields"
 import { StatusMessage } from "@/components/shared/status-message"
+import { useGroups } from "@/hooks/use-groups"
 import { useCreateUser, useDeleteUser, useImportUsers, useUpdateUser, useUsers } from "@/hooks/use-users"
 import { api } from "@/lib/api"
-import type { ApiUser, ApiUserImportReport } from "@/lib/types"
+import { describeEffectiveQuota } from "@/lib/format"
+import type { ApiGroup, ApiPermissions, ApiUser, ApiUserImportReport } from "@/lib/types"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
@@ -30,15 +34,43 @@ const createUserSchema = z.object({
   password: z.string().min(12, "Password must be at least 12 characters"),
   home_dir: z.string().trim().min(1, "Home directory is required"),
   admin: z.boolean(),
+  primary_group: z.string(),
 })
 
 type CreateUserValues = z.infer<typeof createUserSchema>
+
+type PolicyDraft = {
+  user: ApiUser
+  primary_group: string
+  max_storage: number
+  custom_permissions: boolean
+  permissions: ApiPermissions
+}
+
+function GroupSelect({
+  groups,
+  ...props
+}: { groups: ApiGroup[] } & React.ComponentProps<"select">) {
+  return (
+    <select className="h-10 w-full rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 text-sm" {...props}>
+      <option value="">No group</option>
+      {groups.map((group) => (
+        <option key={group.id} value={group.name}>
+          {group.name}
+        </option>
+      ))}
+    </select>
+  )
+}
 
 export function UsersPage({ token }: Props) {
   const usersQuery = useUsers(token)
   const createUserMutation = useCreateUser(token)
   const updateUserMutation = useUpdateUser(token)
   const deleteUserMutation = useDeleteUser(token)
+  const groupsQuery = useGroups(token)
+  const groups = groupsQuery.data?.groups ?? []
+  const [policyDraft, setPolicyDraft] = useState<PolicyDraft | null>(null)
   const [importReport, setImportReport] = useState<ApiUserImportReport | null>(null)
   const importUsersMutation = useImportUsers(token, setImportReport)
 
@@ -59,6 +91,7 @@ export function UsersPage({ token }: Props) {
       password: "",
       home_dir: "/",
       admin: false,
+      primary_group: "",
     },
   })
 
@@ -66,14 +99,44 @@ export function UsersPage({ token }: Props) {
   const error = usersQuery.error instanceof Error ? usersQuery.error.message : null
 
   const onCreate = async (values: CreateUserValues) => {
-    await createUserMutation.mutateAsync(values)
+    const { primary_group, ...rest } = values
+    await createUserMutation.mutateAsync(primary_group ? { ...rest, primary_group } : rest)
     reset({
       username: "",
       password: "",
       home_dir: "/",
       admin: false,
+      primary_group: "",
     })
   }
+
+  const openPolicyEditor = (user: ApiUser) => {
+    setPolicyDraft({
+      user,
+      primary_group: user.primary_group ?? "",
+      max_storage: user.max_storage ?? 0,
+      custom_permissions: user.custom_permissions ?? false,
+      permissions: { ...(user.permissions ?? DEFAULT_PERMISSIONS) },
+    })
+  }
+
+  const onSavePolicy = async () => {
+    if (!policyDraft) {
+      return
+    }
+    await updateUserMutation.mutateAsync({
+      id: policyDraft.user.id,
+      primary_group: policyDraft.primary_group,
+      max_storage: policyDraft.max_storage,
+      custom_permissions: policyDraft.custom_permissions,
+      permissions: policyDraft.permissions,
+    })
+    setPolicyDraft(null)
+  }
+
+  const draftGroup = policyDraft ? groups.find((group) => group.name === policyDraft.primary_group) : undefined
+  // Mirrors the server: a group template applies unless permissions are custom.
+  const templateApplies = Boolean(draftGroup) && !policyDraft?.custom_permissions
 
   const onConfirmDelete = async () => {
     if (!userToDelete) {
@@ -159,6 +222,8 @@ export function UsersPage({ token }: Props) {
                     <TableHead>Username</TableHead>
                     <TableHead>Type</TableHead>
                     <TableHead>Status</TableHead>
+                    <TableHead>Group</TableHead>
+                    <TableHead>Quota</TableHead>
                     <TableHead>Home</TableHead>
                     <TableHead className="text-right">Action</TableHead>
                   </TableRow>
@@ -174,9 +239,22 @@ export function UsersPage({ token }: Props) {
                         </span>
                       </TableCell>
                       <TableCell>{user.enabled ? "Enabled" : "Disabled"}</TableCell>
+                      <TableCell>{user.primary_group || "-"}</TableCell>
+                      <TableCell>{user.effective ? describeEffectiveQuota(user.effective.max_storage) : "-"}</TableCell>
                       <TableCell className="max-w-[200px] truncate">{user.home_dir || "/"}</TableCell>
                       <TableCell className="text-right">
                         <div className="flex justify-end gap-2">
+                          <Tooltip content={`Edit group, quota and permissions of ${user.username}`}>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => openPolicyEditor(user)}
+                              aria-label={`Edit user ${user.username}`}
+                            >
+                              <Pencil className="mr-2 h-4 w-4" />
+                              Edit
+                            </Button>
+                          </Tooltip>
                           <Tooltip content={`${user.enabled ? "Disable" : "Enable"} ${user.username}`}>
                             <Button
                               size="sm"
@@ -239,6 +317,12 @@ export function UsersPage({ token }: Props) {
                 />
                 {errors.home_dir ? <p className="text-sm text-[var(--error)]">{errors.home_dir.message}</p> : null}
               </div>
+              <div className="space-y-2">
+                <label htmlFor="create-user-group" className="text-sm font-medium">
+                  Group
+                </label>
+                <GroupSelect id="create-user-group" groups={groups} {...register("primary_group")} />
+              </div>
               <label className="flex min-h-11 items-center gap-2 text-sm">
                 <input type="checkbox" {...register("admin")} />
                 Administrator
@@ -297,6 +381,65 @@ export function UsersPage({ token }: Props) {
           </CardContent>
         </Card>
       </div>
+
+      <Dialog open={policyDraft !== null} onOpenChange={(open) => (!open ? setPolicyDraft(null) : undefined)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Edit {policyDraft?.user.username}</DialogTitle>
+            <DialogDescription>
+              The primary group supplies permissions and quota unless overridden here.
+            </DialogDescription>
+          </DialogHeader>
+          {policyDraft ? (
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <label htmlFor="edit-user-group" className="text-sm font-medium">
+                  Primary group
+                </label>
+                <GroupSelect
+                  id="edit-user-group"
+                  groups={groups}
+                  value={policyDraft.primary_group}
+                  onChange={(event) => setPolicyDraft({ ...policyDraft, primary_group: event.target.value })}
+                />
+              </div>
+              <QuotaField
+                idPrefix="edit-user"
+                value={policyDraft.max_storage}
+                inheritLabel={draftGroup ? `Inherit from ${draftGroup.name}` : "Server default"}
+                onChange={(max_storage) => setPolicyDraft({ ...policyDraft, max_storage })}
+              />
+              <label className="flex min-h-9 items-center gap-2 text-sm">
+                <input
+                  type="checkbox"
+                  checked={policyDraft.custom_permissions}
+                  onChange={(event) => setPolicyDraft({ ...policyDraft, custom_permissions: event.target.checked })}
+                />
+                Custom permissions (ignore the group template)
+              </label>
+              {templateApplies && draftGroup ? (
+                <p className="rounded-md border border-[var(--border)] p-3 text-sm text-[var(--text-secondary)]">
+                  Permissions from <strong>{draftGroup.name}</strong>: {permissionSummary(draftGroup.permissions)}
+                </p>
+              ) : (
+                <PermissionsEditor
+                  idPrefix="edit-user"
+                  value={policyDraft.permissions}
+                  onChange={(permissions) => setPolicyDraft({ ...policyDraft, permissions })}
+                />
+              )}
+            </div>
+          ) : null}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPolicyDraft(null)}>
+              Cancel
+            </Button>
+            <Button onClick={() => void onSavePolicy()} disabled={updateUserMutation.isPending}>
+              {updateUserMutation.isPending ? "Saving..." : "Save"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <ConfirmDialog
         open={userToDelete !== null}

@@ -63,6 +63,7 @@ type App struct {
 	acmeHTTP   *http.Server
 	debugHTTP  *http.Server
 	ipFilter   *netguard.IPFilter
+	groups     *auth.GroupRepository
 
 	cancel context.CancelFunc
 	start  time.Time
@@ -134,6 +135,7 @@ func New(cfg *config.Config, configPath string, logger *slog.Logger) (*App, erro
 
 	app := &App{
 		ipFilter:  ipFilter,
+		groups:    auth.NewGroupRepository(st, repo),
 		cfg:       cfg,
 		logger:    logger,
 		store:     st,
@@ -271,6 +273,8 @@ func New(cfg *config.Config, configPath string, logger *slog.Logger) (*App, erro
 			LoginMaxAttempts:     cfg.Security.BruteForce.MaxAttempts,
 			LoginLockoutDuration: cfg.Security.BruteForce.LockoutDuration,
 			IPFilter:             ipFilter,
+			QuotaEnabled:         cfg.Quota.Enabled,
+			DefaultMaxStorage:    cfg.Quota.DefaultMaxStorage,
 		},
 		logger,
 		engine,
@@ -727,9 +731,16 @@ func (a *App) buildUserFS(user *auth.User) (vfs.FileSystem, error) {
 	}
 	mounts.Mount("/", rootFS, false)
 
+	// Permissions and quota come from the user's primary group unless the
+	// user overrides them (auth.ResolvePolicy).
+	policy, err := a.groups.PolicyFor(user, a.cfg.Quota.DefaultMaxStorage)
+	if err != nil {
+		return nil, err
+	}
+
 	var quotaTracker vfs.QuotaTracker
-	if a.cfg.Quota.Enabled && user != nil && user.Type != auth.UserTypeAdmin && rootFS != nil {
-		tracker, err := quota.NewTracker(rootFS, a.cfg.Quota.DefaultMaxStorage)
+	if a.cfg.Quota.Enabled && user.Type != auth.UserTypeAdmin && rootFS != nil {
+		tracker, err := quota.NewTracker(rootFS, policy.MaxStorage)
 		if err != nil {
 			return nil, err
 		}
@@ -737,16 +748,16 @@ func (a *App) buildUserFS(user *auth.User) (vfs.FileSystem, error) {
 	}
 
 	perms := &vfs.UserPermissions{
-		Upload:      user.Permissions.Upload,
-		Download:    user.Permissions.Download,
-		Delete:      user.Permissions.Delete,
-		Rename:      user.Permissions.Rename,
-		CreateDir:   user.Permissions.CreateDir,
-		ListDir:     user.Permissions.ListDir,
-		Chmod:       user.Permissions.Chmod,
-		MaxFileSize: user.Permissions.MaxFileSize,
-		AllowedExts: user.Permissions.AllowedExt,
-		DeniedExts:  user.Permissions.DeniedExt,
+		Upload:      policy.Permissions.Upload,
+		Download:    policy.Permissions.Download,
+		Delete:      policy.Permissions.Delete,
+		Rename:      policy.Permissions.Rename,
+		CreateDir:   policy.Permissions.CreateDir,
+		ListDir:     policy.Permissions.ListDir,
+		Chmod:       policy.Permissions.Chmod,
+		MaxFileSize: policy.Permissions.MaxFileSize,
+		AllowedExts: policy.Permissions.AllowedExt,
+		DeniedExts:  policy.Permissions.DeniedExt,
 	}
 	return vfs.NewUserVFS(mounts, perms, quotaTracker), nil
 }

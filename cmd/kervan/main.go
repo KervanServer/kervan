@@ -49,6 +49,11 @@ func main() {
 		case "apikey":
 			cmdAPIKey(os.Args[2:])
 			return
+		case "group":
+			if err := runGroupCommand(os.Stdout, os.Args[2:]); err != nil {
+				exitf("group: %v", err)
+			}
+			return
 		case "backup":
 			cmdBackup(os.Args[2:])
 			return

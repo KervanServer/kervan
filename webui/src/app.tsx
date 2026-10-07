@@ -12,6 +12,7 @@ import { useAuthStore } from "@/stores/auth-store"
 
 const DashboardPage = lazy(routeModules["/"])
 const UsersPage = lazy(routeModules["/users"])
+const GroupsPage = lazy(routeModules["/groups"])
 const SessionsPage = lazy(routeModules["/sessions"])
 const FilesPage = lazy(routeModules["/files"])
 const TransfersPage = lazy(routeModules["/transfers"])
@@ -38,6 +39,7 @@ export function App() {
                 <Routes>
                   <Route path="/" element={<DashboardPage token={auth.token} />} />
                   <Route path="/users" element={<UsersPage token={auth.token} />} />
+                  <Route path="/groups" element={<GroupsPage token={auth.token} />} />
                   <Route path="/sessions" element={<SessionsPage token={auth.token} />} />
                   <Route path="/files" element={<FilesPage token={auth.token} />} />
                   <Route path="/transfers" element={<TransfersPage token={auth.token} />} />
