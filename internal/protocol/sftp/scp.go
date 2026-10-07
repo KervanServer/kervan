@@ -36,9 +36,10 @@ func parseExecPayload(payload []byte) (string, error) {
 
 // scpRequest is a parsed "scp -t|-f [-p] target" exec command.
 type scpRequest struct {
-	mode     string
-	target   string
-	preserve bool // -p: times travel as a "T" record before each file
+	mode      string
+	target    string
+	preserve  bool // -p: times travel as a "T" record before each file
+	recursive bool // -r: directories travel as "D" ... "E" records
 }
 
 func parseSCPExec(command string) (scpRequest, error) {
@@ -66,6 +67,9 @@ func parseSCPExec(command string) (scpRequest, error) {
 			}
 			if strings.Contains(arg, "p") {
 				req.preserve = true
+			}
+			if strings.Contains(arg, "r") {
+				req.recursive = true
 			}
 			continue
 		}
@@ -181,96 +185,171 @@ func (t touchWriter) Write(p []byte) (int, error) {
 func (s *Server) runSCP(ch ssh.Channel, fsys vfs.FileSystem, req scpRequest, username, remoteAddr string, touch func()) error {
 	switch req.mode {
 	case scpModeSource:
-		return s.runSCPSource(ch, fsys, normalizeSCPPath(req.target), req.preserve, username, remoteAddr, touch)
+		return s.runSCPSource(ch, fsys, normalizeSCPPath(req.target), req, username, remoteAddr, touch)
 	case scpModeSink:
-		return s.runSCPSink(ch, fsys, normalizeSCPPath(req.target), username, remoteAddr, touch)
+		return s.runSCPSink(ch, fsys, normalizeSCPPath(req.target), req.recursive, username, remoteAddr, touch)
 	default:
 		return fmt.Errorf("unknown scp mode: %s", req.mode)
 	}
 }
 
-func (s *Server) runSCPSource(ch ssh.Channel, fsys vfs.FileSystem, filePath string, preserve bool, username, remoteAddr string, touch func()) error {
-	br := bufio.NewReader(touchReader{r: ch, touch: touch})
-	if err := readSCPAck(br); err != nil {
+// scpSource streams files (and, with -r, directory trees) to an scp sink.
+type scpSource struct {
+	s          *Server
+	ch         ssh.Channel
+	br         *bufio.Reader
+	fsys       vfs.FileSystem
+	preserve   bool
+	username   string
+	remoteAddr string
+	touch      func()
+}
+
+func (s *Server) runSCPSource(ch ssh.Channel, fsys vfs.FileSystem, target string, req scpRequest, username, remoteAddr string, touch func()) error {
+	src := &scpSource{
+		s:          s,
+		ch:         ch,
+		br:         bufio.NewReader(touchReader{r: ch, touch: touch}),
+		fsys:       fsys,
+		preserve:   req.preserve,
+		username:   username,
+		remoteAddr: remoteAddr,
+		touch:      touch,
+	}
+	if err := readSCPAck(src.br); err != nil {
 		return err
 	}
-
-	f, err := fsys.Open(filePath, os.O_RDONLY, 0)
+	info, err := fsys.Stat(target)
 	if err != nil {
 		_ = writeSCPError(ch, false, err.Error())
+		return err
+	}
+	if info.IsDir() {
+		if !req.recursive {
+			err := fmt.Errorf("%s: not a regular file (use -r)", target)
+			_ = writeSCPError(ch, false, err.Error())
+			return err
+		}
+		return src.sendDir(target, info)
+	}
+	// libssh2 (curl, PHP ssh2, ...) closes the channel after receiving a
+	// single file instead of sending the final ack; every byte has been
+	// delivered at that point, so EOF there is a completed download.
+	return src.sendFile(target, true)
+}
+
+func (src *scpSource) sendTimes(info os.FileInfo) error {
+	if !src.preserve {
+		return nil
+	}
+	// libssh2 (curl) requests -p and rejects a "C" record that is not
+	// preceded by the "T" times record.
+	mtime := info.ModTime().Unix()
+	if _, err := fmt.Fprintf(src.ch, "T%d 0 %d 0\n", mtime, mtime); err != nil {
+		return err
+	}
+	return readSCPAck(src.br)
+}
+
+func (src *scpSource) sendDir(dirPath string, info os.FileInfo) error {
+	if err := src.sendTimes(info); err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(src.ch, "D%04o 0 %s\n", info.Mode().Perm(), path.Base(dirPath)); err != nil {
+		return err
+	}
+	if err := readSCPAck(src.br); err != nil {
+		return err
+	}
+	entries, err := src.fsys.ReadDir(dirPath)
+	if err != nil {
+		_ = writeSCPError(src.ch, false, err.Error())
+		return err
+	}
+	for _, entry := range entries {
+		child := path.Join(dirPath, entry.Name())
+		switch {
+		case entry.IsDir():
+			childInfo, err := src.fsys.Stat(child)
+			if err != nil {
+				_ = writeSCPError(src.ch, false, err.Error())
+				continue
+			}
+			if err := src.sendDir(child, childInfo); err != nil {
+				return err
+			}
+		case entry.Type().IsRegular():
+			if err := src.sendFile(child, false); err != nil {
+				return err
+			}
+		}
+	}
+	if _, err := src.ch.Write([]byte("E\n")); err != nil {
+		return err
+	}
+	return readSCPAck(src.br)
+}
+
+func (src *scpSource) sendFile(filePath string, eofIsSuccess bool) error {
+	s := src.s
+	f, err := src.fsys.Open(filePath, os.O_RDONLY, 0)
+	if err != nil {
+		_ = writeSCPError(src.ch, false, err.Error())
 		return err
 	}
 	defer f.Close()
 
 	info, err := f.Stat()
 	if err != nil {
-		_ = writeSCPError(ch, false, err.Error())
+		_ = writeSCPError(src.ch, false, err.Error())
 		return err
 	}
-	if info.IsDir() {
-		err := errors.New("directories are not supported in scp source mode")
-		_ = writeSCPError(ch, false, err.Error())
+	if err := src.sendTimes(info); err != nil {
 		return err
 	}
-
-	if preserve {
-		// libssh2 (curl) requests -p and rejects a "C" record that is not
-		// preceded by the "T" times record.
-		mtime := info.ModTime().Unix()
-		if _, err := fmt.Fprintf(ch, "T%d 0 %d 0\n", mtime, mtime); err != nil {
-			return err
-		}
-		if err := readSCPAck(br); err != nil {
-			return err
-		}
-	}
-	if _, err := fmt.Fprintf(ch, "C%04o %d %s\n", info.Mode().Perm(), info.Size(), info.Name()); err != nil {
+	if _, err := fmt.Fprintf(src.ch, "C%04o %d %s\n", info.Mode().Perm(), info.Size(), info.Name()); err != nil {
 		return err
 	}
-	if err := readSCPAck(br); err != nil {
+	if err := readSCPAck(src.br); err != nil {
 		return err
 	}
 	transferID := ""
 	if s.xfer != nil {
-		transferID = s.xfer.Start(username, "scp", filePath, transfer.DirectionDownload, info.Size())
+		transferID = s.xfer.Start(src.username, "scp", filePath, transfer.DirectionDownload, info.Size())
 	}
-	n, err := io.CopyN(touchWriter{w: ch, touch: touch}, f, info.Size())
+	fail := func(n int64, err error) error {
+		if s.xfer != nil && transferID != "" {
+			s.xfer.AddBytes(transferID, n)
+			s.xfer.End(transferID, transfer.StatusFailed, err.Error())
+		}
+		return err
+	}
+	n, err := io.CopyN(touchWriter{w: src.ch, touch: src.touch}, f, info.Size())
 	if err != nil {
-		if s.xfer != nil && transferID != "" {
-			s.xfer.AddBytes(transferID, n)
-			s.xfer.End(transferID, transfer.StatusFailed, err.Error())
-		}
-		return err
+		return fail(n, err)
 	}
-	if _, err := ch.Write([]byte{0}); err != nil {
-		if s.xfer != nil && transferID != "" {
-			s.xfer.AddBytes(transferID, n)
-			s.xfer.End(transferID, transfer.StatusFailed, err.Error())
-		}
-		return err
+	if _, err := src.ch.Write([]byte{0}); err != nil {
+		return fail(n, err)
 	}
-	// libssh2 (curl, PHP ssh2, ...) closes the channel after receiving the
-	// whole file instead of sending the final ack; every byte has been
-	// delivered at this point, so EOF is a completed download.
-	if err := readSCPAck(br); err != nil && !errors.Is(err, io.EOF) {
-		if s.xfer != nil && transferID != "" {
-			s.xfer.AddBytes(transferID, n)
-			s.xfer.End(transferID, transfer.StatusFailed, err.Error())
-		}
-		return err
+	if err := readSCPAck(src.br); err != nil && !(eofIsSuccess && errors.Is(err, io.EOF)) {
+		return fail(n, err)
 	}
 	if s.xfer != nil && transferID != "" {
 		s.xfer.AddBytes(transferID, n)
 		s.xfer.End(transferID, transfer.StatusCompleted, "")
 	}
-
-	s.emitAudit(audit.EventFileRead, username, "scp", filePath, remoteAddr, "ok", "scp download")
+	s.emitAudit(audit.EventFileRead, src.username, "scp", filePath, src.remoteAddr, "ok", "scp download")
 	return nil
 }
 
-func (s *Server) runSCPSink(ch ssh.Channel, fsys vfs.FileSystem, target, username, remoteAddr string, touch func()) error {
+func (s *Server) runSCPSink(ch ssh.Channel, fsys vfs.FileSystem, target string, recursive bool, username, remoteAddr string, touch func()) error {
 	br := bufio.NewReader(touchReader{r: ch, touch: touch})
 	var pendingTimes *[2]time.Time // atime, mtime from a preceding "T" record
+	// dirs is the stack of directories opened by "D" records; files and
+	// subdirectories land in the innermost one. dirTimes holds each
+	// directory's "T" times, applied when its "E" record closes it.
+	var dirs []string
+	var dirTimes []*[2]time.Time
 	if _, err := ch.Write([]byte{0}); err != nil {
 		return err
 	}
@@ -297,13 +376,50 @@ func (s *Server) runSCPSink(ch ssh.Channel, fsys vfs.FileSystem, target, usernam
 				return err
 			}
 			continue
+		case 'D':
+			if !recursive {
+				err := errors.New("received directory without -r")
+				_ = writeSCPError(ch, true, err.Error())
+				return err
+			}
+			if len(dirs) >= maxSCPDirDepth {
+				err := fmt.Errorf("directory nesting exceeds %d levels", maxSCPDirDepth)
+				_ = writeSCPError(ch, true, err.Error())
+				return err
+			}
+			modeBits, _, dirname, parseErr := parseSCPRecord(header, 'D')
+			if parseErr != nil {
+				_ = writeSCPError(ch, true, parseErr.Error())
+				return parseErr
+			}
+			var dst string
+			if len(dirs) == 0 {
+				dst = resolveSCPSinkPath(fsys, target, dirname)
+			} else {
+				dst = path.Join(dirs[len(dirs)-1], dirname)
+			}
+			if err := fsys.Mkdir(dst, os.FileMode(modeBits)|0o700); err != nil {
+				if info, statErr := fsys.Stat(dst); statErr != nil || !info.IsDir() {
+					_ = writeSCPError(ch, true, err.Error())
+					return err
+				}
+			}
+			dirs = append(dirs, dst)
+			dirTimes = append(dirTimes, pendingTimes)
+			pendingTimes = nil
+			if _, err := ch.Write([]byte{0}); err != nil {
+				return err
+			}
 		case 'C':
-			modeBits, size, filename, parseErr := parseSCPFileHeader(header)
+			modeBits, size, filename, parseErr := parseSCPRecord(header, 'C')
 			if parseErr != nil {
 				_ = writeSCPError(ch, true, parseErr.Error())
 				return parseErr
 			}
 			dst := resolveSCPSinkPath(fsys, target, filename)
+			if len(dirs) > 0 {
+				dst = path.Join(dirs[len(dirs)-1], filename)
+			}
 			f, openErr := fsys.Open(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, os.FileMode(modeBits))
 			if openErr != nil {
 				_ = writeSCPError(ch, true, openErr.Error())
@@ -376,10 +492,18 @@ func (s *Server) runSCPSink(ch ssh.Channel, fsys vfs.FileSystem, target, usernam
 			}
 			s.emitAudit(audit.EventFileWrite, username, "scp", dst, remoteAddr, "ok", "scp upload")
 		case 'E':
+			if len(dirs) == 0 {
+				// No directory is open: treat a stray "E" as end of session.
+				_, err := ch.Write([]byte{0})
+				return err
+			}
+			if times := dirTimes[len(dirTimes)-1]; times != nil {
+				_ = fsys.Chtimes(dirs[len(dirs)-1], times[0], times[1])
+			}
+			dirs, dirTimes = dirs[:len(dirs)-1], dirTimes[:len(dirTimes)-1]
 			if _, err := ch.Write([]byte{0}); err != nil {
 				return err
 			}
-			return nil
 		case 1, 2:
 			return errors.New(strings.TrimSpace(header[1:]))
 		default:
@@ -390,8 +514,10 @@ func (s *Server) runSCPSink(ch ssh.Channel, fsys vfs.FileSystem, target, usernam
 	}
 }
 
-func parseSCPFileHeader(header string) (mode uint32, size int64, name string, err error) {
-	if len(header) < 2 || header[0] != 'C' {
+// parseSCPRecord parses a "C<mode> <size> <name>" file or
+// "D<mode> 0 <name>" directory record.
+func parseSCPRecord(header string, kind byte) (mode uint32, size int64, name string, err error) {
+	if len(header) < 2 || header[0] != kind {
 		return 0, 0, "", errors.New("invalid scp file header")
 	}
 	parts := strings.SplitN(header[1:], " ", 3)
@@ -464,6 +590,10 @@ func normalizeSCPPath(p string) string {
 	}
 	return clean
 }
+
+// maxSCPDirDepth bounds "D" record nesting so a client cannot grow the
+// directory stack (and the created tree) without limit.
+const maxSCPDirDepth = 128
 
 // maxSCPLEBytes bounds a single SCP protocol line: legitimate headers and ack
 // messages are a few kilobytes at most, and an uncapped ReadString would let

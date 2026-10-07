@@ -345,9 +345,9 @@ privileged ports like `990` without running as root.
 
 ### SCP (OpenSSH-compatible)
 
-- Legacy SCP protocol (`scp -O`, libssh2/curl) in source and sink mode for
-  single files, including `-p` time preservation. Recursive copies (`-r`) are
-  not supported over legacy SCP; OpenSSH 9+ `scp` uses SFTP and is unaffected.
+- Legacy SCP protocol (`scp -O`, libssh2/curl) in source and sink mode,
+  including recursive directory copies (`-r`, nesting capped at 128 levels)
+  and `-p` time preservation. OpenSSH 9+ `scp` uses SFTP by default.
 - Shares the SSH listener with SFTP; no separate port.
 - Operates through the same VFS and audit pipeline as SFTP.
 
@@ -653,7 +653,7 @@ WebSocket updates, Prometheus metrics, and the `stdio` MCP server.
 Planned beyond v1.0 (see [.project/SPECIFICATION.md](.project/SPECIFICATION.md)):
 
 - OIDC WebUI SSO, groups and a policy model.
-- Recursive legacy SCP (`scp -O -r`), FTP `HOST` virtual hosting.
+- FTP `HOST` virtual hosting.
 - Event-driven WebSocket updates (today: periodic snapshots).
 - Syslog/CEF and queryable audit storage, HMAC-chained logs.
 - A database-backed metadata store for large installations.

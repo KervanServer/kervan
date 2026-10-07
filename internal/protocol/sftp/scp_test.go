@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/kervanserver/kervan/internal/storage/memory"
+	"github.com/kervanserver/kervan/internal/vfs"
 )
 
 func TestParseExecPayload(t *testing.T) {
@@ -45,9 +46,9 @@ func TestParseSCPExec(t *testing.T) {
 }
 
 func TestParseSCPFileHeader(t *testing.T) {
-	mode, size, name, err := parseSCPFileHeader("C0644 12 file.txt")
+	mode, size, name, err := parseSCPRecord("C0644 12 file.txt", 'C')
 	if err != nil {
-		t.Fatalf("parseSCPFileHeader error: %v", err)
+		t.Fatalf("parseSCPRecord error: %v", err)
 	}
 	if mode != 0o644 || size != 12 || name != "file.txt" {
 		t.Fatalf("unexpected header parse: mode=%o size=%d name=%q", mode, size, name)
@@ -62,7 +63,7 @@ func TestParseSCPFileHeaderRejectsPathTraversalNames(t *testing.T) {
 		"C0644 12 .",
 	}
 	for _, raw := range tests {
-		if _, _, _, err := parseSCPFileHeader(raw); err == nil {
+		if _, _, _, err := parseSCPRecord(raw, 'C'); err == nil {
 			t.Fatalf("expected invalid file name for %q", raw)
 		}
 	}
@@ -99,7 +100,7 @@ func TestSCPSinkUploadCompletes(t *testing.T) {
 		_ = clientConn.Close()
 	})
 	go func() {
-		_ = srv.runSCPSink(pipeSCPChannel{Conn: serverConn}, fsys, "/", "alice", "remote", func() {})
+		_ = srv.runSCPSink(pipeSCPChannel{Conn: serverConn}, fsys, "/", false, "alice", "remote", func() {})
 		_ = serverConn.Close()
 	}()
 
@@ -157,7 +158,7 @@ func TestSCPSinkOversizedHeaderClosesConnection(t *testing.T) {
 		_ = clientConn.Close()
 	})
 	go func() {
-		_ = srv.runSCPSink(pipeSCPChannel{Conn: serverConn}, fsys, "/", "alice", "remote", func() {})
+		_ = srv.runSCPSink(pipeSCPChannel{Conn: serverConn}, fsys, "/", false, "alice", "remote", func() {})
 		_ = serverConn.Close()
 	}()
 
@@ -213,5 +214,63 @@ func TestParseSCPExecShellQuoting(t *testing.T) {
 		if _, err := parseSCPExec(bad); err == nil {
 			t.Errorf("parseSCPExec(%q) accepted", bad)
 		}
+	}
+}
+
+// runSinkScript feeds raw scp records to a sink and returns its error. A
+// successful script must end with a stray top-level "E", which ends the
+// session (net.Pipe has no half-close to signal EOF).
+func runSinkScript(t *testing.T, fsys vfs.FileSystem, recursive bool, records string) error {
+	t.Helper()
+	srv := NewServer(Config{}, nil, nil, nil, nil, nil, nil)
+	serverConn, clientConn := net.Pipe()
+	t.Cleanup(func() { _ = serverConn.Close(); _ = clientConn.Close() })
+	done := make(chan error, 1)
+	go func() {
+		done <- srv.runSCPSink(pipeSCPChannel{Conn: serverConn}, fsys, "/", recursive, "alice", "remote", func() {})
+		_ = serverConn.Close()
+	}()
+	go func() { _, _ = io.Copy(io.Discard, clientConn) }() // drain acks
+	_ = clientConn.SetWriteDeadline(time.Now().Add(3 * time.Second))
+	_, _ = clientConn.Write([]byte(records))
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(5 * time.Second):
+		t.Fatal("sink did not finish")
+		return nil
+	}
+}
+
+func TestSCPSinkRecursiveRecords(t *testing.T) {
+	fsys := memory.New()
+	err := runSinkScript(t, fsys, true, "D0755 0 d\nC0644 2 f.txt\nhi\x00D0700 0 e\nE\nE\nE\n")
+	if err != nil {
+		t.Fatalf("recursive sink: %v", err)
+	}
+	if info, err := fsys.Stat("/d/e"); err != nil || !info.IsDir() {
+		t.Fatalf("nested dir missing: %v", err)
+	}
+	f, err := fsys.Open("/d/f.txt", os.O_RDONLY, 0)
+	if err != nil {
+		t.Fatalf("file inside dir missing: %v", err)
+	}
+	data, _ := io.ReadAll(f)
+	_ = f.Close()
+	if string(data) != "hi" {
+		t.Fatalf("file content %q", data)
+	}
+}
+
+func TestSCPSinkRejectsUnsafeDirectories(t *testing.T) {
+	if err := runSinkScript(t, memory.New(), false, "D0755 0 d\n"); err == nil {
+		t.Fatal("directory accepted without -r")
+	}
+	if err := runSinkScript(t, memory.New(), true, "D0755 0 ..\n"); err == nil {
+		t.Fatal("'..' directory name accepted")
+	}
+	deep := strings.Repeat("D0755 0 x\n", maxSCPDirDepth+1)
+	if err := runSinkScript(t, memory.New(), true, deep); err == nil {
+		t.Fatal("unbounded directory nesting accepted")
 	}
 }

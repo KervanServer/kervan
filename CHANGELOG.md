@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **SCP:** recursive legacy copies (`scp -O -r`) in both directions. Upload
+  follows OpenSSH semantics: a missing target becomes the copied directory,
+  and an existing one receives it as a subdirectory. Directory times are
+  kept with `-p`, a directory is refused without `-r`, and nesting is capped
+  at 128 levels. Covered by an OpenSSH interop test.
+
 ## v0.1.0 (2026-10-07)
 
 Verified end to end against a running server with real clients: OpenSSH

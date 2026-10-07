@@ -218,3 +218,62 @@ func TestInteropCurlFTPAndSSH(t *testing.T) {
 	run(append(sshBase, sshURL("scp", "/c.bin"), "-o", "c.out")...) // libssh2 asks for -p times
 	assertSameFile(t, filepath.Join(work, "c.out"), payload)
 }
+
+// writeTree creates a small nested tree under root and returns its files.
+func writeTree(t *testing.T, root string) map[string][]byte {
+	t.Helper()
+	files := map[string][]byte{
+		"top.txt":              []byte("top level\n"),
+		"sub/a.bin":            nil,
+		"sub/deeper/b.txt":     []byte("deeper file\n"),
+		"sub/deeper/empty.txt": {},
+		"other/c with space":   []byte("spaced name\n"),
+	}
+	for rel, data := range files {
+		full := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if data == nil {
+			files[rel] = writeRandomFile(t, full, 300<<10)
+			continue
+		}
+		if err := os.WriteFile(full, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(root, "emptydir"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	return files
+}
+
+func assertTree(t *testing.T, root string, want map[string][]byte) {
+	t.Helper()
+	for rel, data := range want {
+		assertSameFile(t, filepath.Join(root, filepath.FromSlash(rel)), data)
+	}
+	if info, err := os.Stat(filepath.Join(root, "emptydir")); err != nil || !info.IsDir() {
+		t.Fatalf("empty directory not copied: %v", err)
+	}
+}
+
+func TestInteropOpenSSHLegacyRecursiveSCP(t *testing.T) {
+	scpBin := requireBinary(t, "scp")
+	requireBinary(t, "ssh-keygen")
+	env := startInteropApp(t)
+	work := t.TempDir()
+	want := writeTree(t, filepath.Join(work, "tree"))
+	scp := func(args ...string) {
+		runInterop(t, work, scpBin, append(append([]string{"-O", "-r", "-p"}, sshOpts(env, "-P")...), args...)...)
+	}
+
+	// Target does not exist: the uploaded directory becomes /copy.
+	scp("tree", "alice@127.0.0.1:/copy")
+	// Target exists: the directory is nested inside it, as with OpenSSH.
+	scp("tree", "alice@127.0.0.1:/copy")
+
+	scp("alice@127.0.0.1:/copy", "back")
+	assertTree(t, filepath.Join(work, "back"), want)
+	assertTree(t, filepath.Join(work, "back", "tree"), want)
+}
