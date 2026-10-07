@@ -206,3 +206,61 @@ func TestStoreConcurrentPutsPersistAllEntries(t *testing.T) {
 		t.Fatalf("expected 50 persisted users, got %d", len(users))
 	}
 }
+
+// Two Store instances on one directory model the running server and a CLI
+// command. Each must see the other's writes, and neither write nor Close may
+// erase what the other persisted.
+func TestStoreConcurrentProcessesDoNotLoseWrites(t *testing.T) {
+	dir := t.TempDir()
+	server, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer server.Close()
+	if err := server.Put("users", "admin", "a"); err != nil {
+		t.Fatal(err)
+	}
+
+	cli, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cli.Put("users", "bob", "b"); err != nil {
+		t.Fatal(err)
+	}
+
+	// The server sees the CLI's user without a restart...
+	var got string
+	if err := server.Get("users", "bob", &got); err != nil || got != "b" {
+		t.Fatalf("server did not observe CLI write: %q %v", got, err)
+	}
+	// ...and its own next write (e.g. a last-login update) keeps it.
+	if err := server.Put("users", "admin", "a2"); err != nil {
+		t.Fatal(err)
+	}
+	// A stale CLI Close must not roll the server's write back.
+	if err := cli.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := Open(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	var users []string
+	if err := reopened.List("users", &users); err != nil {
+		t.Fatal(err)
+	}
+	if len(users) != 2 || users[0] != "a2" || users[1] != "b" {
+		t.Fatalf("persisted users = %v, want [a2 b]", users)
+	}
+
+	// Deletes from another process are observed too.
+	if err := reopened.Delete("users", "bob"); err != nil {
+		t.Fatal(err)
+	}
+	if err := server.Get("users", "bob", &got); err != ErrNotFound {
+		t.Fatalf("deleted key still visible to server: %v", err)
+	}
+}

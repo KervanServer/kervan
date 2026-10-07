@@ -13,12 +13,21 @@ import (
 
 var ErrNotFound = errors.New("not found")
 
+// Store is a JSON-file key/value store. The server and CLI commands open the
+// same file concurrently, so every write is a locked read-modify-write of the
+// file (only the touched key changes) and reads pick up changes written by
+// other processes. Without this, a CLI "user create" against a running
+// server was invisible to it and was silently erased by the server's next
+// write.
 type Store struct {
 	path       string
 	backupPath string
+	lockPath   string
 	mu         sync.RWMutex
 	persistMu  sync.Mutex
 	data       map[string]json.RawMessage
+	stamp      os.FileInfo // primary file as last loaded or written; guarded by mu
+	dirty      bool        // a write failed to persist; guarded by persistMu
 }
 
 func Open(dataDir string) (*Store, error) {
@@ -29,18 +38,28 @@ func Open(dataDir string) (*Store, error) {
 	s := &Store{
 		path:       path,
 		backupPath: path + ".bak",
+		lockPath:   path + ".lock",
 		data:       make(map[string]json.RawMessage),
 	}
 	if err := s.load(); err != nil {
 		return nil, fmt.Errorf("load store from %s: %w", path, err)
 	}
+	if info, err := os.Stat(path); err == nil {
+		s.stamp = info
+	}
 	return s, nil
 }
 
+// Close persists any write that previously failed to reach disk. It never
+// rewrites an up-to-date store: a stale snapshot written on Close would undo
+// another process's changes.
 func (s *Store) Close() error {
 	s.persistMu.Lock()
 	defer s.persistMu.Unlock()
-	return s.flush()
+	if !s.dirty {
+		return nil
+	}
+	return s.mutateLocked(func(map[string]json.RawMessage) {})
 }
 
 func (s *Store) Put(collection, key string, value any) error {
@@ -48,15 +67,58 @@ func (s *Store) Put(collection, key string, value any) error {
 	if err != nil {
 		return fmt.Errorf("marshal value for %s/%s: %w", collection, key, err)
 	}
+	ck := s.composite(collection, key)
 	s.persistMu.Lock()
 	defer s.persistMu.Unlock()
+	return s.mutateLocked(func(data map[string]json.RawMessage) { data[ck] = raw })
+}
+
+// mutateLocked applies one change as a read-modify-write of the store file
+// under the cross-process lock. The caller holds persistMu.
+func (s *Store) mutateLocked(apply func(map[string]json.RawMessage)) error {
+	unlock, err := lockFile(s.lockPath)
+	if err != nil {
+		return fmt.Errorf("lock store %s: %w", s.lockPath, err)
+	}
+	defer unlock()
+	s.refresh()
 	s.mu.Lock()
-	s.data[s.composite(collection, key)] = raw
+	apply(s.data)
 	s.mu.Unlock()
-	return s.flush()
+	if err := s.flush(); err != nil {
+		s.dirty = true
+		return err
+	}
+	s.dirty = false
+	return nil
+}
+
+// refresh reloads the primary file when another process replaced it since
+// it was last loaded or written here. A file that cannot be read keeps the
+// in-memory state, which the next write then repairs.
+func (s *Store) refresh() {
+	info, err := os.Stat(s.path)
+	if err != nil {
+		return
+	}
+	s.mu.RLock()
+	current := s.stamp != nil && os.SameFile(s.stamp, info) && s.stamp.ModTime().Equal(info.ModTime()) && s.stamp.Size() == info.Size()
+	s.mu.RUnlock()
+	if current {
+		return
+	}
+	decoded, _, err := loadStoreFile(s.path)
+	if err != nil {
+		return
+	}
+	s.mu.Lock()
+	s.data = decoded
+	s.stamp = info
+	s.mu.Unlock()
 }
 
 func (s *Store) Get(collection, key string, out any) error {
+	s.refresh()
 	s.mu.RLock()
 	raw, ok := s.data[s.composite(collection, key)]
 	s.mu.RUnlock()
@@ -70,15 +132,14 @@ func (s *Store) Get(collection, key string, out any) error {
 }
 
 func (s *Store) Delete(collection, key string) error {
+	ck := s.composite(collection, key)
 	s.persistMu.Lock()
 	defer s.persistMu.Unlock()
-	s.mu.Lock()
-	delete(s.data, s.composite(collection, key))
-	s.mu.Unlock()
-	return s.flush()
+	return s.mutateLocked(func(data map[string]json.RawMessage) { delete(data, ck) })
 }
 
 func (s *Store) List(collection string, out any) error {
+	s.refresh()
 	prefix := collection + ":"
 	s.mu.RLock()
 	keys := make([]string, 0, len(s.data))
@@ -144,6 +205,11 @@ func (s *Store) flush() error {
 	}
 	if err := writeFileAtomically(s.path, raw, 0o600); err != nil {
 		return fmt.Errorf("write store file %s: %w", s.path, err)
+	}
+	if info, err := os.Stat(s.path); err == nil {
+		s.mu.Lock()
+		s.stamp = info
+		s.mu.Unlock()
 	}
 	if err := writeFileAtomically(s.backupPath, raw, 0o600); err != nil {
 		return fmt.Errorf("write store backup file %s: %w", s.backupPath, err)
