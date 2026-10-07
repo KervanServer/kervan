@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased — production-readiness pass
+## v0.1.0 (2026-10-07)
 
 Verified end to end against a running server with real clients: OpenSSH
 `sftp`/`scp` (SFTP and legacy modes), curl (FTP in EPSV/PASV/PORT/EPRT, FTPS
@@ -62,6 +62,22 @@ Docker image. Those client runs are now part of the test suite
   `last_seen_at` is updated on activity, accept loops back off on errors,
   and the health check `cobaltdb` was renamed to `store`.
 - **CI:** a `go test -race` job.
+
+### Security
+
+- **deps:** Go toolchain go1.26.2 -> go1.26.8 and x/crypto v0.57.0,
+  x/net v0.59.0, x/text v0.42.0, x/sys v0.48.0. govulncheck had reported
+  22 reachable vulnerabilities, including in the SSH stack and in
+  crypto/tls, crypto/x509 and net/http; it now reports 0.
+- **WebUI deps:** react-router 7.18 (the only affected runtime package),
+  vite and related build tooling, and vitest 5. npm audit had reported 14
+  advisories (2 critical); it now reports 0.
+
+### Changed
+
+- **CI:** GitHub Actions CI runs only on manual dispatch
+  (`gh workflow run CI`). Use `make check` locally for the same checks and
+  `make audit` for vulnerability scans.
 
 ### Removed
 

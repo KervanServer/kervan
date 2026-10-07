@@ -7,7 +7,7 @@
 > keys now log a startup warning). From Phase 4, the race-detector CI job and
 > real-client interop tests are done. Phase 2 is rescoped: OIDC and groups
 > are out of v1.0, and the JSON store is the adopted persistence layer (now
-> safe for concurrent CLI/server use). See CHANGELOG.md "Unreleased" for
+> safe for concurrent CLI/server use). See the CHANGELOG.md v0.1.0 entry for
 > details.
 
 > Based on comprehensive codebase analysis performed on 2026-04-11
