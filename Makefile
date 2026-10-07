@@ -6,7 +6,7 @@ LDFLAGS := -s -w \
   -X github.com/kervanserver/kervan/internal/build.Commit=$(COMMIT) \
   -X github.com/kervanserver/kervan/internal/build.Date=$(DATE)
 
-.PHONY: build webui test clean docker-build compose-config compose-up compose-down release-snapshot release-check
+.PHONY: build webui test check clean docker-build compose-config compose-up compose-down release-snapshot release-check
 
 build: webui
 	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/kervan ./cmd/kervan
@@ -16,6 +16,21 @@ webui:
 
 test:
 	go test ./...
+
+# check runs locally what the (manual-only) GitHub Actions CI runs:
+# gofmt, vet, staticcheck, tests, race tests, WebUI tests and the embedded
+# dist drift check. Use it instead of pushing to trigger CI.
+check:
+	@unformatted="$$(gofmt -l $$(git ls-files '*.go'))"; \
+	  if [ -n "$$unformatted" ]; then echo "gofmt needed:"; echo "$$unformatted"; exit 1; fi
+	go vet ./...
+	@if command -v staticcheck >/dev/null 2>&1; then staticcheck ./...; \
+	  else echo "staticcheck not installed: go install honnef.co/go/tools/cmd/staticcheck@latest"; exit 1; fi
+	go test ./... -count=1
+	CGO_ENABLED=1 go test -race ./... -count=1
+	cd webui && npm test
+	go run ./scripts
+	git diff --exit-code -- internal/webui/dist
 
 clean:
 	rm -rf bin

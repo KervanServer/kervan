@@ -1,11 +1,15 @@
 name: CI
 
+# Manual only: CI never runs on push or pull_request. Run `make check`
+# locally for day-to-day verification, and start this workflow from the
+# Actions tab (or `gh workflow run CI`) when a hosted run is actually needed.
 on:
-  pull_request:
-  push:
-    branches:
-      - main
-      - master
+  workflow_dispatch:
+    inputs:
+      docker:
+        description: Also build the production Docker image
+        type: boolean
+        default: false
 
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
@@ -100,6 +104,7 @@ jobs:
 
   docker:
     name: Docker Image Build
+    if: ${{ inputs.docker }}
     runs-on: ubuntu-latest
     needs:
       - backend

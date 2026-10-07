@@ -156,9 +156,30 @@ make test
 make compose-config
 ```
 
-GitHub Actions CI runs backend formatting/vet/staticcheck/tests/build and also
-verifies that `webui` source changes are reflected in the committed
-`internal/webui/dist` assets.
+### Continuous integration
+
+CI does **not** run automatically: pushes and pull requests trigger nothing.
+Verify changes locally with:
+
+```bash
+make check   # gofmt, vet, staticcheck, tests, -race tests, WebUI tests,
+             # and a check that internal/webui/dist matches webui/src
+```
+
+`make check` needs `staticcheck` (`go install honnef.co/go/tools/cmd/staticcheck@latest`),
+Node.js for the WebUI, and a C toolchain for `-race`. The interop tests also
+use `sftp`, `scp`, `ssh-keygen` and `curl` when they are installed.
+
+When a hosted run is actually needed (e.g. before a release), start the CI
+workflow manually from the GitHub Actions tab or with:
+
+```bash
+gh workflow run CI                   # backend, race and WebUI jobs
+gh workflow run CI -f docker=true    # additionally build the Docker image
+```
+
+The Release workflow runs only when a `v*` tag is pushed (or manually), so
+it also stays idle during normal development.
 
 ## Logging
 
