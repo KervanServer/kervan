@@ -37,6 +37,11 @@ func (c *Config) Validate() error {
 			errs = append(errs, "ftp.passive_port_range: "+err.Error())
 		}
 	}
+	for host := range c.FTP.VirtualHosts {
+		if !validHostName(host) {
+			errs = append(errs, "ftp.virtual_hosts: invalid host name "+strconv.Quote(host))
+		}
+	}
 	if c.SFTP.Enabled && (c.SFTP.Port < 1 || c.SFTP.Port > 65535) {
 		errs = append(errs, "sftp.port must be 1-65535")
 	}
@@ -261,6 +266,24 @@ func validatePortRange(s string) error {
 		return fmt.Errorf("ports must be in 1024-65535 and start<=end")
 	}
 	return nil
+}
+
+func validHostName(host string) bool {
+	host = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(host)), ".")
+	if host == "" || len(host) > 253 {
+		return false
+	}
+	for _, label := range strings.Split(host, ".") {
+		if label == "" || len(label) > 63 || strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
+			return false
+		}
+		for _, r := range label {
+			if !(r == '-' || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')) {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func isLoopbackHost(host string) bool {

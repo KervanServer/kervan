@@ -45,6 +45,18 @@ type Config struct {
 	// MaxConnections caps concurrent control connections across all FTP
 	// listeners; <= 0 is unlimited.
 	MaxConnections int
+	// VirtualHosts (RFC 7151 HOST) keyed by lower-case host name. When
+	// empty, any HOST is accepted and nothing changes.
+	VirtualHosts map[string]VirtualHost
+}
+
+// VirtualHost customizes the server for clients that name it with HOST (or
+// TLS SNI).
+type VirtualHost struct {
+	Banner string
+	// AllowedGroups, when non-empty, limits logins to members (primary or
+	// secondary) of at least one of these groups.
+	AllowedGroups []string
 }
 
 type UserFSBuilder func(*auth.User) (vfs.FileSystem, error)
@@ -245,6 +257,7 @@ type connState struct {
 	passiveLn       net.Listener
 	activeAddr      string
 	restOffset      int64 // REST marker for the next RETR/STOR
+	vhost           string
 	passiveIP       string
 	remoteAddr      string
 	secureControl   bool
@@ -304,9 +317,14 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, implicitTLS bool
 		}
 		conn = tlsConn
 		state.secureControl = true
+		s.adoptSNIHost(state, tlsConn)
 	}
 	reader := bufio.NewReader(conn)
-	writeReply(conn, 220, s.cfg.Banner)
+	banner := s.cfg.Banner
+	if vh, ok := s.cfg.VirtualHosts[state.vhost]; ok && vh.Banner != "" {
+		banner = vh.Banner
+	}
+	writeReply(conn, 220, banner)
 
 	for {
 		_ = conn.SetReadDeadline(time.Now().Add(s.cfg.IdleTimeout))
@@ -328,6 +346,28 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, implicitTLS bool
 
 		cmd, arg := splitCommand(line)
 		switch cmd {
+		case "HOST":
+			// RFC 7151: HOST must precede USER/login.
+			if state.user != nil || state.username != "" {
+				writeReply(conn, 503, "HOST must be sent before USER.")
+				continue
+			}
+			name := normalizeHostName(arg)
+			if name == "" {
+				writeReply(conn, 501, "Syntax error in host name.")
+				continue
+			}
+			vh, known := s.cfg.VirtualHosts[name]
+			if len(s.cfg.VirtualHosts) > 0 && !known {
+				writeReply(conn, 504, "Unknown virtual host.")
+				continue
+			}
+			state.vhost = name
+			if vh.Banner != "" {
+				writeReply(conn, 220, vh.Banner)
+			} else {
+				writeReply(conn, 220, "Host accepted.")
+			}
 		case "USER":
 			state.username = arg
 			writeReply(conn, 331, "User name okay, need password.")
@@ -351,6 +391,11 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, implicitTLS bool
 				continue
 			}
 			throttle.RecordSuccess(state.remoteAddr)
+			if !s.vhostAllows(state.vhost, user) {
+				writeReply(conn, 530, "Login incorrect.")
+				s.emitAudit(audit.EventAuthFailure, user.Username, "ftp", "", state.remoteAddr, "failed", "not permitted on virtual host "+state.vhost)
+				continue
+			}
 			userFS, fsErr := s.buildFS(user)
 			if fsErr != nil {
 				writeReply(conn, 550, "Unable to mount filesystem.")
@@ -372,7 +417,11 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, implicitTLS bool
 				_ = conn.Close()
 			})
 			writeReply(conn, 230, "User logged in, proceed.")
-			s.emitAudit(audit.EventAuthSuccess, user.Username, "ftp", "", state.remoteAddr, "ok", "login success")
+			loginMsg := "login success"
+			if state.vhost != "" {
+				loginMsg += " (host " + state.vhost + ")"
+			}
+			s.emitAudit(audit.EventAuthSuccess, user.Username, "ftp", "", state.remoteAddr, "ok", loginMsg)
 		case "QUIT":
 			writeReply(conn, 221, "Goodbye.")
 			s.cleanupConnState(state)
@@ -387,6 +436,7 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, implicitTLS bool
 				" PASV",
 				" EPSV",
 				" REST STREAM",
+				" HOST",
 				" SIZE",
 				" MDTM",
 				" MLST type*;size*;modify*;",
@@ -825,6 +875,9 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, implicitTLS bool
 				reader = bufio.NewReader(conn)
 			}
 			state.secureControl = true
+			if state.username == "" {
+				s.adoptSNIHost(state, tlsConn)
+			}
 			state.pbszSet = false
 			state.dataProtPrivate = false
 		case "PBSZ":
@@ -861,6 +914,53 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, implicitTLS bool
 			writeReply(conn, 502, "Command not implemented.")
 		}
 	}
+}
+
+// normalizeHostName canonicalizes a HOST argument: lower case, no trailing
+// dot, IPv6 literal brackets removed. Empty when malformed.
+func normalizeHostName(raw string) string {
+	name := strings.ToLower(strings.TrimSuffix(strings.TrimSpace(raw), "."))
+	name = strings.TrimSuffix(strings.TrimPrefix(name, "["), "]")
+	if name == "" || len(name) > 253 {
+		return ""
+	}
+	for _, r := range name {
+		if !(r == '-' || r == '.' || r == ':' || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')) {
+			return ""
+		}
+	}
+	return name
+}
+
+// adoptSNIHost uses the TLS server name as the virtual host when the client
+// has not sent HOST and the name is configured.
+func (s *Server) adoptSNIHost(state *connState, tlsConn *tls.Conn) {
+	if state.vhost != "" || len(s.cfg.VirtualHosts) == 0 {
+		return
+	}
+	name := normalizeHostName(tlsConn.ConnectionState().ServerName)
+	if _, ok := s.cfg.VirtualHosts[name]; ok {
+		state.vhost = name
+	}
+}
+
+// vhostAllows applies the virtual host's group restriction to user.
+func (s *Server) vhostAllows(vhost string, user *auth.User) bool {
+	vh, ok := s.cfg.VirtualHosts[vhost]
+	if !ok || len(vh.AllowedGroups) == 0 {
+		return true
+	}
+	for _, allowed := range vh.AllowedGroups {
+		if strings.EqualFold(user.PrimaryGroup, allowed) {
+			return true
+		}
+		for _, g := range user.SecondaryGrps {
+			if strings.EqualFold(g, allowed) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (s *Server) cleanupConnState(state *connState) {
@@ -1101,8 +1201,10 @@ func writeMultiline(conn net.Conn, code int, lines []string) {
 		return
 	}
 	_, _ = fmt.Fprintf(conn, "%d-%s\r\n", code, strings.TrimSpace(lines[0]))
+	// Intermediate lines start with a single space: RFC 2389 requires it for
+	// FEAT entries, and it can never be mistaken for a "ddd " terminator.
 	for i := 1; i < len(lines)-1; i++ {
-		_, _ = fmt.Fprintf(conn, "%s\r\n", strings.TrimSpace(lines[i]))
+		_, _ = fmt.Fprintf(conn, " %s\r\n", strings.TrimSpace(lines[i]))
 	}
 	_, _ = fmt.Fprintf(conn, "%d %s\r\n", code, strings.TrimSpace(lines[len(lines)-1]))
 }

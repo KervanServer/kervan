@@ -4,10 +4,19 @@
 
 ### Added
 
+- **FTP:** virtual hosts through RFC 7151 `HOST` (or the TLS server name
+  for FTPS). Each host has its own banner and an optional group
+  restriction, so several tenants can share one address.
+
 - **audit:** `syslog` output (RFC 5424) over UDP, TCP, TLS or Unix sockets.
   It supports `format: cef` for SIEMs, configurable facility, RFC 6587
   framing with automatic reconnects, and escaping that prevents log
   injection.
+
+### Fixed
+
+- **FTP:** `FEAT` reply lines start with a space as RFC 2389 requires. They
+  were previously stripped, which some clients reject.
 
 ### Changed
 

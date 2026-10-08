@@ -111,7 +111,8 @@ func TestWriteReplyAndMultiline(t *testing.T) {
 	if !strings.Contains(output, "220 Welcome\r\n") {
 		t.Fatalf("expected single-line reply in output, got %q", output)
 	}
-	if !strings.Contains(output, "211-Features\r\nUTF8\r\n211 PASV\r\n") {
+	// Intermediate lines carry one leading space (RFC 2389 §3.2).
+	if !strings.Contains(output, "211-Features\r\n UTF8\r\n211 PASV\r\n") {
 		t.Fatalf("expected multiline feature reply, got %q", output)
 	}
 	if !strings.Contains(output, "200 \r\n") {

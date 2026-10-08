@@ -221,6 +221,7 @@ func New(cfg *config.Config, configPath string, logger *slog.Logger) (*App, erro
 			FTPSImplicitPort: cfg.FTPS.ImplicitPort,
 			TLSConfig:        ftpTLSConfig,
 			ActiveMode:       cfg.FTP.ActiveMode,
+			VirtualHosts:     ftpVirtualHosts(cfg.FTP.VirtualHosts),
 			IPFilter:         ipFilter,
 			MaxConnections:   cfg.FTP.MaxConnections,
 		},
@@ -1184,6 +1185,18 @@ func (a *App) applyRuntimeConfig(nextCfg *config.Config) ([]string, []string) {
 	}
 
 	return appliedPaths, restartPaths
+}
+
+func ftpVirtualHosts(in map[string]config.FTPVirtualHost) map[string]ftp.VirtualHost {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]ftp.VirtualHost, len(in))
+	for name, vh := range in {
+		key := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(name)), ".")
+		out[key] = ftp.VirtualHost{Banner: vh.Banner, AllowedGroups: vh.AllowedGroups}
+	}
+	return out
 }
 
 func buildOIDCSettings(c config.OIDCConfig) (*api.OIDCSettings, error) {

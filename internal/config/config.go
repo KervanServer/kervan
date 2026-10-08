@@ -42,6 +42,14 @@ type FTPConfig struct {
 	MaxConnections   int           `yaml:"max_connections"`
 	IdleTimeout      time.Duration `yaml:"idle_timeout"`
 	TransferTimeout  time.Duration `yaml:"transfer_timeout"`
+	// VirtualHosts are selected with the RFC 7151 HOST command or, for
+	// FTPS, the TLS server name.
+	VirtualHosts map[string]FTPVirtualHost `yaml:"virtual_hosts"`
+}
+
+type FTPVirtualHost struct {
+	Banner        string   `yaml:"banner"`
+	AllowedGroups []string `yaml:"allowed_groups"`
 }
 
 type FTPSConfig struct {

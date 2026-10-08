@@ -20,6 +20,7 @@ ftp:
   max_connections: 500       # concurrent control connections, 0 = unlimited
   idle_timeout: 300s
   transfer_timeout: 1h
+  virtual_hosts: {}          # RFC 7151 HOST / FTPS SNI; e.g. files.acme.example: {banner: ..., allowed_groups: [acme]}
 
 ftps:
   enabled: false

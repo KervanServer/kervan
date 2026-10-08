@@ -335,6 +335,20 @@ privileged ports like `990` without running as root.
 - `TYPE A` is accepted for client compatibility; data is always transferred
   byte-for-byte (binary).
 - `MLSD` / `MLST` machine-readable listings, `SIZE`, `MDTM`, `REST`, `APPE`.
+- Virtual hosts (RFC 7151 `HOST`, or the TLS server name for FTPS): each
+  host name in `ftp.virtual_hosts` can have its own banner and restrict
+  logins to members of `allowed_groups`, so several tenants can share one IP
+  and port. Unknown host names are refused when virtual hosts are
+  configured. Clients that send no `HOST` reach the default, unrestricted
+  server, and SFTP/SCP are unaffected (SSH has no host name).
+
+  ```yaml
+  ftp:
+    virtual_hosts:
+      files.acme.example:
+        banner: Welcome to Acme Files
+        allowed_groups: [acme]
+  ```
 - Per-connection idle and transfer timeouts.
 
 ### FTPS (RFC 4217)
@@ -777,7 +791,6 @@ WebSocket updates, Prometheus metrics, and the `stdio` MCP server.
 
 Planned beyond v1.0 (see [.project/SPECIFICATION.md](.project/SPECIFICATION.md)):
 
-- FTP `HOST` virtual hosting.
 - Syslog/CEF and queryable audit storage, HMAC-chained logs.
 - A database-backed metadata store for large installations.
 
