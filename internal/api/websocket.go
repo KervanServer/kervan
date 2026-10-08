@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/kervanserver/kervan/internal/events"
 )
 
 const (
@@ -136,19 +138,68 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ticker := time.NewTicker(2 * time.Second)
+	// Event-driven: a change to a requested resource triggers a snapshot
+	// after a short debounce (bursts collapse into one frame); a slow
+	// heartbeat keeps uptime-style counters fresh. Without a broker, fall
+	// back to polling.
+	heartbeat := wsHeartbeatInterval
+	var changes <-chan struct{}
+	if s.events != nil {
+		sub := s.events.Subscribe(snapshotTopics(requestedTypes))
+		defer sub.Close()
+		changes = sub.C
+	} else {
+		heartbeat = wsPollInterval
+	}
+	ticker := time.NewTicker(heartbeat)
 	defer ticker.Stop()
+	var debounce <-chan time.Time
 
 	for {
 		select {
 		case <-done:
 			return
+		case <-changes:
+			if debounce == nil {
+				debounce = time.After(wsDebounce)
+			}
+		case <-debounce:
+			debounce = nil
+			if err := sendSnapshot(); err != nil {
+				return
+			}
+			ticker.Reset(heartbeat)
 		case <-ticker.C:
 			if err := sendSnapshot(); err != nil {
 				return
 			}
 		}
 	}
+}
+
+const (
+	wsDebounce          = 200 * time.Millisecond
+	wsHeartbeatInterval = 15 * time.Second
+	wsPollInterval      = 2 * time.Second
+)
+
+// snapshotTopics maps requested snapshot types to the change topics that
+// can alter them.
+func snapshotTopics(types map[string]struct{}) events.Topic {
+	var topics events.Topic
+	for t := range types {
+		switch t {
+		case "sessions":
+			topics |= events.TopicSessions
+		case "transfers":
+			topics |= events.TopicTransfers
+		case "audit":
+			topics |= events.TopicAudit
+		case "server":
+			topics |= events.TopicSessions | events.TopicTransfers
+		}
+	}
+	return topics
 }
 
 func (s *Server) buildWebSocketSnapshot(username string, requestedTypes map[string]struct{}) map[string]any {

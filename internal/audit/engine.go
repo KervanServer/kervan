@@ -4,6 +4,7 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kervanserver/kervan/internal/util/ulid"
@@ -15,12 +16,13 @@ type Sink interface {
 }
 
 type Engine struct {
-	logger *slog.Logger
-	ch     chan Event
-	sinks  []Sink
-	wg     sync.WaitGroup
-	mu     sync.RWMutex
-	closed bool
+	onWrite atomic.Pointer[func()]
+	logger  *slog.Logger
+	ch      chan Event
+	sinks   []Sink
+	wg      sync.WaitGroup
+	mu      sync.RWMutex
+	closed  bool
 }
 
 func NewEngine(logger *slog.Logger, sinks ...Sink) *Engine {
@@ -78,5 +80,14 @@ func (e *Engine) loop() {
 				e.logger.Error("audit sink write failed", "error", err, "type", evt.Type)
 			}
 		}
+		// After the sinks, so readers of the audit log see the event.
+		if fn := e.onWrite.Load(); fn != nil && *fn != nil {
+			(*fn)()
+		}
 	}
+}
+
+// SetOnWrite registers a callback run after each event reaches the sinks.
+func (e *Engine) SetOnWrite(fn func()) {
+	e.onWrite.Store(&fn)
 }

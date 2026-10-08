@@ -45,10 +45,11 @@ type Stats struct {
 }
 
 type Manager struct {
-	mu      sync.RWMutex
-	active  map[string]*Transfer
-	history []*Transfer
-	limit   int
+	onChange atomic.Pointer[func()]
+	mu       sync.RWMutex
+	active   map[string]*Transfer
+	history  []*Transfer
+	limit    int
 
 	totalTransfers atomic.Int64
 	completed      atomic.Int64
@@ -84,7 +85,20 @@ func (m *Manager) Start(username, protocol, path string, direction Direction, to
 	m.active[id] = tr
 	m.mu.Unlock()
 	m.totalTransfers.Add(1)
+	m.changed()
 	return id
+}
+
+// SetOnChange registers a callback run after transfers start, progress or
+// finish.
+func (m *Manager) SetOnChange(fn func()) {
+	m.onChange.Store(&fn)
+}
+
+func (m *Manager) changed() {
+	if fn := m.onChange.Load(); fn != nil && *fn != nil {
+		(*fn)()
+	}
 }
 
 func (m *Manager) AddBytes(id string, n int64) {
@@ -105,6 +119,7 @@ func (m *Manager) AddBytes(id string, n int64) {
 	} else {
 		m.downloadBytes.Add(n)
 	}
+	m.changed()
 }
 
 func (m *Manager) End(id string, status Status, err string) {
@@ -130,6 +145,7 @@ func (m *Manager) End(id string, status Status, err string) {
 	case StatusFailed:
 		m.failed.Add(1)
 	}
+	m.changed()
 }
 
 func (m *Manager) Active() []*Transfer {

@@ -2,6 +2,7 @@ package session
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/kervanserver/kervan/internal/util/ulid"
@@ -18,6 +19,7 @@ type Session struct {
 }
 
 type Manager struct {
+	onChange atomic.Pointer[func()]
 	mu       sync.RWMutex
 	sessions map[string]*Session
 	totals   map[string]int64
@@ -44,13 +46,29 @@ func (m *Manager) Start(username, protocol, remoteAddr string) *Session {
 	m.sessions[s.ID] = s
 	m.totals[protocol]++
 	m.mu.Unlock()
+	m.changed()
 	return s
+}
+
+// SetOnChange registers a callback run after sessions start or end.
+func (m *Manager) SetOnChange(fn func()) {
+	m.onChange.Store(&fn)
+}
+
+func (m *Manager) changed() {
+	if fn := m.onChange.Load(); fn != nil && *fn != nil {
+		(*fn)()
+	}
 }
 
 func (m *Manager) End(id string) {
 	m.mu.Lock()
+	_, existed := m.sessions[id]
 	delete(m.sessions, id)
 	m.mu.Unlock()
+	if existed {
+		m.changed()
+	}
 }
 
 // touchGranularity bounds how often Touch takes the write lock: per-packet
@@ -116,6 +134,7 @@ func (m *Manager) Kill(id string) bool {
 	if s.terminate != nil {
 		s.terminate()
 	}
+	m.changed()
 	return true
 }
 

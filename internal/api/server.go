@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/kervanserver/kervan/internal/auth"
+	"github.com/kervanserver/kervan/internal/events"
 	"github.com/kervanserver/kervan/internal/netguard"
 	"github.com/kervanserver/kervan/internal/session"
 	"github.com/kervanserver/kervan/internal/store"
@@ -66,6 +67,8 @@ type Config struct {
 	DefaultMaxStorage int64
 	// OIDC enables WebUI sign-in through an OpenID provider; nil disables it.
 	OIDC *OIDCSettings
+	// Events drives WebSocket pushes; nil falls back to polling.
+	Events *events.Broker
 }
 
 type StatusProvider func() map[string]any
@@ -90,6 +93,7 @@ type Server struct {
 	apiKeys      *APIKeyRepository
 	groups       *auth.GroupRepository
 	oidc         *OIDCSettings
+	events       *events.Broker
 	oidcGrants   oidcGrants
 	shareLinks   *shareLinkRepository
 	fsBuilder    UserFSBuilder
@@ -206,6 +210,7 @@ func NewServer(
 		apiKeys:      NewAPIKeyRepository(keyStore),
 		groups:       auth.NewGroupRepository(keyStore, userRepo),
 		oidc:         cfg.OIDC,
+		events:       cfg.Events,
 		shareLinks:   newShareLinkRepository(keyStore),
 		fsBuilder:    fsBuilder,
 		store:        keyStore,

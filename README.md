@@ -757,7 +757,6 @@ WebSocket updates, Prometheus metrics, and the `stdio` MCP server.
 Planned beyond v1.0 (see [.project/SPECIFICATION.md](.project/SPECIFICATION.md)):
 
 - FTP `HOST` virtual hosting.
-- Event-driven WebSocket updates (today: periodic snapshots).
 - Syslog/CEF and queryable audit storage, HMAC-chained logs.
 - A database-backed metadata store for large installations.
 

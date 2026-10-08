@@ -25,6 +25,7 @@ import (
 	"github.com/kervanserver/kervan/internal/build"
 	"github.com/kervanserver/kervan/internal/config"
 	icrypto "github.com/kervanserver/kervan/internal/crypto"
+	"github.com/kervanserver/kervan/internal/events"
 	"github.com/kervanserver/kervan/internal/netguard"
 	"github.com/kervanserver/kervan/internal/oidc"
 	"github.com/kervanserver/kervan/internal/protocol/ftp"
@@ -257,6 +258,12 @@ func New(cfg *config.Config, configPath string, logger *slog.Logger) (*App, erro
 		app.transfers,
 	)
 
+	// Change notifications drive the WebUI's live WebSocket updates.
+	broker := events.NewBroker()
+	app.sessions.SetOnChange(broker.Publisher(events.TopicSessions))
+	app.transfers.SetOnChange(broker.Publisher(events.TopicTransfers))
+	auditEngine.SetOnWrite(broker.Publisher(events.TopicAudit))
+
 	oidcSettings, err := buildOIDCSettings(cfg.WebUI.OIDC)
 	if err != nil {
 		_ = app.Close()
@@ -283,6 +290,7 @@ func New(cfg *config.Config, configPath string, logger *slog.Logger) (*App, erro
 			QuotaEnabled:         cfg.Quota.Enabled,
 			DefaultMaxStorage:    cfg.Quota.DefaultMaxStorage,
 			OIDC:                 oidcSettings,
+			Events:               broker,
 		},
 		logger,
 		engine,

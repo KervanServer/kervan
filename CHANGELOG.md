@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **WebUI live updates are event-driven.** Sessions, transfers and audit
+  events now push a WebSocket snapshot within about 200 ms of a change.
+  Bursts collapse into one frame, and an idle connection gets a 15 s
+  heartbeat instead of a frame every 2 s. The message format is unchanged.
+
 ## v0.2.0 (2026-10-08)
 
 ### Added
