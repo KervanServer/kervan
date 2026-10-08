@@ -18,3 +18,16 @@ func TestUnsupportedSettingWarnings(t *testing.T) {
 		t.Fatalf("unexpected warnings: %v", w)
 	}
 }
+
+func TestValidateSyslogAuditOutput(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.Audit.Outputs = []AuditOutput{{Type: "syslog", URL: "tls://siem.example:6514", Format: "cef", Facility: "authpriv"}}
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("valid syslog output rejected: %v", err)
+	}
+	cfg.Audit.Outputs = []AuditOutput{{Type: "syslog", URL: "http://siem"}, {Type: "syslog", URL: "udp://h:514", Format: "xml"}}
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "scheme must be") || !strings.Contains(err.Error(), "format must be") {
+		t.Fatalf("invalid syslog outputs: %v", err)
+	}
+}

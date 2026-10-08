@@ -6,6 +6,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+
+	"github.com/kervanserver/kervan/internal/audit"
 )
 
 func (c *Config) Validate() error {
@@ -213,8 +215,17 @@ func (c *Config) Validate() error {
 			if output.RetryCount < 0 {
 				errs = append(errs, prefix+".retry_count must be >= 0")
 			}
+		case "syslog":
+			if err := audit.ValidateSyslogURL(output.URL); err != nil {
+				errs = append(errs, prefix+".url: "+err.Error())
+			}
+			switch strings.ToLower(strings.TrimSpace(output.Format)) {
+			case "", "rfc5424", "cef":
+			default:
+				errs = append(errs, prefix+".format must be rfc5424 or cef")
+			}
 		default:
-			errs = append(errs, prefix+".type must be file|http|webhook")
+			errs = append(errs, prefix+".type must be file|http|webhook|syslog")
 		}
 	}
 	if c.MCP.Enabled {

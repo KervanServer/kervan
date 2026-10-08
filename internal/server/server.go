@@ -1270,6 +1270,18 @@ func buildAuditSinks(cfg *config.Config) ([]audit.Sink, string, error) {
 				return nil, "", err
 			}
 			sinks = append(sinks, sink)
+		case "syslog":
+			sink, err := audit.NewSyslogSink(audit.SyslogSinkOptions{
+				URL:      output.URL,
+				Format:   output.Format,
+				Facility: output.Facility,
+				Version:  build.Version,
+			})
+			if err != nil {
+				closeAuditSinks(sinks)
+				return nil, "", err
+			}
+			sinks = append(sinks, sink)
 		default:
 			closeAuditSinks(sinks)
 			return nil, "", fmt.Errorf("unsupported audit output type: %s", output.Type)

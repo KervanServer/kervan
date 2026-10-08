@@ -540,7 +540,7 @@ subsystem check.
 
 - Structured events (login, upload, download, delete, rename, mkdir, session
   open/close) are written as JSON lines to `data/audit.jsonl` by default.
-- `audit.outputs[]` supports `file`, `http` and `webhook` sinks.
+- `audit.outputs[]` supports `file`, `http`, `webhook` and `syslog` sinks.
 - File output path is configurable via `audit.outputs[].path` in `kervan.yaml`.
 - HTTP/webhook outputs support custom headers, batch size, flush interval and
   retry count for downstream audit collectors.
@@ -569,9 +569,30 @@ audit:
       batch_size: 50
       flush_interval: 5s
       retry_count: 3
+    - type: syslog
+      url: tls://siem.example.com:6514   # udp://, tcp://, tls://, unix:///dev/log, unixgram:///dev/log
+      format: cef                        # rfc5424 (default) or cef
+      facility: authpriv                 # default local0
 ```
-*Still planned:* syslog (RFC 5424 / CEF), queryable audit storage,
-  HMAC-chained immutable mode.
+
+Syslog outputs work as follows:
+
+- **Format:** RFC 5424 messages. With `format: rfc5424`, the event fields
+  travel as structured data (`[kervan@32473 id=… user=… protocol=… path=…
+  ip=… status=…]`). With `format: cef`, the message body is an ArcSight CEF
+  line (`suser`, `src`/`spt`, `app`, `filePath`, `outcome`, `msg`, `rt`,
+  `externalId`).
+- **Severity:** failed logins and rejected connections are `warning`, other
+  events `informational`.
+- **Transport:** TCP, TLS and `unix` streams use RFC 6587 octet-counting
+  framing and reconnect automatically. TLS verifies the collector against
+  the system roots. Field values are escaped, and control characters are
+  stripped, so audit data cannot forge extra records.
+- **Delivery:** syslog delivery is best effort. UDP can drop messages, and a
+  message written just as a TCP collector closes the connection can be lost.
+  Keep a `file` output as the record of truth.
+
+*Still planned:* queryable audit storage and an HMAC-chained immutable mode.
 
 ---
 

@@ -191,6 +191,10 @@ type AuditOutput struct {
 	BatchSize     int               `yaml:"batch_size"`
 	FlushInterval time.Duration     `yaml:"flush_interval"`
 	RetryCount    int               `yaml:"retry_count"`
+	// Format and Facility apply to syslog outputs (url: udp://, tcp://,
+	// tls://, unix:// or unixgram://).
+	Format   string `yaml:"format"`
+	Facility string `yaml:"facility"`
 }
 
 type SecurityConfig struct {

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Added
+
+- **audit:** `syslog` output (RFC 5424) over UDP, TCP, TLS or Unix sockets.
+  It supports `format: cef` for SIEMs, configurable facility, RFC 6587
+  framing with automatic reconnects, and escaping that prevents log
+  injection.
+
 ### Changed
 
 - **WebUI live updates are event-driven.** Sessions, transfers and audit
