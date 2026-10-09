@@ -107,7 +107,8 @@ func DefaultConfig() *Config {
 			CheckInterval:     60 * time.Second,
 		},
 		Audit: AuditConfig{
-			Enabled: true,
+			Enabled:   true,
+			Integrity: AuditIntegrityConfig{Enabled: true},
 			Outputs: []AuditOutput{
 				{
 					Type: "file",

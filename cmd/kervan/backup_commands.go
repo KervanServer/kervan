@@ -22,6 +22,7 @@ const (
 	backupStoreArchivePath    = "store/kervan-store.json"
 	backupStoreBakArchivePath = "store/kervan-store.json.bak"
 	backupAuditArchivePath    = "audit/audit.jsonl"
+	backupAuditKeyArchivePath = "audit/audit.key"
 	backupConfigArchivePath   = "config/kervan.yaml"
 	backupManifestPath        = "manifest.json"
 	backupManifestMaxBytes    = 2 << 20
@@ -112,6 +113,10 @@ func runBackupCreateCommand(stdout io.Writer, args []string) error {
 		files = append(files, backupArchiveFile{
 			ArchivePath: backupAuditArchivePath,
 			SourcePath:  backupAuditPath(cfg),
+		}, backupArchiveFile{
+			// Without the integrity key a restored log cannot be verified.
+			ArchivePath: backupAuditKeyArchivePath,
+			SourcePath:  cfg.AuditKeyPath(),
 		})
 	}
 	if *includeConfig {
@@ -264,6 +269,11 @@ func runBackupRestoreCommand(stdout io.Writer, args []string) error {
 		backupAuditArchivePath: {
 			ArchivePath: backupAuditArchivePath,
 			TargetPath:  backupAuditPath(cfg),
+			Optional:    true,
+		},
+		backupAuditKeyArchivePath: {
+			ArchivePath: backupAuditKeyArchivePath,
+			TargetPath:  cfg.AuditKeyPath(),
 			Optional:    true,
 		},
 	}

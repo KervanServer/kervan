@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **audit:** tamper-evident file logs, on by default
+  (`audit.integrity`). Each record is HMAC-chained to the previous one,
+  using a per-installation key in `<data_dir>/audit.key`.
+  - `kervan audit verify` detects modified, deleted, inserted and
+    reordered records, and exits non-zero on any finding.
+  - The line format stays backward compatible: the chain is an extra
+    `chain` field.
+  - The chain continues across restarts, and backups include the key.
+
 ## v0.3.0 (2026-10-08)
 
 ### Added

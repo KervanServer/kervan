@@ -606,7 +606,36 @@ Syslog outputs work as follows:
   message written just as a TCP collector closes the connection can be lost.
   Keep a `file` output as the record of truth.
 
-*Still planned:* queryable audit storage and an HMAC-chained immutable mode.
+### Tamper-evident audit log
+
+With `audit.integrity.enabled` (the default), every record written to a
+`file` output carries `"chain":{"seq":N,"prev":…,"mac":…}`. The MAC is an
+HMAC-SHA256 over the record's sequence number, the previous record's MAC and
+the exact event bytes. The key lives in `<data_dir>/audit.key` (mode 0600,
+created on first start) or in `audit.integrity.key_file`.
+
+```bash
+kervan audit verify                 # exit status 1 on any finding
+kervan audit verify --json          # machine-readable report
+```
+
+The command reports modified, deleted, inserted and reordered records, plus
+a chain that does not start at the beginning of the file. Records written
+before integrity was enabled are counted as unchained. The chain continues
+across restarts.
+
+Limits:
+
+- Someone who can read the key can recompute the chain, so keep the key
+  readable only by the Kervan user, or verify on a separate machine with a
+  copy of the key.
+- Removing records from the *end* of the file is not visible in the file
+  alone. Anchor the reported head (`seq`/`mac`) elsewhere, or ship events to
+  a `syslog` collector as an independent copy.
+- `kervan backup create` includes `audit.key` with the log. Without the key
+  a restored log cannot be verified.
+
+*Still planned:* queryable audit storage.
 
 ---
 

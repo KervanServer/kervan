@@ -111,6 +111,9 @@ quota:
 
 audit:
   enabled: true
+  integrity:                 # HMAC-chained, tamper-evident file outputs; check with "kervan audit verify"
+    enabled: true
+    key_file: ""             # default <data_dir>/audit.key (back it up with the log)
   outputs:
     - type: file
       path: ./data/audit.jsonl

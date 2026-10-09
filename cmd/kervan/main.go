@@ -57,6 +57,11 @@ func main() {
 		case "backup":
 			cmdBackup(os.Args[2:])
 			return
+		case "audit":
+			if err := runAuditCommand(os.Stdout, os.Args[2:]); err != nil {
+				exitf("audit: %v", err)
+			}
+			return
 		case "check":
 			cmdCheck(os.Args[2:])
 			return

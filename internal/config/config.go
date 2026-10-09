@@ -1,6 +1,10 @@
 package config
 
-import "time"
+import (
+	"path/filepath"
+	"strings"
+	"time"
+)
 
 type Config struct {
 	Server   ServerConfig   `yaml:"server"`
@@ -186,8 +190,26 @@ type QuotaConfig struct {
 }
 
 type AuditConfig struct {
-	Enabled bool          `yaml:"enabled"`
-	Outputs []AuditOutput `yaml:"outputs"`
+	Enabled   bool                 `yaml:"enabled"`
+	Outputs   []AuditOutput        `yaml:"outputs"`
+	Integrity AuditIntegrityConfig `yaml:"integrity"`
+}
+
+// AuditIntegrityConfig makes file outputs tamper-evident with an HMAC chain;
+// check a log with "kervan audit verify".
+type AuditIntegrityConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// KeyFile holds the hex HMAC key; default <data_dir>/audit.key, created
+	// on first start. Back it up: without it the log cannot be verified.
+	KeyFile string `yaml:"key_file"`
+}
+
+// AuditKeyPath resolves the integrity key location.
+func (c *Config) AuditKeyPath() string {
+	if p := strings.TrimSpace(c.Audit.Integrity.KeyFile); p != "" {
+		return p
+	}
+	return filepath.Join(c.Server.DataDir, "audit.key")
 }
 
 type AuditOutput struct {

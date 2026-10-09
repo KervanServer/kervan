@@ -1250,6 +1250,15 @@ func buildAuditSinks(cfg *config.Config) ([]audit.Sink, string, error) {
 		}}
 	}
 
+	var chainKey []byte
+	if cfg.Audit.Enabled && cfg.Audit.Integrity.Enabled {
+		key, err := audit.LoadOrCreateChainKey(cfg.AuditKeyPath())
+		if err != nil {
+			return nil, "", fmt.Errorf("audit integrity key: %w", err)
+		}
+		chainKey = key
+	}
+
 	sinks := make([]audit.Sink, 0, len(outputs))
 	primaryFilePath := ""
 	for _, output := range outputs {
@@ -1260,7 +1269,13 @@ func buildAuditSinks(cfg *config.Config) ([]audit.Sink, string, error) {
 			if path == "" {
 				path = filepath.Join(cfg.Server.DataDir, "audit.jsonl")
 			}
-			sink, err := audit.NewFileSink(path)
+			var sink *audit.FileSink
+			var err error
+			if chainKey != nil {
+				sink, err = audit.NewChainedFileSink(path, chainKey)
+			} else {
+				sink, err = audit.NewFileSink(path)
+			}
 			if err != nil {
 				closeAuditSinks(sinks)
 				return nil, "", err
