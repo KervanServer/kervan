@@ -117,6 +117,8 @@ audit:
   outputs:
     - type: file
       path: ./data/audit.jsonl
+      max_size_mb: 100       # rotate at this size; -1 never rotates
+      max_backups: 10        # rotated files kept; -1 keeps all
     # - type: webhook
     #   url: https://audit.example.com/events
     #   method: POST

@@ -556,6 +556,11 @@ subsystem check.
   open/close) are written as JSON lines to `data/audit.jsonl` by default.
 - `audit.outputs[]` supports `file`, `http`, `webhook` and `syslog` sinks.
 - File output path is configurable via `audit.outputs[].path` in `kervan.yaml`.
+- File outputs rotate at `max_size_mb` (default 100; `-1` disables) into
+  `audit-<UTC timestamp>.jsonl` next to the live file, keeping
+  `max_backups` rotated files (default 10; `-1` keeps all). The REST API,
+  export, MCP, `kervan audit verify` and backups all cover the rotated
+  files.
 - HTTP/webhook outputs support custom headers, batch size, flush interval and
   retry count for downstream audit collectors.
 - Events are also queryable over the REST API at `/api/v1/audit/events`.
@@ -619,8 +624,12 @@ kervan audit verify                 # exit status 1 on any finding
 kervan audit verify --json          # machine-readable report
 ```
 
-The command reports modified, deleted, inserted and reordered records, plus
-a chain that does not start at the beginning of the file. Records written
+The command checks the live file and all rotated files as one chain. It
+reports modified, deleted, inserted and reordered records, plus a chain that
+does not start at the beginning. When retention removes the oldest rotated
+file, Kervan first writes a sealed `audit.pruned` record holding that file's
+last `seq`/`mac`. The verifier accepts the missing prefix only when such a
+record explains it exactly, so a file deleted by hand is still reported. Records written
 before integrity was enabled are counted as unchained. The chain continues
 across restarts.
 

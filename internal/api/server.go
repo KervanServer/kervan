@@ -20,12 +20,14 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/kervanserver/kervan/internal/audit"
 	"github.com/kervanserver/kervan/internal/auth"
 	"github.com/kervanserver/kervan/internal/events"
 	"github.com/kervanserver/kervan/internal/netguard"
@@ -2441,51 +2443,46 @@ func (s *Server) readRecentAuditEvents(limit int) []map[string]any {
 	if s.auditLogPath == "" {
 		return []map[string]any{}
 	}
-	raw, err := os.ReadFile(s.auditLogPath)
+	files, err := audit.LogFiles(s.auditLogPath)
 	if err != nil {
 		return []map[string]any{}
 	}
-	lines := strings.Split(string(raw), "\n")
 	events := make([]map[string]any, 0, limit)
-	for i := len(lines) - 1; i >= 0 && len(events) < limit; i-- {
-		line := strings.TrimSpace(lines[i])
-		if line == "" {
+	// Newest file first; each file is bounded by the rotation size.
+	for f := len(files) - 1; f >= 0 && len(events) < limit; f-- {
+		raw, err := os.ReadFile(files[f])
+		if err != nil {
 			continue
 		}
-		var evt map[string]any
-		if err := json.Unmarshal([]byte(line), &evt); err != nil {
-			continue
+		lines := strings.Split(string(raw), "\n")
+		for i := len(lines) - 1; i >= 0 && len(events) < limit; i-- {
+			line := strings.TrimSpace(lines[i])
+			if line == "" {
+				continue
+			}
+			var evt map[string]any
+			if err := json.Unmarshal([]byte(line), &evt); err != nil {
+				continue
+			}
+			events = append(events, evt)
 		}
-		events = append(events, evt)
 	}
 	return events
 }
 
+// readAllAuditEvents returns every event across the rotated log set, newest
+// first.
 func (s *Server) readAllAuditEvents() ([]map[string]any, error) {
-	if s.auditLogPath == "" {
-		return []map[string]any{}, nil
-	}
-	raw, err := os.ReadFile(s.auditLogPath)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return []map[string]any{}, nil
-		}
-		return nil, err
-	}
-	lines := strings.Split(string(raw), "\n")
-	events := make([]map[string]any, 0, len(lines))
-	for i := len(lines) - 1; i >= 0; i-- {
-		line := strings.TrimSpace(lines[i])
-		if line == "" {
-			continue
-		}
+	events := []map[string]any{}
+	err := s.streamAuditEvents(func(_ auditEventFilterFields, line []byte) error {
 		var evt map[string]any
-		if err := json.Unmarshal([]byte(line), &evt); err != nil {
-			continue
+		if json.Unmarshal(line, &evt) == nil {
+			events = append(events, evt)
 		}
-		events = append(events, evt)
-	}
-	return events, nil
+		return nil
+	})
+	slices.Reverse(events)
+	return events, err
 }
 
 // maxAuditScanLineBytes bounds the scanner buffer for replaying audit lines;
@@ -2519,11 +2516,9 @@ func (s *Server) streamAuditEvents(visit func(fields auditEventFilterFields, lin
 	if s.auditLogPath == "" {
 		return nil
 	}
-	file, err := os.Open(s.auditLogPath)
+	// Rotated files first, then the live file, oldest record first.
+	file, err := audit.OpenLog(s.auditLogPath)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
 		return err
 	}
 	defer file.Close()

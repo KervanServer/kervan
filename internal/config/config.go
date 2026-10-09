@@ -221,6 +221,10 @@ type AuditOutput struct {
 	BatchSize     int               `yaml:"batch_size"`
 	FlushInterval time.Duration     `yaml:"flush_interval"`
 	RetryCount    int               `yaml:"retry_count"`
+	// MaxSizeMB rotates file outputs at this size (0 = 100 MB, -1 = never)
+	// and MaxBackups bounds the rotated files kept (0 = 10, -1 = all).
+	MaxSizeMB  int `yaml:"max_size_mb"`
+	MaxBackups int `yaml:"max_backups"`
 	// Format and Facility apply to syslog outputs (url: udp://, tcp://,
 	// tls://, unix:// or unixgram://).
 	Format   string `yaml:"format"`

@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kervanserver/kervan/internal/audit"
 	"github.com/kervanserver/kervan/internal/config"
 	"github.com/kervanserver/kervan/internal/store"
 )
@@ -23,6 +24,7 @@ const (
 	backupStoreBakArchivePath = "store/kervan-store.json.bak"
 	backupAuditArchivePath    = "audit/audit.jsonl"
 	backupAuditKeyArchivePath = "audit/audit.key"
+	backupAuditRotatedPrefix  = "audit/rotated/"
 	backupConfigArchivePath   = "config/kervan.yaml"
 	backupManifestPath        = "manifest.json"
 	backupManifestMaxBytes    = 2 << 20
@@ -118,6 +120,16 @@ func runBackupCreateCommand(stdout io.Writer, args []string) error {
 			ArchivePath: backupAuditKeyArchivePath,
 			SourcePath:  cfg.AuditKeyPath(),
 		})
+		rotated, err := audit.RotatedFiles(backupAuditPath(cfg))
+		if err != nil {
+			return fmt.Errorf("list rotated audit files: %w", err)
+		}
+		for _, file := range rotated {
+			files = append(files, backupArchiveFile{
+				ArchivePath: backupAuditRotatedPrefix + filepath.Base(file),
+				SourcePath:  file,
+			})
+		}
 	}
 	if *includeConfig {
 		files = append(files, backupArchiveFile{
@@ -281,6 +293,21 @@ func runBackupRestoreCommand(stdout io.Writer, args []string) error {
 		targets[backupConfigArchivePath] = backupRestoreEntry{
 			ArchivePath: backupConfigArchivePath,
 			TargetPath:  *configPath,
+			Optional:    true,
+		}
+	}
+
+	// Rotated audit files return next to the live log; names are checked
+	// so an archive cannot write elsewhere.
+	auditPath := backupAuditPath(cfg)
+	for archivePath := range archiveEntries {
+		base, ok := strings.CutPrefix(archivePath, backupAuditRotatedPrefix)
+		if !ok || !audit.IsRotatedFileOf(auditPath, base) {
+			continue
+		}
+		targets[archivePath] = backupRestoreEntry{
+			ArchivePath: archivePath,
+			TargetPath:  filepath.Join(filepath.Dir(auditPath), base),
 			Optional:    true,
 		}
 	}

@@ -23,7 +23,7 @@ func runAuditCommand(stdout io.Writer, args []string) error {
 	fs := flag.NewFlagSet("audit verify", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	configPath := fs.String("config", defaultConfigPath, "Path to config file")
-	filePath := fs.String("file", "", "Audit log to verify (default: the configured file output)")
+	filePath := fs.String("file", "", "Single audit file to verify (default: the configured log, including rotated files)")
 	keyPath := fs.String("key-file", "", "HMAC key (default: audit.integrity.key_file or <data_dir>/audit.key)")
 	jsonOut := fs.Bool("json", false, "Output JSON")
 	if err := fs.Parse(args[1:]); err != nil {
@@ -31,6 +31,7 @@ func runAuditCommand(stdout io.Writer, args []string) error {
 	}
 
 	logPath, key := strings.TrimSpace(*filePath), strings.TrimSpace(*keyPath)
+	wholeLog := logPath == ""
 	if logPath == "" || key == "" {
 		cfg, err := config.Load(*configPath)
 		if err != nil {
@@ -51,8 +52,13 @@ func runAuditCommand(stdout io.Writer, args []string) error {
 	if err != nil {
 		return err
 	}
-	// #nosec G304 -- operator-supplied path.
-	f, err := os.Open(logPath)
+	var f io.ReadCloser
+	if wholeLog {
+		f, err = audit.OpenLog(logPath) // rotated files, then the live file
+	} else {
+		// #nosec G304 -- operator-supplied path.
+		f, err = os.Open(logPath)
+	}
 	if err != nil {
 		return fmt.Errorf("open audit log: %w", err)
 	}

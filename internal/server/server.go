@@ -1269,13 +1269,22 @@ func buildAuditSinks(cfg *config.Config) ([]audit.Sink, string, error) {
 			if path == "" {
 				path = filepath.Join(cfg.Server.DataDir, "audit.jsonl")
 			}
-			var sink *audit.FileSink
-			var err error
-			if chainKey != nil {
-				sink, err = audit.NewChainedFileSink(path, chainKey)
-			} else {
-				sink, err = audit.NewFileSink(path)
+			maxSize := int64(100) << 20
+			if output.MaxSizeMB > 0 {
+				maxSize = int64(output.MaxSizeMB) << 20
+			} else if output.MaxSizeMB < 0 {
+				maxSize = 0
 			}
+			maxBackups := 10
+			if output.MaxBackups != 0 {
+				maxBackups = max(output.MaxBackups, 0)
+			}
+			sink, err := audit.OpenFileSink(audit.FileSinkOptions{
+				Path:       path,
+				ChainKey:   chainKey,
+				MaxSize:    maxSize,
+				MaxBackups: maxBackups,
+			})
 			if err != nil {
 				closeAuditSinks(sinks)
 				return nil, "", err

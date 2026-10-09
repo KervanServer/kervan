@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **audit:** size-based rotation and retention for file outputs
+  (`max_size_mb`, default 100; `max_backups`, default 10). Previously the
+  audit log grew without bound.
+  - The HMAC chain continues across rotated files. Retention seals an
+    `audit.pruned` record before deleting a file, so `kervan audit verify`
+    can tell retention from tampering.
+  - The API, export, MCP, verify and backup/restore cover the rotated
+    files. Restore validates rotated file names.
+
+### Fixed
+
+- **audit:** export and the MCP recent-events reader no longer load the
+  whole log into memory. `kervan mcp` now reads the configured audit path
+  instead of always `<data_dir>/audit.jsonl`.
+
 ## v0.4.0 (2026-10-09)
 
 ### Added

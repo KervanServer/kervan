@@ -147,7 +147,7 @@ func readRecentAuditEvents(auditLog string, filter auditFilter) ([]audit.Event, 
 	if strings.TrimSpace(auditLog) == "" {
 		return []audit.Event{}, nil
 	}
-	file, err := os.Open(filepath.Clean(auditLog))
+	file, err := audit.OpenLog(filepath.Clean(auditLog))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return []audit.Event{}, nil
@@ -156,19 +156,15 @@ func readRecentAuditEvents(auditLog string, filter auditFilter) ([]audit.Event, 
 	}
 	defer file.Close()
 
+	// Keep only the newest Limit matches while streaming, so memory does
+	// not grow with the size of the (rotated) log.
 	scanner := bufio.NewScanner(file)
-	lines := make([]string, 0, filter.Limit*2)
+	scanner.Buffer(make([]byte, 0, 64<<10), 1<<20)
+	ring := make([]audit.Event, 0, filter.Limit)
+	next := 0
 	for scanner.Scan() {
-		lines = append(lines, scanner.Text())
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, err
-	}
-
-	events := make([]audit.Event, 0, filter.Limit)
-	for i := len(lines) - 1; i >= 0 && len(events) < filter.Limit; i-- {
 		var evt audit.Event
-		if err := json.Unmarshal([]byte(lines[i]), &evt); err != nil {
+		if err := json.Unmarshal(scanner.Bytes(), &evt); err != nil {
 			continue
 		}
 		if filter.Username != "" && !strings.EqualFold(evt.Username, filter.Username) {
@@ -177,7 +173,20 @@ func readRecentAuditEvents(auditLog string, filter auditFilter) ([]audit.Event, 
 		if filter.Type != "" && !strings.EqualFold(string(evt.Type), filter.Type) {
 			continue
 		}
-		events = append(events, evt)
+		if len(ring) < filter.Limit {
+			ring = append(ring, evt)
+		} else {
+			ring[next] = evt
+			next = (next + 1) % filter.Limit
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	// Newest first.
+	events := make([]audit.Event, 0, len(ring))
+	for i := 0; i < len(ring); i++ {
+		events = append(events, ring[(next+len(ring)-1-i)%len(ring)])
 	}
 	return events, nil
 }

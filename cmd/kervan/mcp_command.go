@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/kervanserver/kervan/internal/mcp"
@@ -32,7 +31,7 @@ func runMCPCommand(stdin io.Reader, stdout io.Writer, args []string) error {
 	}
 	defer ctx.close()
 
-	auditLog := filepath.Join(ctx.cfg.Server.DataDir, "audit.jsonl")
+	auditLog := backupAuditPath(ctx.cfg)
 	if len(ctx.cfg.Audit.Outputs) > 0 && strings.TrimSpace(ctx.cfg.Audit.Outputs[0].Path) != "" {
 		auditLog = ctx.cfg.Audit.Outputs[0].Path
 	}

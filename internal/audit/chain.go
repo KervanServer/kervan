@@ -141,36 +141,24 @@ func splitChained(line []byte) (event []byte, st chainState, ok bool, err error)
 	return event, st, true, nil
 }
 
-// resumeChain continues the chain from the last record of an existing log.
-// When that record is unchained or unreadable, a new segment starts.
+// resumeChain continues the chain from the newest record of the log
+// (looking past a live file that is empty right after a rotation). When that
+// record is unchained or unreadable, a new segment starts.
 func resumeChain(path string, key []byte) (*chain, error) {
 	c := &chain{key: key}
-	// #nosec G304 -- audit path is configured by trusted operators.
-	f, err := os.Open(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return c, nil
-	}
+	files, err := LogFiles(path)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
-	info, err := f.Stat()
-	if err != nil {
-		return nil, err
-	}
-	const tailWindow = 1 << 20
-	start := max(info.Size()-tailWindow, 0)
-	buf := make([]byte, info.Size()-start)
-	if _, err := f.ReadAt(buf, start); err != nil && !errors.Is(err, io.EOF) {
-		return nil, err
-	}
-	lines := bytes.Split(bytes.TrimRight(buf, "\n"), []byte("\n"))
-	last := bytes.TrimSpace(lines[len(lines)-1])
-	if len(last) == 0 {
-		return c, nil
-	}
-	if _, st, ok, err := splitChained(last); ok && err == nil {
-		c.seq, c.prev = st.Seq, st.MAC
+	for i := len(files) - 1; i >= 0; i-- {
+		info, err := os.Stat(files[i])
+		if err != nil || info.Size() == 0 {
+			continue
+		}
+		if st, ok := lastChainState(files[i]); ok {
+			c.seq, c.prev = st.Seq, st.MAC
+		}
+		break
 	}
 	return c, nil
 }
@@ -207,6 +195,16 @@ func VerifyChain(r io.Reader, key []byte) (VerifyReport, error) {
 	prevMAC := ""
 	inChain := false
 	lineNo := 0
+	// A segment may legitimately start mid-sequence when retention removed
+	// older rotated files; that is accepted only if a sealed audit.pruned
+	// record names exactly the missing predecessor (seq-1 and its MAC).
+	type openStart struct {
+		line int
+		seq  uint64
+		prev string
+	}
+	var starts []openStart
+	pruned := map[string]bool{}
 	problem := func(p VerifyProblem) {
 		if len(report.Problems) < maxVerifyProblems {
 			report.Problems = append(report.Problems, p)
@@ -243,21 +241,32 @@ func VerifyChain(r io.Reader, key []byte) (VerifyReport, error) {
 			}
 			report.Segments++
 		case !inChain:
-			problem(VerifyProblem{Line: lineNo, Seq: st.Seq, Reason: "chain does not start at seq 1 (records before it are missing)"})
+			starts = append(starts, openStart{line: lineNo, seq: st.Seq, prev: st.Prev})
 			report.Segments++
 		case st.Seq != prevSeq+1:
 			problem(VerifyProblem{Line: lineNo, Seq: st.Seq, Reason: fmt.Sprintf("sequence gap: expected %d", prevSeq+1)})
 		case st.Prev != prevMAC:
 			problem(VerifyProblem{Line: lineNo, Seq: st.Seq, Reason: "previous-record link mismatch (record removed or reordered)"})
 		}
-		if !hmac.Equal([]byte(chainMAC(key, st.Seq, st.Prev, event)), []byte(st.MAC)) {
+		macOK := hmac.Equal([]byte(chainMAC(key, st.Seq, st.Prev, event)), []byte(st.MAC))
+		if !macOK {
 			problem(VerifyProblem{Line: lineNo, Seq: st.Seq, Reason: "MAC mismatch (record modified, or wrong key)"})
+		} else if bytes.Contains(event, []byte(`"type":"`+string(EventAuditPruned)+`"`)) {
+			var evt Event
+			if json.Unmarshal(event, &evt) == nil && evt.Type == EventAuditPruned {
+				pruned[evt.Meta["last_seq"]+"/"+evt.Meta["last_mac"]] = true
+			}
 		}
 		prevSeq, prevMAC, inChain = st.Seq, st.MAC, true
 		report.LastSeq, report.LastMAC = st.Seq, st.MAC
 	}
 	if err := scanner.Err(); err != nil {
 		return report, err
+	}
+	for _, start := range starts {
+		if !pruned[strconv.FormatUint(start.seq-1, 10)+"/"+start.prev] {
+			problem(VerifyProblem{Line: start.line, Seq: start.seq, Reason: "chain does not start at seq 1 and no audit.pruned record explains the missing records"})
+		}
 	}
 	return report, nil
 }
