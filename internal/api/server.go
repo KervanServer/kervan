@@ -73,6 +73,8 @@ type Config struct {
 	DefaultMaxFiles int64
 	// OIDC enables WebUI sign-in through an OpenID provider; nil disables it.
 	OIDC *OIDCSettings
+	// Audit records WebUI/API logins and administrative actions.
+	Audit *audit.Engine
 	// Events drives WebSocket pushes; nil falls back to polling.
 	Events *events.Broker
 }
@@ -100,6 +102,7 @@ type Server struct {
 	groups       *auth.GroupRepository
 	oidc         *OIDCSettings
 	events       *events.Broker
+	audit        *audit.Engine
 	oidcGrants   oidcGrants
 	shareLinks   *shareLinkRepository
 	fsBuilder    UserFSBuilder
@@ -217,6 +220,7 @@ func NewServer(
 		groups:       auth.NewGroupRepository(keyStore, userRepo),
 		oidc:         cfg.OIDC,
 		events:       cfg.Events,
+		audit:        cfg.Audit,
 		shareLinks:   newShareLinkRepository(keyStore),
 		fsBuilder:    fsBuilder,
 		store:        keyStore,
@@ -471,6 +475,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.recordLoginFailure(clientIP, time.Now().UTC())
 		throttle.RecordFailure(r.RemoteAddr, time.Now())
+		s.emitAuditFor(r, req.Username, audit.EventAuthFailure, "", "failed", err.Error(), nil)
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid credentials"})
 		return
 	}
@@ -496,6 +501,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = s.auth.RecordSuccessfulLogin(user.ID)
+	s.emitAuditFor(r, user.Username, audit.EventAuthSuccess, "", "ok", "webui login", nil)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"token": token,
 		"user": map[string]any{
@@ -708,6 +714,7 @@ func (s *Server) handleServerConfig(w http.ResponseWriter, r *http.Request) {
 			result = map[string]any{}
 		}
 		result["updated_at"] = time.Now().UTC()
+		s.emitAudit(r, audit.EventAdminConfigUpdate, "", "ok", "configuration updated", nil)
 		writeJSON(w, http.StatusOK, result)
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -736,6 +743,7 @@ func (s *Server) handleServerReload(w http.ResponseWriter, r *http.Request) {
 		result = map[string]any{}
 	}
 	result["requested_at"] = time.Now().UTC()
+	s.emitAudit(r, audit.EventAdminConfigReload, "", "ok", "configuration reloaded", nil)
 	writeJSON(w, http.StatusOK, result)
 }
 
@@ -824,6 +832,7 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		s.emitAudit(r, audit.EventAdminUserCreate, "", "ok", "user created", map[string]string{"target_user": user.Username, "admin": strconv.FormatBool(req.Admin)})
 		writeJSON(w, http.StatusCreated, s.userResponse(user))
 	case http.MethodPut:
 		var req struct {
@@ -912,6 +921,23 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 		if req.Enabled != nil && !*req.Enabled {
 			s.terminateUserSessions(user.Username)
 		}
+		changes := map[string]string{"target_user": user.Username}
+		if req.Password != "" {
+			changes["password_reset"] = "true"
+		}
+		if req.Enabled != nil {
+			changes["enabled"] = strconv.FormatBool(*req.Enabled)
+		}
+		if req.Admin != nil {
+			changes["admin"] = strconv.FormatBool(*req.Admin)
+		}
+		if req.AuthorizedKeys != nil {
+			changes["authorized_keys"] = strconv.Itoa(len(user.AuthorizedKeys))
+		}
+		if req.PrimaryGroup != nil {
+			changes["primary_group"] = user.PrimaryGroup
+		}
+		s.emitAudit(r, audit.EventAdminUserUpdate, "", "ok", "user updated", changes)
 		writeJSON(w, http.StatusOK, s.userResponse(user))
 	case http.MethodDelete:
 		id := r.URL.Query().Get("id")
@@ -933,6 +959,7 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.terminateUserSessions(user.Username)
+		s.emitAudit(r, audit.EventAdminUserDelete, "", "ok", "user deleted", map[string]string{"target_user": user.Username})
 		writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -993,6 +1020,7 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
 			return
 		}
+		s.emitAudit(r, audit.EventAdminSessionKill, "", "ok", "session terminated", map[string]string{"session_id": id})
 		writeJSON(w, http.StatusOK, map[string]any{"killed": true, "id": id})
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -1055,6 +1083,7 @@ func (s *Server) handleAPIKeys(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
+		s.emitAudit(r, audit.EventAdminAPIKeyCreate, "", "ok", "api key created", map[string]string{"name": req.Name, "permissions": created.Permissions})
 		writeJSON(w, http.StatusCreated, map[string]any{
 			"id":          created.ID,
 			"name":        created.Name,
@@ -1073,6 +1102,7 @@ func (s *Server) handleAPIKeys(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
+		s.emitAudit(r, audit.EventAdminAPIKeyDelete, "", "ok", "api key revoked", map[string]string{"key_id": id})
 		writeJSON(w, http.StatusOK, map[string]any{"deleted": true, "id": id})
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -1155,6 +1185,7 @@ func (s *Server) handleFilesMkdir(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	s.emitAudit(r, audit.EventDirCreate, p, "ok", "mkdir", nil)
 	writeJSON(w, http.StatusCreated, map[string]any{"path": p})
 }
 
@@ -1185,6 +1216,7 @@ func (s *Server) handleFilesDelete(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	s.emitAudit(r, audit.EventFileDelete, p, "ok", "delete", nil)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 }
 
@@ -1224,6 +1256,7 @@ func (s *Server) handleFilesRename(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
+	s.emitAudit(r, audit.EventFileRename, from, "ok", "rename", map[string]string{"to": to})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"from":       from,
 		"to":         to,
@@ -1341,6 +1374,7 @@ func (s *Server) handleFilesUpload(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	s.emitAudit(r, audit.EventFileWrite, p, "ok", "upload", map[string]string{"bytes": strconv.FormatInt(n, 10)})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"path":  p,
 		"bytes": n,
@@ -1377,7 +1411,12 @@ func (s *Server) handleFilesDownload(w http.ResponseWriter, r *http.Request) {
 	if info != nil {
 		w.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
 	}
-	_, _ = io.Copy(w, f)
+	n, copyErr := io.Copy(w, f)
+	status := "ok"
+	if copyErr != nil {
+		status = "incomplete"
+	}
+	s.emitAudit(r, audit.EventFileRead, p, status, "download", map[string]string{"bytes": strconv.FormatInt(n, 10)})
 }
 
 func (s *Server) handleFilesV1(w http.ResponseWriter, r *http.Request) {

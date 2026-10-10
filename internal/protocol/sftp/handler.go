@@ -84,6 +84,9 @@ type openFile struct {
 	path       string
 	file       vfs.File
 	transferID string
+	forWrite   bool
+	bytesRead  int64
+	written    int64
 }
 
 type openDir struct {
@@ -212,7 +215,7 @@ func (h *sftpHandler) handleOpen(payload []byte) error {
 		transferID = h.xfer.Start(h.username, "sftp", p, dir, -1)
 	}
 	handle := h.newHandle()
-	h.handles[handle] = &openFile{path: p, file: file, transferID: transferID}
+	h.handles[handle] = &openFile{path: p, file: file, transferID: transferID, forWrite: pflags&(sshFxWrite|sshFxAppend|sshFxCreat|sshFxTrunc) != 0}
 
 	var body packetWriter
 	body.uint32(id)
@@ -244,6 +247,11 @@ func (h *sftpHandler) handleClose(payload []byte) error {
 				h.xfer.End(v.transferID, transfer.StatusCompleted, "")
 			}
 		}
+		status := "ok"
+		if closeErr != nil {
+			status = "failed"
+		}
+		h.auditFileClosed(v, status)
 		if closeErr != nil {
 			return h.replyStatus(id, mapStatus(closeErr), closeErr.Error())
 		}
@@ -297,6 +305,7 @@ func (h *sftpHandler) handleRead(payload []byte) error {
 	if n == 0 && errors.Is(readErr, io.EOF) {
 		return h.replyStatus(id, fxEOF, "eof")
 	}
+	of.bytesRead += int64(n)
 	if h.xfer != nil && of.transferID != "" {
 		h.xfer.AddBytes(of.transferID, int64(n))
 	}
@@ -351,17 +360,8 @@ func (h *sftpHandler) handleWrite(payload []byte) error {
 	if h.xfer != nil && of.transferID != "" {
 		h.xfer.AddBytes(of.transferID, int64(len(data)))
 	}
-	if h.audit != nil {
-		h.audit.Emit(audit.Event{
-			Type:     audit.EventFileWrite,
-			Username: h.username,
-			Protocol: "sftp",
-			Path:     of.path,
-			IP:       h.remoteIP,
-			Status:   "ok",
-			Message:  "write",
-		})
-	}
+	// Audited once when the handle closes, not per WRITE packet.
+	of.written += int64(len(data))
 	return h.replyStatus(id, fxOK, "ok")
 }
 
@@ -621,6 +621,7 @@ func (h *sftpHandler) handleMkdir(payload []byte) error {
 	if err := h.fsys.Mkdir(p, 0o755); err != nil {
 		return h.replyStatus(id, mapStatus(err), err.Error())
 	}
+	h.emit(audit.EventDirCreate, p, "ok", "mkdir", nil)
 	return h.replyStatus(id, fxOK, "ok")
 }
 
@@ -638,6 +639,7 @@ func (h *sftpHandler) handleRmdir(payload []byte) error {
 	if err := h.fsys.Remove(p); err != nil {
 		return h.replyStatus(id, mapStatus(err), err.Error())
 	}
+	h.emit(audit.EventDirDelete, p, "ok", "rmdir", nil)
 	return h.replyStatus(id, fxOK, "ok")
 }
 
@@ -715,6 +717,7 @@ func (h *sftpHandler) handleRename(payload []byte) error {
 	if err := h.fsys.Rename(oldName, newName); err != nil {
 		return h.replyStatus(id, mapStatus(err), err.Error())
 	}
+	h.emit(audit.EventFileRename, oldName, "ok", "rename", map[string]string{"to": newName})
 	return h.replyStatus(id, fxOK, "ok")
 }
 
@@ -761,6 +764,24 @@ func (h *sftpHandler) newHandle() string {
 	return fmt.Sprintf("H%016x", h.nextHandle)
 }
 
+func (h *sftpHandler) emit(t audit.EventType, p, status, msg string, meta map[string]string) {
+	if h.audit == nil {
+		return
+	}
+	h.audit.Emit(audit.Event{Type: t, Username: h.username, Protocol: "sftp", Path: p, IP: h.remoteIP, Status: status, Message: msg, Meta: meta})
+}
+
+// auditFileClosed records one event per opened file: an upload for write
+// handles, a download for read handles that returned data.
+func (h *sftpHandler) auditFileClosed(of *openFile, status string) {
+	switch {
+	case of.forWrite:
+		h.emit(audit.EventFileWrite, of.path, status, "upload", map[string]string{"bytes": strconv.FormatInt(of.written, 10)})
+	case of.bytesRead > 0:
+		h.emit(audit.EventFileRead, of.path, status, "download", map[string]string{"bytes": strconv.FormatInt(of.bytesRead, 10)})
+	}
+}
+
 func (h *sftpHandler) closeAllHandles() {
 	for k, v := range h.handles {
 		switch e := v.(type) {
@@ -769,6 +790,7 @@ func (h *sftpHandler) closeAllHandles() {
 			if h.xfer != nil && e.transferID != "" {
 				h.xfer.End(e.transferID, transfer.StatusFailed, "connection closed")
 			}
+			h.auditFileClosed(e, "incomplete")
 		case *openDir:
 			_ = e
 		}

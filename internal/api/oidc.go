@@ -18,6 +18,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/kervanserver/kervan/internal/audit"
 	"github.com/kervanserver/kervan/internal/auth"
 	"github.com/kervanserver/kervan/internal/oidc"
 )
@@ -205,6 +206,7 @@ func (s *Server) oidcFail(w http.ResponseWriter, r *http.Request, code string, e
 	if s.logger != nil {
 		s.logger.Warn("oidc sign-in failed", "reason", code, "error", err, "remote_addr", r.RemoteAddr)
 	}
+	s.emitAuditFor(r, "", audit.EventAuthFailure, "", "failed", "oidc sign-in failed", map[string]string{"provider": "oidc", "reason": code})
 	s.setOIDCCookie(w, "", -1)
 	w.Header().Set("Cache-Control", "no-store")
 	http.Redirect(w, r, "/?oidc_error="+url.QueryEscape(code), http.StatusFound)
@@ -379,6 +381,7 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_ = s.auth.RecordSuccessfulLogin(user.ID)
+	s.emitAuditFor(r, user.Username, audit.EventAuthSuccess, "", "ok", "oidc sign-in", map[string]string{"provider": "oidc"})
 	if s.logger != nil {
 		s.logger.Info("oidc sign-in", "user", user.Username, "type", user.Type, "group", user.PrimaryGroup, "remote_addr", r.RemoteAddr)
 	}

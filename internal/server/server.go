@@ -300,6 +300,7 @@ func New(cfg *config.Config, configPath string, logger *slog.Logger) (*App, erro
 			DefaultMaxFiles:      cfg.Quota.DefaultMaxFiles,
 			OIDC:                 oidcSettings,
 			Events:               broker,
+			Audit:                auditEngine,
 		},
 		logger,
 		engine,

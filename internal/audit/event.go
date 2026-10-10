@@ -13,6 +13,25 @@ const (
 	// EventConnectionRejected records a connection refused by an admission
 	// control such as max_connections.
 	EventConnectionRejected EventType = "connection.rejected"
+
+	EventFileRename EventType = "file.rename"
+	EventDirCreate  EventType = "dir.create"
+	EventDirDelete  EventType = "dir.delete"
+
+	EventPasswordChange EventType = "auth.password_change"
+
+	// Administrative changes made through the WebUI/API.
+	EventAdminUserCreate   EventType = "admin.user.create"
+	EventAdminUserUpdate   EventType = "admin.user.update"
+	EventAdminUserDelete   EventType = "admin.user.delete"
+	EventAdminGroupCreate  EventType = "admin.group.create"
+	EventAdminGroupUpdate  EventType = "admin.group.update"
+	EventAdminGroupDelete  EventType = "admin.group.delete"
+	EventAdminAPIKeyCreate EventType = "admin.apikey.create"
+	EventAdminAPIKeyDelete EventType = "admin.apikey.delete"
+	EventAdminConfigUpdate EventType = "admin.config.update"
+	EventAdminConfigReload EventType = "admin.config.reload"
+	EventAdminSessionKill  EventType = "admin.session.kill"
 )
 
 type Event struct {

@@ -582,8 +582,18 @@ subsystem check.
 
 ## Audit Log
 
-- Structured events (login, upload, download, delete, rename, mkdir, session
-  open/close) are written as JSON lines to `data/audit.jsonl` by default.
+- Structured events are written as JSON lines to `data/audit.jsonl` by
+  default. They cover:
+  - sign-ins (password, key, WebUI, OIDC) and password changes
+  - file activity on every protocol, including the WebUI file browser:
+    `file.write`/`file.read` (one event per transfer, with `meta.bytes`),
+    `file.delete`, `file.rename` (`meta.to`), `dir.create`, `dir.delete`
+  - administration: `admin.user.*`, `admin.group.*`, `admin.apikey.*`,
+    `admin.config.update`, `admin.config.reload`, `admin.session.kill`. The
+    acting admin is in `username`, and the affected account is in
+    `meta.target_user`. Passwords are never logged; a reset shows only as
+    `meta.password_reset: "true"`.
+  - session open/close
 - `audit.outputs[]` supports `file`, `http`, `webhook` and `syslog` sinks.
 - File output path is configurable via `audit.outputs[].path` in `kervan.yaml`.
 - File outputs rotate at `max_size_mb` (default 100; `-1` disables) into

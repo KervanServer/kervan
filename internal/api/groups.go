@@ -4,9 +4,11 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/kervanserver/kervan/internal/audit"
 	"github.com/kervanserver/kervan/internal/auth"
 )
 
@@ -211,6 +213,7 @@ func (s *Server) handleGroups(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
+		s.emitAudit(r, audit.EventAdminGroupCreate, "", "ok", "group created", map[string]string{"group": g.Name})
 		writeJSON(w, http.StatusCreated, groupResponse{Group: g})
 	case http.MethodPut:
 		var req struct {
@@ -257,6 +260,7 @@ func (s *Server) handleGroups(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
+		s.emitAudit(r, audit.EventAdminGroupUpdate, "", "ok", "group updated", map[string]string{"group": g.Name, "group_id": g.ID})
 		members, _ := s.groups.Members(g.Name)
 		writeJSON(w, http.StatusOK, groupResponse{Group: g, MemberCount: len(members)})
 	case http.MethodDelete:
@@ -264,6 +268,7 @@ func (s *Server) handleGroups(w http.ResponseWriter, r *http.Request) {
 		force := r.URL.Query().Get("force") == "true"
 		switch err := s.groups.Delete(id, force); {
 		case err == nil:
+			s.emitAudit(r, audit.EventAdminGroupDelete, "", "ok", "group deleted", map[string]string{"group_id": id, "force": strconv.FormatBool(force)})
 			writeJSON(w, http.StatusOK, map[string]string{"status": "deleted"})
 		case errors.Is(err, auth.ErrGroupNotFound):
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "group not found"})

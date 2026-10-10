@@ -496,6 +496,7 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, implicitTLS bool
 				continue
 			}
 			writeReply(conn, 257, fmt.Sprintf("\"%s\" created.", p))
+			s.emitAudit(audit.EventDirCreate, state.user.Username, "ftp", p, state.remoteAddr, "ok", "mkdir")
 		case "RMD":
 			if !isAuthed(conn, state) {
 				continue
@@ -506,6 +507,7 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, implicitTLS bool
 				continue
 			}
 			writeReply(conn, 250, "Directory removed.")
+			s.emitAudit(audit.EventDirDelete, state.user.Username, "ftp", p, state.remoteAddr, "ok", "rmdir")
 		case "DELE":
 			if !isAuthed(conn, state) {
 				continue
@@ -540,6 +542,13 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, implicitTLS bool
 			if err := state.fs.Rename(state.rnfr, to); err != nil {
 				writeReply(conn, 550, "Rename failed.")
 				continue
+			}
+			if s.audit != nil {
+				s.audit.Emit(audit.Event{
+					Type: audit.EventFileRename, Username: state.user.Username, Protocol: "ftp",
+					Path: state.rnfr, IP: state.remoteAddr, Status: "ok", Message: "rename",
+					Meta: map[string]string{"to": to},
+				})
 			}
 			state.rnfr = ""
 			writeReply(conn, 250, "Rename successful.")

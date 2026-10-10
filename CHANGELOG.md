@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Wider audit coverage.** Sign-ins through the WebUI and OIDC (both
+  success and failure), password changes, user, group and API-key
+  management, config updates and reloads, session kills, and file
+  operations in the WebUI file browser are now audited. Directory
+  create/delete and renames are audited over FTP and SFTP too, and renames
+  record the destination in `meta.to`. Admin events name the affected
+  account in `meta.target_user`; passwords are never logged.
+
+### Changed
+
+- **One SFTP audit event per transfer.** SFTP used to write a `file.write`
+  event for every WRITE packet (thousands for one large upload). It now
+  writes one `file.write` or `file.read` event when the handle closes, with
+  the byte count in `meta.bytes`. A transfer cut off by a dropped
+  connection is recorded with status `incomplete`.
+
 ## v0.6.0 (2026-10-10)
 
 ### Added

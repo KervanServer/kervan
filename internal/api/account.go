@@ -3,8 +3,10 @@ package api
 import (
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 
+	"github.com/kervanserver/kervan/internal/audit"
 	"github.com/kervanserver/kervan/internal/auth"
 )
 
@@ -79,6 +81,7 @@ func (s *Server) handleAccountPassword(w http.ResponseWriter, r *http.Request) {
 	switch err := s.auth.ChangePassword(user.Username, req.CurrentPassword, req.NewPassword); {
 	case err == nil:
 	case errors.Is(err, auth.ErrInvalidCredentials):
+		s.emitAudit(r, audit.EventPasswordChange, "", "failed", "current password is incorrect", nil)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "current password is incorrect"})
 		return
 	case errors.Is(err, auth.ErrPasswordNotManaged):
@@ -98,6 +101,7 @@ func (s *Server) handleAccountPassword(w http.ResponseWriter, r *http.Request) {
 	if s.logger != nil {
 		s.logger.Info("password changed", "user", user.Username, "remote_addr", r.RemoteAddr)
 	}
+	s.emitAudit(r, audit.EventPasswordChange, "", "ok", "password changed", nil)
 	writeJSON(w, http.StatusOK, map[string]any{"status": "password changed", "token": token})
 }
 
@@ -128,5 +132,6 @@ func (s *Server) handleAccountKeys(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	s.emitAudit(r, audit.EventAdminUserUpdate, "", "ok", "own ssh keys updated", map[string]string{"target_user": user.Username, "authorized_keys": strconv.Itoa(len(keys))})
 	writeJSON(w, http.StatusOK, s.accountResponse(user))
 }
