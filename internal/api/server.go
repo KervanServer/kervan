@@ -69,6 +69,8 @@ type Config struct {
 	DefaultMaxStorage int64
 	// DefaultUserRate mirrors bandwidth.default_user_rate (bytes/s).
 	DefaultUserRate int64
+	// DefaultMaxFiles mirrors quota.default_max_files.
+	DefaultMaxFiles int64
 	// OIDC enables WebUI sign-in through an OpenID provider; nil disables it.
 	OIDC *OIDCSettings
 	// Events drives WebSocket pushes; nil falls back to polling.

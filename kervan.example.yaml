@@ -106,7 +106,7 @@ storage:
 quota:
   enabled: true
   default_max_storage: 1073741824
-  default_max_files: 100000  # no effect: only default_max_storage is enforced
+  default_max_files: 0       # regular files per user, 0 = unlimited (users/groups can set max_files)
   check_interval: 60s        # no effect: usage is tracked on every write
 
 bandwidth:                   # bytes/s, 0 = unlimited; users/groups can set max_bandwidth

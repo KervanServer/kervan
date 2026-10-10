@@ -21,7 +21,7 @@ func TestTrackerMeasuresUsageAndEnforcesGrowth(t *testing.T) {
 		t.Fatalf("Close() error = %v", err)
 	}
 
-	tracker, err := NewTracker(fsys, 5)
+	tracker, err := NewTracker(fsys, 5, 0)
 	if err != nil {
 		t.Fatalf("NewTracker() error = %v", err)
 	}

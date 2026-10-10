@@ -41,3 +41,11 @@ export function describeRate(value: number | undefined, inheritLabel = "Default"
 export function describeEffectiveRate(value: number | undefined): string {
   return value ? `${formatBytes(value)}/s` : "Unlimited"
 }
+
+/** Describes a stored file-count limit: 0 inherits, -1 is unlimited. */
+export function describeFiles(value: number | undefined, inheritLabel = "Default"): string {
+  if (!value) {
+    return inheritLabel
+  }
+  return value < 0 ? "Unlimited" : `${value.toLocaleString()} files`
+}

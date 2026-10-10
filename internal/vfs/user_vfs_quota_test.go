@@ -10,9 +10,21 @@ import (
 )
 
 type quotaStub struct {
-	used int64
-	max  int64
+	used     int64
+	max      int64
+	files    int64
+	maxFiles int64
 }
+
+func (q *quotaStub) OnFileCreated() error {
+	if q.maxFiles > 0 && q.files+1 > q.maxFiles {
+		return errors.New("file count quota exceeded")
+	}
+	q.files++
+	return nil
+}
+
+func (q *quotaStub) OnFilesRemoved(n int64) { q.files = max(q.files-n, 0) }
 
 func (q *quotaStub) OnGrow(n int64) error {
 	if q.max > 0 && q.used+n > q.max {
@@ -93,5 +105,61 @@ func TestUserVFSQuotaAndMaxFileSize(t *testing.T) {
 	}
 	if err := file.Close(); err != nil {
 		t.Fatalf("Close(/c.txt) second error = %v", err)
+	}
+}
+
+func TestUserVFSFileCountQuotaAndRenameOverwrite(t *testing.T) {
+	backend := memory.New()
+	mounts := vfs.NewMountTable()
+	mounts.Mount("/", backend, false)
+	tracker := &quotaStub{maxFiles: 2}
+	fsys := vfs.NewUserVFS(mounts, &vfs.UserPermissions{Upload: true, Download: true, Delete: true, Rename: true, CreateDir: true, ListDir: true}, tracker)
+	write := func(name, content string) error {
+		f, err := fsys.Open(name, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+		if err != nil {
+			return err
+		}
+		_, err = f.Write([]byte(content))
+		_ = f.Close()
+		return err
+	}
+	if err := write("/a", "aaaa"); err != nil {
+		t.Fatal(err)
+	}
+	if err := write("/b", "bb"); err != nil {
+		t.Fatal(err)
+	}
+	if err := write("/c", "c"); err == nil {
+		t.Fatal("third file created over a 2-file quota")
+	}
+	// Overwriting an existing file is not a new file.
+	if err := write("/a", "a2"); err != nil {
+		t.Fatalf("overwrite refused: %v", err)
+	}
+	if tracker.files != 2 {
+		t.Fatalf("files = %d, want 2", tracker.files)
+	}
+	// Renaming onto an existing file releases the replaced file's usage.
+	usedBefore := tracker.used
+	if err := fsys.Rename("/b", "/a"); err != nil {
+		t.Fatal(err)
+	}
+	if tracker.files != 1 || tracker.used != usedBefore-2 {
+		t.Fatalf("after rename overwrite: files=%d used=%d (before %d)", tracker.files, tracker.used, usedBefore)
+	}
+	if err := write("/c", "c"); err != nil {
+		t.Fatalf("slot not freed by rename overwrite: %v", err)
+	}
+	// Deleting a directory tree releases all its files.
+	_ = fsys.Mkdir("/d", 0o755)
+	_ = fsys.Remove("/c")
+	if err := write("/d/x", "x"); err != nil {
+		t.Fatal(err)
+	}
+	if err := fsys.RemoveAll("/d"); err != nil {
+		t.Fatal(err)
+	}
+	if tracker.files != 1 {
+		t.Fatalf("files after RemoveAll = %d, want 1", tracker.files)
 	}
 }

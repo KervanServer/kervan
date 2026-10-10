@@ -68,6 +68,7 @@ const STORAGE_UNITS: LimitUnits = [
   { label: "MB", factor: MB },
   { label: "GB", factor: GB },
 ]
+const FILE_UNITS: LimitUnits = [{ label: "files", factor: 1 }]
 const RATE_UNITS: LimitUnits = [
   { label: "KB/s", factor: KB },
   { label: "MB/s", factor: MB },
@@ -169,4 +170,8 @@ export function QuotaField(props: PolicyLimitProps) {
 
 export function BandwidthField(props: PolicyLimitProps) {
   return <LimitField {...props} idPrefix={`${props.idPrefix}-bandwidth`} label="Bandwidth limit" units={RATE_UNITS} />
+}
+
+export function FilesField(props: PolicyLimitProps) {
+  return <LimitField {...props} idPrefix={`${props.idPrefix}-files`} label="File limit" units={FILE_UNITS} />
 }

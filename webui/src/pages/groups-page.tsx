@@ -4,10 +4,10 @@ import { Layers, Loader2, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react"
 import { ConfirmDialog } from "@/components/shared/confirm-dialog"
 import { EmptyState } from "@/components/shared/empty-state"
 import { PageHeader } from "@/components/shared/page-header"
-import { BandwidthField, DEFAULT_PERMISSIONS, PermissionsEditor, QuotaField, permissionSummary } from "@/components/shared/policy-fields"
+import { BandwidthField, DEFAULT_PERMISSIONS, FilesField, PermissionsEditor, QuotaField, permissionSummary } from "@/components/shared/policy-fields"
 import { StatusMessage } from "@/components/shared/status-message"
 import { useCreateGroup, useDeleteGroup, useGroups, useUpdateGroup } from "@/hooks/use-groups"
-import { describeQuota, describeRate } from "@/lib/format"
+import { describeFiles, describeQuota, describeRate } from "@/lib/format"
 import type { ApiGroup, ApiPermissions } from "@/lib/types"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -24,6 +24,7 @@ type GroupDraft = {
   permissions: ApiPermissions
   max_storage: number
   max_bandwidth: number
+  max_files: number
 }
 
 const NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
@@ -34,6 +35,7 @@ const emptyDraft = (): GroupDraft => ({
   permissions: { ...DEFAULT_PERMISSIONS },
   max_storage: 0,
   max_bandwidth: 0,
+  max_files: 0,
 })
 
 function nameError(name: string): string | null {
@@ -79,6 +81,12 @@ function GroupFormFields({ draft, onChange, idPrefix }: GroupFormProps) {
         value={draft.max_storage}
         inheritLabel="Server default"
         onChange={(max_storage) => onChange({ ...draft, max_storage })}
+      />
+      <FilesField
+        idPrefix={idPrefix}
+        value={draft.max_files}
+        inheritLabel="Server default"
+        onChange={(max_files) => onChange({ ...draft, max_files })}
       />
       <BandwidthField
         idPrefix={idPrefix}
@@ -180,7 +188,12 @@ export function GroupsPage({ token }: Props) {
                         ) : null}
                       </TableCell>
                       <TableCell>{group.member_count}</TableCell>
-                      <TableCell>{describeQuota(group.max_storage, "Server default")}</TableCell>
+                      <TableCell>
+                        {describeQuota(group.max_storage, "Server default")}
+                        {group.max_files ? (
+                          <div className="text-xs text-[var(--text-secondary)]">{describeFiles(group.max_files)}</div>
+                        ) : null}
+                      </TableCell>
                       <TableCell>{describeRate(group.max_bandwidth, "Server default")}</TableCell>
                       <TableCell className="max-w-[260px] text-sm">{permissionSummary(group.permissions)}</TableCell>
                       <TableCell className="text-right">
@@ -198,6 +211,7 @@ export function GroupsPage({ token }: Props) {
                                   permissions: { ...group.permissions },
                                   max_storage: group.max_storage ?? 0,
                                   max_bandwidth: group.max_bandwidth ?? 0,
+                                  max_files: group.max_files ?? 0,
                                 },
                               })
                             }

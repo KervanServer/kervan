@@ -23,7 +23,7 @@ function useInvalidateGroups(token: string) {
 export function useCreateGroup(token: string) {
   const invalidate = useInvalidateGroups(token)
   return useMutation({
-    mutationFn: (payload: { name: string; description?: string; permissions: ApiPermissions; max_storage: number; max_bandwidth: number }) =>
+    mutationFn: (payload: { name: string; description?: string; permissions: ApiPermissions; max_storage: number; max_bandwidth: number; max_files: number }) =>
       api.createGroup(token, payload),
     onSuccess: async () => {
       toast.success("Group created.")
@@ -45,6 +45,7 @@ export function useUpdateGroup(token: string) {
       permissions?: ApiPermissions
       max_storage?: number
       max_bandwidth?: number
+      max_files?: number
     }) =>
       api.updateGroup(token, payload),
     onSuccess: async () => {

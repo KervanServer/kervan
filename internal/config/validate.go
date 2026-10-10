@@ -183,6 +183,9 @@ func (c *Config) Validate() error {
 	default:
 		errs = append(errs, "ftps.client_auth must be none|request|require")
 	}
+	if c.Quota.DefaultMaxFiles < 0 {
+		errs = append(errs, "quota.default_max_files must be >= 0 (0 = unlimited)")
+	}
 	if c.Bandwidth.MaxTotal < 0 || c.Bandwidth.DefaultUserRate < 0 {
 		errs = append(errs, "bandwidth.max_total and bandwidth.default_user_rate must be >= 0 (bytes/s, 0 = unlimited)")
 	}

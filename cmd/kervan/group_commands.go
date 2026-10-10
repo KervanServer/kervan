@@ -124,6 +124,7 @@ func runGroupCreateCommand(stdout io.Writer, args []string) error {
 	perms := fs.String("permissions", "upload,download,delete,rename,create_dir,list_dir", "Comma-separated permissions")
 	maxStorage := fs.Int64("max-storage", 0, "Quota in bytes (0 = quota.default_max_storage, -1 = unlimited)")
 	maxBandwidth := fs.Int64("max-bandwidth", 0, "Per-user rate limit in bytes/s (0 = bandwidth.default_user_rate, -1 = unlimited)")
+	maxFiles := fs.Int64("max-files", 0, "File-count quota (0 = quota.default_max_files, -1 = unlimited)")
 	jsonOut := fs.Bool("json", false, "Output JSON")
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("parse group create flags: %w", err)
@@ -138,7 +139,7 @@ func runGroupCreateCommand(stdout io.Writer, args []string) error {
 	}
 	defer ctx.close()
 
-	g := &auth.Group{Name: *name, Description: strings.TrimSpace(*description), Permissions: permissions, MaxStorage: *maxStorage, MaxBandwidth: *maxBandwidth}
+	g := &auth.Group{Name: *name, Description: strings.TrimSpace(*description), Permissions: permissions, MaxStorage: *maxStorage, MaxBandwidth: *maxBandwidth, MaxFiles: *maxFiles}
 	if err := ctx.groups.Create(g); err != nil {
 		return fmt.Errorf("create group: %w", err)
 	}

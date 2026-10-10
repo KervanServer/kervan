@@ -14,6 +14,9 @@ import (
 type QuotaTracker interface {
 	OnGrow(n int64) error
 	OnShrink(n int64)
+	// OnFileCreated reserves a new regular file; OnFilesRemoved releases.
+	OnFileCreated() error
+	OnFilesRemoved(n int64)
 }
 
 type UserVFS struct {
@@ -68,8 +71,22 @@ func (u *UserVFS) Open(name string, flags int, perm os.FileMode) (File, error) {
 		return nil, os.ErrPermission
 	}
 
+	// A new file counts against the file-count quota; overwriting an
+	// existing one does not.
+	reservedFile := false
+	if isWrite && flags&os.O_CREATE != 0 && u.quota != nil {
+		if _, statErr := backend.Stat(relPath); errors.Is(statErr, os.ErrNotExist) {
+			if err := u.quota.OnFileCreated(); err != nil {
+				return nil, err
+			}
+			reservedFile = true
+		}
+	}
 	f, err := backend.Open(relPath, flags, perm)
 	if err != nil {
+		if reservedFile {
+			u.quota.OnFilesRemoved(1)
+		}
 		return nil, err
 	}
 	if len(u.limiters) > 0 {
@@ -133,7 +150,22 @@ func (u *UserVFS) Rename(oldname, newname string) error {
 	if oldBackend != newBackend {
 		return os.ErrPermission
 	}
-	return oldBackend.Rename(oldRel, newRel)
+	// Renaming onto an existing file replaces it: release its usage, or the
+	// quota would keep counting data that no longer exists.
+	var replacedBytes, replacedFiles int64
+	if u.quota != nil && oldRel != newRel {
+		if info, err := newBackend.Stat(newRel); err == nil && !info.IsDir() {
+			replacedBytes, replacedFiles = info.Size(), 1
+		}
+	}
+	if err := oldBackend.Rename(oldRel, newRel); err != nil {
+		return err
+	}
+	if u.quota != nil {
+		u.quota.OnShrink(replacedBytes)
+		u.quota.OnFilesRemoved(replacedFiles)
+	}
+	return nil
 }
 
 func (u *UserVFS) Remove(name string) error {
@@ -147,15 +179,16 @@ func (u *UserVFS) Remove(name string) error {
 	if ro {
 		return os.ErrPermission
 	}
-	reclaimBytes := int64(0)
+	var reclaimBytes, reclaimFiles int64
 	if u.quota != nil {
-		reclaimBytes, _ = measureUsageForQuota(backend, rel)
+		reclaimBytes, reclaimFiles, _ = measureUsageForQuota(backend, rel)
 	}
 	if err := backend.Remove(rel); err != nil {
 		return err
 	}
-	if u.quota != nil && reclaimBytes > 0 {
+	if u.quota != nil {
 		u.quota.OnShrink(reclaimBytes)
+		u.quota.OnFilesRemoved(reclaimFiles)
 	}
 	return nil
 }
@@ -171,15 +204,16 @@ func (u *UserVFS) RemoveAll(name string) error {
 	if ro {
 		return os.ErrPermission
 	}
-	reclaimBytes := int64(0)
+	var reclaimBytes, reclaimFiles int64
 	if u.quota != nil {
-		reclaimBytes, _ = measureUsageForQuota(backend, rel)
+		reclaimBytes, reclaimFiles, _ = measureUsageForQuota(backend, rel)
 	}
 	if err := backend.RemoveAll(rel); err != nil {
 		return err
 	}
-	if u.quota != nil && reclaimBytes > 0 {
+	if u.quota != nil {
 		u.quota.OnShrink(reclaimBytes)
+		u.quota.OnFilesRemoved(reclaimFiles)
 	}
 	return nil
 }
@@ -399,31 +433,32 @@ func projectedGrowth(currentSize, offset, writeLen int64) int64 {
 	return end - currentSize
 }
 
-func measureUsageForQuota(fsys FileSystem, name string) (int64, error) {
+// measureUsageForQuota returns the bytes and regular-file count at name.
+func measureUsageForQuota(fsys FileSystem, name string) (int64, int64, error) {
 	info, err := fsys.Stat(name)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	if !info.IsDir() {
-		return info.Size(), nil
+		return info.Size(), 1, nil
 	}
 	entries, err := fsys.ReadDir(name)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	var total int64
+	var bytes, files int64
 	for _, entry := range entries {
 		if entry == nil {
 			continue
 		}
-		childPath := path.Join(name, entry.Name())
-		size, err := measureUsageForQuota(fsys, childPath)
+		b, f, err := measureUsageForQuota(fsys, path.Join(name, entry.Name()))
 		if err != nil && !errors.Is(err, os.ErrNotExist) {
-			return total, err
+			return bytes, files, err
 		}
-		total += size
+		bytes += b
+		files += f
 	}
-	return total, nil
+	return bytes, files, nil
 }
 
 func checkExtension(name string, perms *UserPermissions) error {

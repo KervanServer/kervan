@@ -61,8 +61,8 @@ func (r *GroupRepository) Create(g *Group) error {
 	if err := validateMaxStorage(g.MaxStorage); err != nil {
 		return err
 	}
-	if g.MaxBandwidth < -1 {
-		return errors.New("max_bandwidth must be -1 (unlimited), 0 (inherit) or bytes per second")
+	if g.MaxBandwidth < -1 || g.MaxFiles < -1 {
+		return errors.New("max_bandwidth and max_files must be -1 (unlimited), 0 (inherit) or a positive limit")
 	}
 	if existing, err := r.GetByName(g.Name); err != nil {
 		return err
@@ -132,8 +132,8 @@ func (r *GroupRepository) Update(g *Group) error {
 	if err := validateMaxStorage(g.MaxStorage); err != nil {
 		return err
 	}
-	if g.MaxBandwidth < -1 {
-		return errors.New("max_bandwidth must be -1 (unlimited), 0 (inherit) or bytes per second")
+	if g.MaxBandwidth < -1 || g.MaxFiles < -1 {
+		return errors.New("max_bandwidth and max_files must be -1 (unlimited), 0 (inherit) or a positive limit")
 	}
 	renamed := groupIndexKey(existing.Name) != groupIndexKey(g.Name)
 	if renamed {
@@ -250,6 +250,7 @@ func (r *GroupRepository) rewriteMemberships(from, to string) error {
 type PolicyDefaults struct {
 	MaxStorage   int64
 	MaxBandwidth int64
+	MaxFiles     int64
 }
 
 // Policy is a user's effective permissions and limits after group
@@ -260,6 +261,8 @@ type Policy struct {
 	MaxStorage int64
 	// MaxBandwidth is the resolved rate limit in bytes/s; 0 means unlimited.
 	MaxBandwidth int64
+	// MaxFiles is the resolved file-count quota; 0 means unlimited.
+	MaxFiles int64
 	// Group is the primary group that supplied the template, if any.
 	Group *Group
 }
@@ -283,12 +286,13 @@ func ResolvePolicy(u *User, primary *Group, defaults PolicyDefaults) Policy {
 		}
 		return max(v, 0) // -1 (unlimited) becomes 0
 	}
-	var groupStorage, groupBandwidth int64
+	var groupStorage, groupBandwidth, groupFiles int64
 	if primary != nil {
-		groupStorage, groupBandwidth = primary.MaxStorage, primary.MaxBandwidth
+		groupStorage, groupBandwidth, groupFiles = primary.MaxStorage, primary.MaxBandwidth, primary.MaxFiles
 	}
 	p.MaxStorage = resolve(u.MaxStorage, groupStorage, defaults.MaxStorage)
 	p.MaxBandwidth = resolve(u.MaxBandwidth, groupBandwidth, defaults.MaxBandwidth)
+	p.MaxFiles = resolve(u.MaxFiles, groupFiles, defaults.MaxFiles)
 	return p
 }
 

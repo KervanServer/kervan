@@ -17,12 +17,13 @@ type userPolicyPatch struct {
 	SecondaryGroups   *[]string             `json:"secondary_groups"`
 	MaxStorage        *int64                `json:"max_storage"`
 	MaxBandwidth      *int64                `json:"max_bandwidth"`
+	MaxFiles          *int64                `json:"max_files"`
 	CustomPermissions *bool                 `json:"custom_permissions"`
 	Permissions       *auth.UserPermissions `json:"permissions"`
 }
 
 func (p userPolicyPatch) set() bool {
-	return p.PrimaryGroup != nil || p.SecondaryGroups != nil || p.MaxStorage != nil || p.MaxBandwidth != nil ||
+	return p.PrimaryGroup != nil || p.SecondaryGroups != nil || p.MaxStorage != nil || p.MaxBandwidth != nil || p.MaxFiles != nil ||
 		p.CustomPermissions != nil || p.Permissions != nil
 }
 
@@ -77,6 +78,12 @@ func (s *Server) applyUserPolicyPatch(u *auth.User, p userPolicyPatch) error {
 		}
 		u.MaxBandwidth = *p.MaxBandwidth
 	}
+	if p.MaxFiles != nil {
+		if *p.MaxFiles < -1 {
+			return errors.New("max_files must be -1 (unlimited), 0 (inherit) or a file count")
+		}
+		u.MaxFiles = *p.MaxFiles
+	}
 	if p.CustomPermissions != nil {
 		u.CustomPermissions = *p.CustomPermissions
 	}
@@ -98,6 +105,7 @@ type userResponse struct {
 	SecondaryGroups   []string             `json:"secondary_groups"`
 	MaxStorage        int64                `json:"max_storage"`
 	MaxBandwidth      int64                `json:"max_bandwidth"`
+	MaxFiles          int64                `json:"max_files"`
 	CustomPermissions bool                 `json:"custom_permissions"`
 	Permissions       auth.UserPermissions `json:"permissions"`
 	Effective         effectivePolicyJSON  `json:"effective"`
@@ -109,8 +117,10 @@ type effectivePolicyJSON struct {
 	// MaxStorage is the enforced quota in bytes; 0 means unlimited.
 	MaxStorage int64 `json:"max_storage"`
 	// MaxBandwidth is the enforced rate limit in bytes/s; 0 means unlimited.
-	MaxBandwidth int64  `json:"max_bandwidth"`
-	Group        string `json:"group,omitempty"`
+	MaxBandwidth int64 `json:"max_bandwidth"`
+	// MaxFiles is the enforced file-count quota; 0 means unlimited.
+	MaxFiles int64  `json:"max_files"`
+	Group    string `json:"group,omitempty"`
 }
 
 func (s *Server) userResponse(u *auth.User) userResponse {
@@ -130,16 +140,18 @@ func (s *Server) userResponse(u *auth.User) userResponse {
 		SecondaryGroups:   secondary,
 		MaxStorage:        u.MaxStorage,
 		MaxBandwidth:      u.MaxBandwidth,
+		MaxFiles:          u.MaxFiles,
 		CustomPermissions: u.CustomPermissions,
 		Permissions:       u.Permissions,
 		AuthorizedKeys:    auth.DescribeAuthorizedKeys(u.AuthorizedKeys),
 	}
 	cfg := s.currentConfig()
-	if policy, err := s.groups.PolicyFor(u, auth.PolicyDefaults{MaxStorage: cfg.DefaultMaxStorage, MaxBandwidth: cfg.DefaultUserRate}); err == nil {
-		out.Effective = effectivePolicyJSON{Permissions: policy.Permissions, MaxStorage: policy.MaxStorage, MaxBandwidth: policy.MaxBandwidth}
-		// Mirrors buildUserFS: no quota when disabled or for admins.
+	defaults := auth.PolicyDefaults{MaxStorage: cfg.DefaultMaxStorage, MaxBandwidth: cfg.DefaultUserRate, MaxFiles: cfg.DefaultMaxFiles}
+	if policy, err := s.groups.PolicyFor(u, defaults); err == nil {
+		out.Effective = effectivePolicyJSON{Permissions: policy.Permissions, MaxStorage: policy.MaxStorage, MaxBandwidth: policy.MaxBandwidth, MaxFiles: policy.MaxFiles}
+		// Mirrors buildUserFS: no quotas when disabled or for admins.
 		if !cfg.QuotaEnabled || u.Type == auth.UserTypeAdmin {
-			out.Effective.MaxStorage = 0
+			out.Effective.MaxStorage, out.Effective.MaxFiles = 0, 0
 		}
 		if policy.Group != nil {
 			out.Effective.Group = policy.Group.Name
@@ -178,6 +190,7 @@ func (s *Server) handleGroups(w http.ResponseWriter, r *http.Request) {
 			Permissions  *auth.UserPermissions `json:"permissions"`
 			MaxStorage   int64                 `json:"max_storage"`
 			MaxBandwidth int64                 `json:"max_bandwidth"`
+			MaxFiles     int64                 `json:"max_files"`
 		}
 		if err := decodeJSONBody(w, r, &req, false); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
@@ -189,6 +202,7 @@ func (s *Server) handleGroups(w http.ResponseWriter, r *http.Request) {
 			Permissions:  auth.DefaultUserPermissions(),
 			MaxStorage:   req.MaxStorage,
 			MaxBandwidth: req.MaxBandwidth,
+			MaxFiles:     req.MaxFiles,
 		}
 		if req.Permissions != nil {
 			g.Permissions = *req.Permissions
@@ -206,6 +220,7 @@ func (s *Server) handleGroups(w http.ResponseWriter, r *http.Request) {
 			Permissions  *auth.UserPermissions `json:"permissions"`
 			MaxStorage   *int64                `json:"max_storage"`
 			MaxBandwidth *int64                `json:"max_bandwidth"`
+			MaxFiles     *int64                `json:"max_files"`
 		}
 		if err := decodeJSONBody(w, r, &req, false); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid json"})
@@ -234,6 +249,9 @@ func (s *Server) handleGroups(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.MaxBandwidth != nil {
 			g.MaxBandwidth = *req.MaxBandwidth
+		}
+		if req.MaxFiles != nil {
+			g.MaxFiles = *req.MaxFiles
 		}
 		if err := s.groups.Update(g); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})

@@ -39,6 +39,9 @@ type User struct {
 	// inherits from the primary group (then bandwidth.default_user_rate),
 	// -1 is unlimited.
 	MaxBandwidth int64 `json:"max_bandwidth,omitempty" yaml:"max_bandwidth,omitempty"`
+	// MaxFiles caps the number of regular files: 0 inherits from the primary
+	// group (then quota.default_max_files), -1 is unlimited.
+	MaxFiles int64 `json:"max_files,omitempty" yaml:"max_files,omitempty"`
 	// ExternalID is the identity provider's stable subject for externally
 	// authenticated accounts (OIDC "sub").
 	ExternalID string `json:"external_id,omitempty" yaml:"external_id,omitempty"`
@@ -60,9 +63,12 @@ type Group struct {
 	MaxStorage int64 `json:"max_storage,omitempty" yaml:"max_storage,omitempty"`
 	// MaxBandwidth is the members' default rate limit in bytes/s: 0 falls
 	// back to bandwidth.default_user_rate, -1 is unlimited.
-	MaxBandwidth int64     `json:"max_bandwidth,omitempty" yaml:"max_bandwidth,omitempty"`
-	CreatedAt    time.Time `json:"created_at" yaml:"created_at"`
-	UpdatedAt    time.Time `json:"updated_at" yaml:"updated_at"`
+	MaxBandwidth int64 `json:"max_bandwidth,omitempty" yaml:"max_bandwidth,omitempty"`
+	// MaxFiles is the members' default file-count quota: 0 falls back to
+	// quota.default_max_files, -1 is unlimited.
+	MaxFiles  int64     `json:"max_files,omitempty" yaml:"max_files,omitempty"`
+	CreatedAt time.Time `json:"created_at" yaml:"created_at"`
+	UpdatedAt time.Time `json:"updated_at" yaml:"updated_at"`
 }
 
 type UserPermissions struct {

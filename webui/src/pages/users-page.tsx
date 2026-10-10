@@ -8,7 +8,7 @@ import { z } from "zod"
 import { ConfirmDialog } from "@/components/shared/confirm-dialog"
 import { EmptyState } from "@/components/shared/empty-state"
 import { PageHeader } from "@/components/shared/page-header"
-import { BandwidthField, DEFAULT_PERMISSIONS, PermissionsEditor, QuotaField, permissionSummary } from "@/components/shared/policy-fields"
+import { BandwidthField, DEFAULT_PERMISSIONS, FilesField, PermissionsEditor, QuotaField, permissionSummary } from "@/components/shared/policy-fields"
 import { StatusMessage } from "@/components/shared/status-message"
 import { useGroups } from "@/hooks/use-groups"
 import { useCreateUser, useDeleteUser, useImportUsers, useUpdateUser, useUsers } from "@/hooks/use-users"
@@ -45,6 +45,7 @@ type PolicyDraft = {
   primary_group: string
   max_storage: number
   max_bandwidth: number
+  max_files: number
   custom_permissions: boolean
   permissions: ApiPermissions
   password: string
@@ -120,6 +121,7 @@ export function UsersPage({ token }: Props) {
       primary_group: user.primary_group ?? "",
       max_storage: user.max_storage ?? 0,
       max_bandwidth: user.max_bandwidth ?? 0,
+      max_files: user.max_files ?? 0,
       custom_permissions: user.custom_permissions ?? false,
       permissions: { ...(user.permissions ?? DEFAULT_PERMISSIONS) },
       password: "",
@@ -136,6 +138,7 @@ export function UsersPage({ token }: Props) {
       primary_group: policyDraft.primary_group,
       max_storage: policyDraft.max_storage,
       max_bandwidth: policyDraft.max_bandwidth,
+      max_files: policyDraft.max_files,
       custom_permissions: policyDraft.custom_permissions,
       permissions: policyDraft.permissions,
       authorized_keys: policyDraft.keys
@@ -421,6 +424,12 @@ export function UsersPage({ token }: Props) {
                 value={policyDraft.max_storage}
                 inheritLabel={draftGroup ? `Inherit from ${draftGroup.name}` : "Server default"}
                 onChange={(max_storage) => setPolicyDraft({ ...policyDraft, max_storage })}
+              />
+              <FilesField
+                idPrefix="edit-user"
+                value={policyDraft.max_files}
+                inheritLabel={draftGroup ? `Inherit from ${draftGroup.name}` : "Server default"}
+                onChange={(max_files) => setPolicyDraft({ ...policyDraft, max_files })}
               />
               <BandwidthField
                 idPrefix="edit-user"

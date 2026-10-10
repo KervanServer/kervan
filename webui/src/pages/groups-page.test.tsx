@@ -71,6 +71,7 @@ describe("GroupsPage", () => {
         permissions: { upload: true, download: true, delete: false, rename: true, create_dir: true, list_dir: true, chmod: false },
         max_storage: 0,
         max_bandwidth: 0,
+        max_files: 0,
       }),
     )
   })

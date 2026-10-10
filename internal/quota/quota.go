@@ -8,22 +8,31 @@ import (
 	"github.com/kervanserver/kervan/internal/vfs"
 )
 
-var ErrStorageExceeded = errors.New("storage quota exceeded")
+var (
+	ErrStorageExceeded   = errors.New("storage quota exceeded")
+	ErrFileCountExceeded = errors.New("file count quota exceeded")
+)
 
+// Tracker enforces a user's storage and file-count quotas. Limits of 0 are
+// unlimited. Only regular files count toward the file limit.
 type Tracker struct {
 	mu         sync.Mutex
 	usedBytes  int64
 	maxStorage int64
+	usedFiles  int64
+	maxFiles   int64
 }
 
-func NewTracker(fsys vfs.FileSystem, maxStorage int64) (*Tracker, error) {
-	usedBytes, err := MeasureUsage(fsys, "/")
+func NewTracker(fsys vfs.FileSystem, maxStorage, maxFiles int64) (*Tracker, error) {
+	usedBytes, usedFiles, err := MeasureUsage(fsys, "/")
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
 	return &Tracker{
 		usedBytes:  usedBytes,
 		maxStorage: maxStorage,
+		usedFiles:  usedFiles,
+		maxFiles:   maxFiles,
 	}, nil
 }
 
@@ -46,10 +55,31 @@ func (t *Tracker) OnShrink(n int64) {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.usedBytes -= n
-	if t.usedBytes < 0 {
-		t.usedBytes = 0
+	t.usedBytes = max(t.usedBytes-n, 0)
+}
+
+// OnFileCreated reserves one file against the file-count quota.
+func (t *Tracker) OnFileCreated() error {
+	if t == nil {
+		return nil
 	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.maxFiles > 0 && t.usedFiles+1 > t.maxFiles {
+		return ErrFileCountExceeded
+	}
+	t.usedFiles++
+	return nil
+}
+
+// OnFilesRemoved releases n files.
+func (t *Tracker) OnFilesRemoved(n int64) {
+	if t == nil || n <= 0 {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.usedFiles = max(t.usedFiles-n, 0)
 }
 
 func (t *Tracker) UsedBytes() int64 {
@@ -61,6 +91,15 @@ func (t *Tracker) UsedBytes() int64 {
 	return t.usedBytes
 }
 
+func (t *Tracker) UsedFiles() int64 {
+	if t == nil {
+		return 0
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.usedFiles
+}
+
 func (t *Tracker) MaxStorage() int64 {
 	if t == nil {
 		return 0
@@ -68,34 +107,36 @@ func (t *Tracker) MaxStorage() int64 {
 	return t.maxStorage
 }
 
-func MeasureUsage(fsys vfs.FileSystem, root string) (int64, error) {
+// MeasureUsage returns the bytes and regular-file count under root.
+func MeasureUsage(fsys vfs.FileSystem, root string) (int64, int64, error) {
 	info, err := fsys.Stat(root)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
 	if !info.IsDir() {
-		return info.Size(), nil
+		return info.Size(), 1, nil
 	}
 	return measureDirUsage(fsys, root)
 }
 
-func measureDirUsage(fsys vfs.FileSystem, dir string) (int64, error) {
+func measureDirUsage(fsys vfs.FileSystem, dir string) (int64, int64, error) {
 	entries, err := fsys.ReadDir(dir)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	var total int64
+	var bytes, files int64
 	for _, entry := range entries {
 		if entry == nil {
 			continue
 		}
 		childPath := joinPath(dir, entry.Name())
 		if entry.IsDir() {
-			size, err := measureDirUsage(fsys, childPath)
+			b, f, err := measureDirUsage(fsys, childPath)
 			if err != nil && !errors.Is(err, os.ErrNotExist) {
-				return total, err
+				return bytes, files, err
 			}
-			total += size
+			bytes += b
+			files += f
 			continue
 		}
 		info, err := entry.Info()
@@ -103,11 +144,12 @@ func measureDirUsage(fsys vfs.FileSystem, dir string) (int64, error) {
 			if errors.Is(err, os.ErrNotExist) {
 				continue
 			}
-			return total, err
+			return bytes, files, err
 		}
-		total += info.Size()
+		bytes += info.Size()
+		files++
 	}
-	return total, nil
+	return bytes, files, nil
 }
 
 func joinPath(parent, name string) string {

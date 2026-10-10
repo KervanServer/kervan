@@ -297,6 +297,7 @@ func New(cfg *config.Config, configPath string, logger *slog.Logger) (*App, erro
 			QuotaEnabled:         cfg.Quota.Enabled,
 			DefaultMaxStorage:    cfg.Quota.DefaultMaxStorage,
 			DefaultUserRate:      cfg.Bandwidth.DefaultUserRate,
+			DefaultMaxFiles:      cfg.Quota.DefaultMaxFiles,
 			OIDC:                 oidcSettings,
 			Events:               broker,
 		},
@@ -764,7 +765,7 @@ func (a *App) buildUserFS(user *auth.User) (vfs.FileSystem, error) {
 
 	var quotaTracker vfs.QuotaTracker
 	if a.cfg.Quota.Enabled && user.Type != auth.UserTypeAdmin && rootFS != nil {
-		tracker, err := quota.NewTracker(rootFS, policy.MaxStorage)
+		tracker, err := quota.NewTracker(rootFS, policy.MaxStorage, policy.MaxFiles)
 		if err != nil {
 			return nil, err
 		}
@@ -793,7 +794,11 @@ func (a *App) buildUserFS(user *auth.User) (vfs.FileSystem, error) {
 func (a *App) policyDefaults() auth.PolicyDefaults {
 	a.cfgMu.RLock()
 	defer a.cfgMu.RUnlock()
-	return auth.PolicyDefaults{MaxStorage: a.cfg.Quota.DefaultMaxStorage, MaxBandwidth: a.cfg.Bandwidth.DefaultUserRate}
+	return auth.PolicyDefaults{
+		MaxStorage:   a.cfg.Quota.DefaultMaxStorage,
+		MaxBandwidth: a.cfg.Bandwidth.DefaultUserRate,
+		MaxFiles:     a.cfg.Quota.DefaultMaxFiles,
+	}
 }
 
 func redactConfig(cfg *config.Config) map[string]any {

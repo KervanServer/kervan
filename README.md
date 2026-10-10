@@ -491,7 +491,10 @@ Groups are permission and storage-quota templates:
   `custom_permissions` on the user to use the user's own permissions instead,
   and `max_storage` to give them their own quota (`0` inherits, `-1` is
   unlimited). A group's `max_storage` of `0` falls back to
-  `quota.default_max_storage`. Quotas only apply when `quota.enabled` is
+  `quota.default_max_storage`. `max_files` works the same way for the
+  number of regular files (directories are not counted), with
+  `quota.default_max_files` as the default. Overwriting a file does not
+  count as a new one. Quotas only apply when `quota.enabled` is
   true, and never to admins.
 - **Secondary groups** record membership only.
 - Renaming a group updates its members. A group with members can only be
@@ -811,8 +814,7 @@ All listeners (FTP, FTPS, SFTP/SCP and the WebUI/API) share these controls:
 - **Settings without effect** — a few keys are accepted for compatibility but
   do nothing in this release (`ftp.ascii_transfer`,
   `sftp.host_key_algorithms`, `sftp.disable_shell`, `auth.default_provider`,
-  `auth.ldap.connection_pool_size`, `quota.default_max_files`,
-  `quota.check_interval`, `mcp.transport` other than `stdio`). The server logs
+  `auth.ldap.connection_pool_size`, `quota.check_interval`, `mcp.transport` other than `stdio`). The server logs
   a warning at startup when one of them is changed from its default.
 
 ---

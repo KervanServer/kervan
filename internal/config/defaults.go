@@ -103,7 +103,7 @@ func DefaultConfig() *Config {
 		Quota: QuotaConfig{
 			Enabled:           true,
 			DefaultMaxStorage: 1 << 30,
-			DefaultMaxFiles:   100000,
+			DefaultMaxFiles:   0,
 			CheckInterval:     60 * time.Second,
 		},
 		Audit: AuditConfig{

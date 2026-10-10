@@ -105,6 +105,8 @@ export function AccountPage({ token }: Props) {
               <dd className="font-mono">{account.home_dir || "/"}</dd>
               <dt className="text-[var(--text-secondary)]">Storage quota</dt>
               <dd>{describeEffectiveQuota(account.effective?.max_storage)}</dd>
+              <dt className="text-[var(--text-secondary)]">File limit</dt>
+              <dd>{account.effective?.max_files ? `${account.effective.max_files.toLocaleString()} files` : "Unlimited"}</dd>
               <dt className="text-[var(--text-secondary)]">Bandwidth</dt>
               <dd>{describeEffectiveRate(account.effective?.max_bandwidth)}</dd>
               <dt className="text-[var(--text-secondary)]">Permissions</dt>

@@ -32,9 +32,6 @@ func UnsupportedSettingWarnings(c *Config) []string {
 	if c.Auth.LDAP.Enabled && c.Auth.LDAP.PoolSize > 0 && c.Auth.LDAP.PoolSize != 4 {
 		add("auth.ldap.connection_pool_size", "ignored; LDAP binds use one connection per authentication")
 	}
-	if c.Quota.Enabled && c.Quota.DefaultMaxFiles > 0 && c.Quota.DefaultMaxFiles != 100000 {
-		add("quota.default_max_files", "ignored; only quota.default_max_storage is enforced")
-	}
 	if c.Quota.CheckInterval > 0 && c.Quota.CheckInterval != 60*time.Second {
 		add("quota.check_interval", "ignored; usage is measured at login and tracked on every write")
 	}
