@@ -282,7 +282,7 @@ export const api = {
 
   createGroup(
     token: string,
-    payload: { name: string; description?: string; permissions: ApiPermissions; max_storage: number },
+    payload: { name: string; description?: string; permissions: ApiPermissions; max_storage: number; max_bandwidth: number },
   ): Promise<ApiGroup> {
     return request<ApiGroup>("/api/v1/groups", token, {
       method: "POST",
@@ -292,7 +292,14 @@ export const api = {
 
   updateGroup(
     token: string,
-    payload: { id: string; name?: string; description?: string; permissions?: ApiPermissions; max_storage?: number },
+    payload: {
+      id: string
+      name?: string
+      description?: string
+      permissions?: ApiPermissions
+      max_storage?: number
+      max_bandwidth?: number
+    },
   ): Promise<ApiGroup> {
     return request<ApiGroup>("/api/v1/groups", token, {
       method: "PUT",

@@ -109,6 +109,10 @@ quota:
   default_max_files: 100000  # no effect: only default_max_storage is enforced
   check_interval: 60s        # no effect: usage is tracked on every write
 
+bandwidth:                   # bytes/s, 0 = unlimited; users/groups can set max_bandwidth
+  max_total: 0
+  default_user_rate: 0
+
 audit:
   enabled: true
   integrity:                 # HMAC-chained, tamper-evident file outputs; check with "kervan audit verify"

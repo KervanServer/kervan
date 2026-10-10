@@ -25,3 +25,19 @@ export function describeQuota(value: number | undefined, inheritLabel = "Default
 export function describeEffectiveQuota(value: number | undefined): string {
   return value ? formatBytes(value) : "Unlimited"
 }
+
+/** Describes a stored rate limit: 0 inherits, -1 is unlimited. */
+export function describeRate(value: number | undefined, inheritLabel = "Default"): string {
+  if (!value) {
+    return inheritLabel
+  }
+  if (value < 0) {
+    return "Unlimited"
+  }
+  return `${formatBytes(value)}/s`
+}
+
+/** Describes an enforced rate limit: 0 means unlimited. */
+export function describeEffectiveRate(value: number | undefined): string {
+  return value ? `${formatBytes(value)}/s` : "Unlimited"
+}

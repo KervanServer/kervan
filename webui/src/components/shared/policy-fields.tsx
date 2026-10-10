@@ -57,63 +57,78 @@ export function PermissionsEditor({ value, onChange, disabled = false, idPrefix 
   )
 }
 
-type QuotaMode = "inherit" | "unlimited" | "custom"
-const MB = 1024 * 1024
+type LimitMode = "inherit" | "unlimited" | "custom"
+const KB = 1024
+const MB = 1024 * KB
 const GB = 1024 * MB
 
-function quotaMode(value: number): QuotaMode {
+type LimitUnit = { label: string; factor: number }
+type LimitUnits = [LimitUnit, ...LimitUnit[]]
+const STORAGE_UNITS: LimitUnits = [
+  { label: "MB", factor: MB },
+  { label: "GB", factor: GB },
+]
+const RATE_UNITS: LimitUnits = [
+  { label: "KB/s", factor: KB },
+  { label: "MB/s", factor: MB },
+]
+
+function limitMode(value: number): LimitMode {
   if (value === 0) return "inherit"
   if (value < 0) return "unlimited"
   return "custom"
 }
 
-type QuotaFieldProps = {
-  /** Bytes; 0 inherits, -1 is unlimited. */
+type LimitFieldProps = {
+  /** 0 inherits, -1 is unlimited, otherwise an amount in base units. */
   value: number
   onChange: (next: number) => void
   inheritLabel: string
   idPrefix: string
+  label: string
+  units: LimitUnits
 }
 
-export function QuotaField({ value, onChange, inheritLabel, idPrefix }: QuotaFieldProps) {
-  const mode = quotaMode(value)
-  const useGB = value >= GB && value % GB === 0
-  const unit = useGB ? GB : MB
-  const amount = mode === "custom" ? String(Math.round(value / unit)) : ""
+function LimitField({ value, onChange, inheritLabel, idPrefix, label, units }: LimitFieldProps) {
+  const mode = limitMode(value)
+  // Prefer the largest unit that divides the value evenly.
+  const unit = [...units].reverse().find((u) => value >= u.factor && value % u.factor === 0) ?? units[0]
+  const amount = mode === "custom" ? String(Math.round(value / unit.factor)) : ""
   // The text is kept locally so the field can be cleared while typing; the
-  // byte value only changes when the text is a positive number.
+  // value only changes when the text is a positive number.
   const [text, setText] = useState(amount)
   const [syncedFrom, setSyncedFrom] = useState(value)
   if (syncedFrom !== value) {
     setSyncedFrom(value)
-    if (Number.parseInt(text, 10) * unit !== value) {
+    if (Number.parseInt(text, 10) * unit.factor !== value) {
       setText(amount)
     }
   }
+  const largest = units[units.length - 1] ?? units[0]
 
   return (
     <div className="space-y-2">
-      <label htmlFor={`${idPrefix}-quota-mode`} className="text-sm font-medium">
-        Storage quota
+      <label htmlFor={`${idPrefix}-mode`} className="text-sm font-medium">
+        {label}
       </label>
       <select
-        id={`${idPrefix}-quota-mode`}
+        id={`${idPrefix}-mode`}
         className="h-10 w-full rounded-md border border-[var(--border)] bg-[var(--surface)] px-3 text-sm"
         value={mode}
         onChange={(event) => {
-          const next = event.target.value as QuotaMode
-          onChange(next === "inherit" ? 0 : next === "unlimited" ? -1 : GB)
+          const next = event.target.value as LimitMode
+          onChange(next === "inherit" ? 0 : next === "unlimited" ? -1 : largest.factor)
         }}
       >
         <option value="inherit">{inheritLabel}</option>
         <option value="unlimited">Unlimited</option>
-        <option value="custom">Custom size</option>
+        <option value="custom">Custom</option>
       </select>
       {mode === "custom" ? (
         <div className="flex gap-2">
           <Input
-            id={`${idPrefix}-quota-amount`}
-            aria-label="Quota size"
+            id={`${idPrefix}-amount`}
+            aria-label={`${label} amount`}
             type="number"
             min={1}
             value={text}
@@ -121,24 +136,37 @@ export function QuotaField({ value, onChange, inheritLabel, idPrefix }: QuotaFie
               setText(event.target.value)
               const parsed = Number.parseInt(event.target.value, 10)
               if (Number.isFinite(parsed) && parsed > 0) {
-                onChange(parsed * unit)
+                onChange(parsed * unit.factor)
               }
             }}
           />
           <select
-            aria-label="Quota unit"
+            aria-label={`${label} unit`}
             className="h-10 rounded-md border border-[var(--border)] bg-[var(--surface)] px-2 text-sm"
-            value={useGB ? "GB" : "MB"}
+            value={unit.label}
             onChange={(event) => {
-              const nextUnit = event.target.value === "GB" ? GB : MB
-              onChange(Math.max(1, Math.round(value / unit)) * nextUnit)
+              const nextUnit = units.find((u) => u.label === event.target.value) ?? unit
+              onChange(Math.max(1, Math.round(value / unit.factor)) * nextUnit.factor)
             }}
           >
-            <option value="MB">MB</option>
-            <option value="GB">GB</option>
+            {units.map((u) => (
+              <option key={u.label} value={u.label}>
+                {u.label}
+              </option>
+            ))}
           </select>
         </div>
       ) : null}
     </div>
   )
+}
+
+type PolicyLimitProps = Omit<LimitFieldProps, "label" | "units">
+
+export function QuotaField(props: PolicyLimitProps) {
+  return <LimitField {...props} idPrefix={`${props.idPrefix}-quota`} label="Storage quota" units={STORAGE_UNITS} />
+}
+
+export function BandwidthField(props: PolicyLimitProps) {
+  return <LimitField {...props} idPrefix={`${props.idPrefix}-bandwidth`} label="Bandwidth limit" units={RATE_UNITS} />
 }

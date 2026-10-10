@@ -8,7 +8,7 @@ import { PageHeader } from "@/components/shared/page-header"
 import { permissionSummary } from "@/components/shared/policy-fields"
 import { StatusMessage } from "@/components/shared/status-message"
 import { api } from "@/lib/api"
-import { describeEffectiveQuota } from "@/lib/format"
+import { describeEffectiveQuota, describeEffectiveRate } from "@/lib/format"
 import { useAuthStore } from "@/stores/auth-store"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
@@ -105,6 +105,8 @@ export function AccountPage({ token }: Props) {
               <dd className="font-mono">{account.home_dir || "/"}</dd>
               <dt className="text-[var(--text-secondary)]">Storage quota</dt>
               <dd>{describeEffectiveQuota(account.effective?.max_storage)}</dd>
+              <dt className="text-[var(--text-secondary)]">Bandwidth</dt>
+              <dd>{describeEffectiveRate(account.effective?.max_bandwidth)}</dd>
               <dt className="text-[var(--text-secondary)]">Permissions</dt>
               <dd>{permissionSummary(account.effective?.permissions)}</dd>
             </dl>

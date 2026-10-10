@@ -35,6 +35,10 @@ type User struct {
 	// MaxStorage is the user's storage quota in bytes: 0 inherits from the
 	// primary group (then quota.default_max_storage), -1 is unlimited.
 	MaxStorage int64 `json:"max_storage,omitempty" yaml:"max_storage,omitempty"`
+	// MaxBandwidth caps the user's combined transfer rate in bytes/s: 0
+	// inherits from the primary group (then bandwidth.default_user_rate),
+	// -1 is unlimited.
+	MaxBandwidth int64 `json:"max_bandwidth,omitempty" yaml:"max_bandwidth,omitempty"`
 	// ExternalID is the identity provider's stable subject for externally
 	// authenticated accounts (OIDC "sub").
 	ExternalID string `json:"external_id,omitempty" yaml:"external_id,omitempty"`
@@ -53,9 +57,12 @@ type Group struct {
 	Permissions UserPermissions `json:"permissions" yaml:"permissions"`
 	// MaxStorage is the members' default quota in bytes: 0 falls back to
 	// quota.default_max_storage, -1 is unlimited.
-	MaxStorage int64     `json:"max_storage,omitempty" yaml:"max_storage,omitempty"`
-	CreatedAt  time.Time `json:"created_at" yaml:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at" yaml:"updated_at"`
+	MaxStorage int64 `json:"max_storage,omitempty" yaml:"max_storage,omitempty"`
+	// MaxBandwidth is the members' default rate limit in bytes/s: 0 falls
+	// back to bandwidth.default_user_rate, -1 is unlimited.
+	MaxBandwidth int64     `json:"max_bandwidth,omitempty" yaml:"max_bandwidth,omitempty"`
+	CreatedAt    time.Time `json:"created_at" yaml:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at" yaml:"updated_at"`
 }
 
 type UserPermissions struct {

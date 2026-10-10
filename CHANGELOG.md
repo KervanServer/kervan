@@ -4,6 +4,13 @@
 
 ### Added
 
+- **Bandwidth limits.** `max_bandwidth` can be set per user and per group,
+  with `bandwidth.default_user_rate` as the default and
+  `bandwidth.max_total` as a server-wide cap. Limits apply to FTP, SFTP,
+  SCP and API transfers, are shared across a user's parallel connections,
+  and reload at runtime. Measured at 1.0 MiB/s for a 1 MiB/s limit over FTP
+  and SFTP.
+
 - **Self-service account.** A new WebUI **My Account** page and
   `/api/v1/account` endpoints show a user's effective policy, and let them
   change their password (local accounts) and manage their SSH public keys.

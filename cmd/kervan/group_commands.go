@@ -107,10 +107,10 @@ func runGroupListCommand(stdout io.Writer, args []string) error {
 		return json.NewEncoder(stdout).Encode(groups)
 	}
 	tw := tabwriter.NewWriter(stdout, 0, 4, 2, ' ', 0)
-	_, _ = fmt.Fprintln(tw, "NAME\tMEMBERS\tMAX_STORAGE\tPERMISSIONS\tDESCRIPTION")
+	_, _ = fmt.Fprintln(tw, "NAME\tMEMBERS\tMAX_STORAGE\tMAX_BANDWIDTH\tPERMISSIONS\tDESCRIPTION")
 	for _, g := range groups {
 		members, _ := ctx.groups.Members(g.Name)
-		_, _ = fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%s\n", g.Name, len(members), formatMaxStorage(g.MaxStorage), permissionNames(g.Permissions), g.Description)
+		_, _ = fmt.Fprintf(tw, "%s\t%d\t%s\t%s\t%s\t%s\n", g.Name, len(members), formatMaxStorage(g.MaxStorage), formatMaxStorage(g.MaxBandwidth), permissionNames(g.Permissions), g.Description)
 	}
 	return tw.Flush()
 }
@@ -123,6 +123,7 @@ func runGroupCreateCommand(stdout io.Writer, args []string) error {
 	description := fs.String("description", "", "Description")
 	perms := fs.String("permissions", "upload,download,delete,rename,create_dir,list_dir", "Comma-separated permissions")
 	maxStorage := fs.Int64("max-storage", 0, "Quota in bytes (0 = quota.default_max_storage, -1 = unlimited)")
+	maxBandwidth := fs.Int64("max-bandwidth", 0, "Per-user rate limit in bytes/s (0 = bandwidth.default_user_rate, -1 = unlimited)")
 	jsonOut := fs.Bool("json", false, "Output JSON")
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("parse group create flags: %w", err)
@@ -137,7 +138,7 @@ func runGroupCreateCommand(stdout io.Writer, args []string) error {
 	}
 	defer ctx.close()
 
-	g := &auth.Group{Name: *name, Description: strings.TrimSpace(*description), Permissions: permissions, MaxStorage: *maxStorage}
+	g := &auth.Group{Name: *name, Description: strings.TrimSpace(*description), Permissions: permissions, MaxStorage: *maxStorage, MaxBandwidth: *maxBandwidth}
 	if err := ctx.groups.Create(g); err != nil {
 		return fmt.Errorf("create group: %w", err)
 	}

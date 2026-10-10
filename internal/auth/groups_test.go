@@ -92,7 +92,7 @@ func TestResolvePolicy(t *testing.T) {
 		{"group inherits default quota", User{Permissions: own}, &Group{Permissions: tmpl}, tmpl, 1000},
 	}
 	for _, tc := range cases {
-		p := ResolvePolicy(&tc.user, tc.group, 1000)
+		p := ResolvePolicy(&tc.user, tc.group, PolicyDefaults{MaxStorage: 1000})
 		if p.Permissions.Upload != tc.wantPerms.Upload || p.Permissions.ListDir != tc.wantPerms.ListDir {
 			t.Errorf("%s: permissions %+v, want %+v", tc.name, p.Permissions, tc.wantPerms)
 		}
@@ -106,8 +106,29 @@ func TestPolicyForIgnoresUnknownGroup(t *testing.T) {
 	_, groups := newGroupTestRepos(t)
 	own := UserPermissions{Upload: true}
 	// LDAP users carry raw directory group names that may not exist here.
-	p, err := groups.PolicyFor(&User{Permissions: own, PrimaryGroup: "cn=staff,dc=example"}, 0)
+	p, err := groups.PolicyFor(&User{Permissions: own, PrimaryGroup: "cn=staff,dc=example"}, PolicyDefaults{})
 	if err != nil || !p.Permissions.Upload || p.Group != nil {
 		t.Fatalf("unknown group must fall back to own permissions: %+v %v", p, err)
+	}
+}
+
+func TestResolvePolicyBandwidth(t *testing.T) {
+	g := &Group{MaxBandwidth: 500}
+	d := PolicyDefaults{MaxBandwidth: 100}
+	for _, tc := range []struct {
+		user  User
+		group *Group
+		want  int64
+	}{
+		{User{}, nil, 100},
+		{User{}, g, 500},
+		{User{MaxBandwidth: 42}, g, 42},
+		{User{MaxBandwidth: -1}, g, 0},
+		{User{}, &Group{MaxBandwidth: -1}, 0},
+		{User{}, &Group{}, 100},
+	} {
+		if got := ResolvePolicy(&tc.user, tc.group, d).MaxBandwidth; got != tc.want {
+			t.Errorf("user=%d group=%v -> %d, want %d", tc.user.MaxBandwidth, tc.group, got, tc.want)
+		}
 	}
 }

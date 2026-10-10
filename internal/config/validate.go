@@ -183,6 +183,9 @@ func (c *Config) Validate() error {
 	default:
 		errs = append(errs, "ftps.client_auth must be none|request|require")
 	}
+	if c.Bandwidth.MaxTotal < 0 || c.Bandwidth.DefaultUserRate < 0 {
+		errs = append(errs, "bandwidth.max_total and bandwidth.default_user_rate must be >= 0 (bytes/s, 0 = unlimited)")
+	}
 	bf := c.Security.BruteForce
 	for _, ip := range bf.WhitelistIPs {
 		if !validIPOrCIDR(ip) {

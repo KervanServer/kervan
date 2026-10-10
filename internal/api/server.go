@@ -67,6 +67,8 @@ type Config struct {
 	// quota.default_max_storage for reporting effective user quotas.
 	QuotaEnabled      bool
 	DefaultMaxStorage int64
+	// DefaultUserRate mirrors bandwidth.default_user_rate (bytes/s).
+	DefaultUserRate int64
 	// OIDC enables WebUI sign-in through an OpenID provider; nil disables it.
 	OIDC *OIDCSettings
 	// Events drives WebSocket pushes; nil falls back to polling.
@@ -246,6 +248,7 @@ func (s *Server) ApplyRuntimeConfig(cfg Config) {
 	s.cfg.BruteForceEnabled = cfg.BruteForceEnabled
 	s.cfg.LoginMaxAttempts = cfg.LoginMaxAttempts
 	s.cfg.LoginLockoutDuration = cfg.LoginLockoutDuration
+	s.cfg.DefaultUserRate = cfg.DefaultUserRate
 	s.cfgMu.Unlock()
 
 	if prevBruteForceEnabled && !cfg.BruteForceEnabled {

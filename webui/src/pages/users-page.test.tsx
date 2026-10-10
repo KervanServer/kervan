@@ -133,8 +133,8 @@ describe("UsersPage", () => {
     // The group's template replaces the per-user permission editor.
     expect(within(dialog).getByText(/Permissions from/)).toBeInTheDocument()
     await user.selectOptions(within(dialog).getByLabelText("Storage quota"), "custom")
-    await user.clear(within(dialog).getByLabelText("Quota size"))
-    await user.type(within(dialog).getByLabelText("Quota size"), "2")
+    await user.clear(within(dialog).getByLabelText("Storage quota amount"))
+    await user.type(within(dialog).getByLabelText("Storage quota amount"), "2")
     await user.click(within(dialog).getByRole("button", { name: "Save" }))
 
     await waitFor(() =>

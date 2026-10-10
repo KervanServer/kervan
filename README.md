@@ -513,6 +513,23 @@ kervan group delete --name readonly --force
 
 User import/export carries `primary_group` and `max_storage`.
 
+### Bandwidth limits
+
+Groups and users can also set `max_bandwidth` (bytes per second; `0`
+inherits, `-1` is unlimited). The limit applies to every transfer path
+(FTP, FTPS, SFTP, SCP and WebUI/API uploads and downloads). It is shared by
+all of a user's connections, so opening parallel sessions does not raise it.
+Server-wide settings:
+
+```yaml
+bandwidth:
+  max_total: 104857600        # all transfers together, bytes/s (0 = unlimited)
+  default_user_rate: 0        # per-user default when neither user nor group sets one
+```
+
+Both values reload at runtime. `kervan group create --max-bandwidth` and the
+WebUI Groups/Users pages set the per-group and per-user limits.
+
 ---
 
 ## Session & Transfer Tracking

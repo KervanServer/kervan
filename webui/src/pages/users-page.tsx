@@ -8,7 +8,7 @@ import { z } from "zod"
 import { ConfirmDialog } from "@/components/shared/confirm-dialog"
 import { EmptyState } from "@/components/shared/empty-state"
 import { PageHeader } from "@/components/shared/page-header"
-import { DEFAULT_PERMISSIONS, PermissionsEditor, QuotaField, permissionSummary } from "@/components/shared/policy-fields"
+import { BandwidthField, DEFAULT_PERMISSIONS, PermissionsEditor, QuotaField, permissionSummary } from "@/components/shared/policy-fields"
 import { StatusMessage } from "@/components/shared/status-message"
 import { useGroups } from "@/hooks/use-groups"
 import { useCreateUser, useDeleteUser, useImportUsers, useUpdateUser, useUsers } from "@/hooks/use-users"
@@ -44,6 +44,7 @@ type PolicyDraft = {
   user: ApiUser
   primary_group: string
   max_storage: number
+  max_bandwidth: number
   custom_permissions: boolean
   permissions: ApiPermissions
   password: string
@@ -118,6 +119,7 @@ export function UsersPage({ token }: Props) {
       user,
       primary_group: user.primary_group ?? "",
       max_storage: user.max_storage ?? 0,
+      max_bandwidth: user.max_bandwidth ?? 0,
       custom_permissions: user.custom_permissions ?? false,
       permissions: { ...(user.permissions ?? DEFAULT_PERMISSIONS) },
       password: "",
@@ -133,6 +135,7 @@ export function UsersPage({ token }: Props) {
       id: policyDraft.user.id,
       primary_group: policyDraft.primary_group,
       max_storage: policyDraft.max_storage,
+      max_bandwidth: policyDraft.max_bandwidth,
       custom_permissions: policyDraft.custom_permissions,
       permissions: policyDraft.permissions,
       authorized_keys: policyDraft.keys
@@ -418,6 +421,12 @@ export function UsersPage({ token }: Props) {
                 value={policyDraft.max_storage}
                 inheritLabel={draftGroup ? `Inherit from ${draftGroup.name}` : "Server default"}
                 onChange={(max_storage) => setPolicyDraft({ ...policyDraft, max_storage })}
+              />
+              <BandwidthField
+                idPrefix="edit-user"
+                value={policyDraft.max_bandwidth}
+                inheritLabel={draftGroup ? `Inherit from ${draftGroup.name}` : "Server default"}
+                onChange={(max_bandwidth) => setPolicyDraft({ ...policyDraft, max_bandwidth })}
               />
               <label className="flex min-h-9 items-center gap-2 text-sm">
                 <input

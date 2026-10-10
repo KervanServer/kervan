@@ -36,6 +36,7 @@ import (
 	"github.com/kervanserver/kervan/internal/storage/memory"
 	"github.com/kervanserver/kervan/internal/storage/s3"
 	"github.com/kervanserver/kervan/internal/store"
+	"github.com/kervanserver/kervan/internal/throttle"
 	"github.com/kervanserver/kervan/internal/transfer"
 	"github.com/kervanserver/kervan/internal/vfs"
 	"gopkg.in/yaml.v3"
@@ -66,6 +67,9 @@ type App struct {
 	debugHTTP  *http.Server
 	ipFilter   *netguard.IPFilter
 	groups     *auth.GroupRepository
+	cfgMu      sync.RWMutex // guards runtime-reloadable cfg fields read per connection
+	userRates  *throttle.Registry
+	totalRate  *throttle.Limiter
 
 	cancel context.CancelFunc
 	start  time.Time
@@ -138,6 +142,8 @@ func New(cfg *config.Config, configPath string, logger *slog.Logger) (*App, erro
 	app := &App{
 		ipFilter:  ipFilter,
 		groups:    auth.NewGroupRepository(st, repo),
+		userRates: throttle.NewRegistry(),
+		totalRate: throttle.NewAdjustable(cfg.Bandwidth.MaxTotal),
 		cfg:       cfg,
 		logger:    logger,
 		store:     st,
@@ -290,6 +296,7 @@ func New(cfg *config.Config, configPath string, logger *slog.Logger) (*App, erro
 			IPFilter:             ipFilter,
 			QuotaEnabled:         cfg.Quota.Enabled,
 			DefaultMaxStorage:    cfg.Quota.DefaultMaxStorage,
+			DefaultUserRate:      cfg.Bandwidth.DefaultUserRate,
 			OIDC:                 oidcSettings,
 			Events:               broker,
 		},
@@ -750,7 +757,7 @@ func (a *App) buildUserFS(user *auth.User) (vfs.FileSystem, error) {
 
 	// Permissions and quota come from the user's primary group unless the
 	// user overrides them (auth.ResolvePolicy).
-	policy, err := a.groups.PolicyFor(user, a.cfg.Quota.DefaultMaxStorage)
+	policy, err := a.groups.PolicyFor(user, a.policyDefaults())
 	if err != nil {
 		return nil, err
 	}
@@ -776,7 +783,17 @@ func (a *App) buildUserFS(user *auth.User) (vfs.FileSystem, error) {
 		AllowedExts: policy.Permissions.AllowedExt,
 		DeniedExts:  policy.Permissions.DeniedExt,
 	}
-	return vfs.NewUserVFS(mounts, perms, quotaTracker), nil
+	userVFS := vfs.NewUserVFS(mounts, perms, quotaTracker)
+	// The user's limiter is shared by all their connections; the total
+	// limiter by everyone.
+	userVFS.SetRateLimiters(a.userRates.ForUser(user.Username, policy.MaxBandwidth), a.totalRate)
+	return userVFS, nil
+}
+
+func (a *App) policyDefaults() auth.PolicyDefaults {
+	a.cfgMu.RLock()
+	defer a.cfgMu.RUnlock()
+	return auth.PolicyDefaults{MaxStorage: a.cfg.Quota.DefaultMaxStorage, MaxBandwidth: a.cfg.Bandwidth.DefaultUserRate}
 }
 
 func redactConfig(cfg *config.Config) map[string]any {
@@ -1050,6 +1067,8 @@ var runtimeReloadablePaths = map[string]struct{}{
 	"security.brute_force.ip_ban_threshold": {},
 	"security.brute_force.ip_ban_duration":  {},
 	"security.brute_force.whitelist_ips":    {},
+	"bandwidth.max_total":                   {},
+	"bandwidth.default_user_rate":           {},
 	"auth.require_special_char":             {},
 	"security.denied_ips":                   {},
 }
@@ -1150,6 +1169,12 @@ func (a *App) applyRuntimeConfig(nextCfg *config.Config) ([]string, []string) {
 	a.cfg.Security.BruteForce.Enabled = nextCfg.Security.BruteForce.Enabled
 	a.cfg.Security.BruteForce.MaxAttempts = nextCfg.Security.BruteForce.MaxAttempts
 	a.cfg.Security.BruteForce.LockoutDuration = nextCfg.Security.BruteForce.LockoutDuration
+	a.cfgMu.Lock()
+	a.cfg.Bandwidth = nextCfg.Bandwidth
+	a.cfgMu.Unlock()
+	if a.totalRate != nil {
+		a.totalRate.SetRate(nextCfg.Bandwidth.MaxTotal)
+	}
 	a.cfg.Auth.RequireSpecialChar = nextCfg.Auth.RequireSpecialChar
 	a.cfg.Security.BruteForce.IPBanThreshold = nextCfg.Security.BruteForce.IPBanThreshold
 	a.cfg.Security.BruteForce.IPBanDuration = nextCfg.Security.BruteForce.IPBanDuration
@@ -1181,6 +1206,7 @@ func (a *App) applyRuntimeConfig(nextCfg *config.Config) ([]string, []string) {
 			BruteForceEnabled:    nextCfg.Security.BruteForce.Enabled,
 			LoginMaxAttempts:     nextCfg.Security.BruteForce.MaxAttempts,
 			LoginLockoutDuration: nextCfg.Security.BruteForce.LockoutDuration,
+			DefaultUserRate:      nextCfg.Bandwidth.DefaultUserRate,
 		})
 	}
 

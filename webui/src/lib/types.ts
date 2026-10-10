@@ -54,12 +54,16 @@ export type ApiUser = {
   secondary_groups?: string[]
   /** Bytes; 0 inherits from the group/default, -1 is unlimited. */
   max_storage?: number
+  /** Bytes/s; 0 inherits, -1 is unlimited. */
+  max_bandwidth?: number
   custom_permissions?: boolean
   permissions?: ApiPermissions
   effective?: {
     permissions: ApiPermissions
     /** Enforced quota in bytes; 0 means unlimited. */
     max_storage: number
+    /** Enforced rate in bytes/s; 0 means unlimited. */
+    max_bandwidth?: number
     group?: string
   }
   authorized_keys?: ApiKeyInfo[]
@@ -85,6 +89,8 @@ export type ApiGroup = {
   permissions: ApiPermissions
   /** Bytes; 0 falls back to the server default, -1 is unlimited. */
   max_storage?: number
+  /** Bytes/s; 0 falls back to the server default, -1 is unlimited. */
+  max_bandwidth?: number
   member_count: number
   created_at: string
   updated_at: string
@@ -93,6 +99,7 @@ export type ApiGroup = {
 export type ApiUserPolicyPatch = {
   primary_group?: string
   max_storage?: number
+  max_bandwidth?: number
   custom_permissions?: boolean
   permissions?: ApiPermissions
 }

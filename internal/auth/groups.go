@@ -61,6 +61,9 @@ func (r *GroupRepository) Create(g *Group) error {
 	if err := validateMaxStorage(g.MaxStorage); err != nil {
 		return err
 	}
+	if g.MaxBandwidth < -1 {
+		return errors.New("max_bandwidth must be -1 (unlimited), 0 (inherit) or bytes per second")
+	}
 	if existing, err := r.GetByName(g.Name); err != nil {
 		return err
 	} else if existing != nil {
@@ -128,6 +131,9 @@ func (r *GroupRepository) Update(g *Group) error {
 	}
 	if err := validateMaxStorage(g.MaxStorage); err != nil {
 		return err
+	}
+	if g.MaxBandwidth < -1 {
+		return errors.New("max_bandwidth must be -1 (unlimited), 0 (inherit) or bytes per second")
 	}
 	renamed := groupIndexKey(existing.Name) != groupIndexKey(g.Name)
 	if renamed {
@@ -239,12 +245,21 @@ func (r *GroupRepository) rewriteMemberships(from, to string) error {
 	return nil
 }
 
-// Policy is a user's effective permissions and quota after group
+// PolicyDefaults are the server-wide fallbacks for users and groups that
+// do not set a limit.
+type PolicyDefaults struct {
+	MaxStorage   int64
+	MaxBandwidth int64
+}
+
+// Policy is a user's effective permissions and limits after group
 // inheritance.
 type Policy struct {
 	Permissions UserPermissions
 	// MaxStorage is the resolved quota in bytes; 0 means unlimited.
 	MaxStorage int64
+	// MaxBandwidth is the resolved rate limit in bytes/s; 0 means unlimited.
+	MaxBandwidth int64
 	// Group is the primary group that supplied the template, if any.
 	Group *Group
 }
@@ -253,30 +268,35 @@ type Policy struct {
 // exists, supplies permissions unless the user has CustomPermissions, and
 // supplies the quota unless the user sets MaxStorage. A primary group that
 // does not exist (e.g. an LDAP group with no Kervan counterpart) is ignored.
-func ResolvePolicy(u *User, primary *Group, defaultMaxStorage int64) Policy {
+func ResolvePolicy(u *User, primary *Group, defaults PolicyDefaults) Policy {
 	p := Policy{Permissions: u.Permissions, Group: primary}
 	if primary != nil && !u.CustomPermissions {
 		p.Permissions = primary.Permissions
 	}
-	quota := u.MaxStorage
-	if quota == 0 && primary != nil {
-		quota = primary.MaxStorage
+	resolve := func(own, group, fallback int64) int64 {
+		v := own
+		if v == 0 && primary != nil {
+			v = group
+		}
+		if v == 0 {
+			v = fallback
+		}
+		return max(v, 0) // -1 (unlimited) becomes 0
 	}
-	if quota == 0 {
-		quota = defaultMaxStorage
+	var groupStorage, groupBandwidth int64
+	if primary != nil {
+		groupStorage, groupBandwidth = primary.MaxStorage, primary.MaxBandwidth
 	}
-	if quota < 0 {
-		quota = 0
-	}
-	p.MaxStorage = quota
+	p.MaxStorage = resolve(u.MaxStorage, groupStorage, defaults.MaxStorage)
+	p.MaxBandwidth = resolve(u.MaxBandwidth, groupBandwidth, defaults.MaxBandwidth)
 	return p
 }
 
 // PolicyFor resolves u's policy, looking its primary group up in r.
-func (r *GroupRepository) PolicyFor(u *User, defaultMaxStorage int64) (Policy, error) {
+func (r *GroupRepository) PolicyFor(u *User, defaults PolicyDefaults) (Policy, error) {
 	primary, err := r.GetByName(u.PrimaryGroup)
 	if err != nil {
 		return Policy{}, err
 	}
-	return ResolvePolicy(u, primary, defaultMaxStorage), nil
+	return ResolvePolicy(u, primary, defaults), nil
 }

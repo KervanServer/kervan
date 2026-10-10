@@ -3,12 +3,16 @@ package server
 import (
 	"errors"
 	"os"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/kervanserver/kervan/internal/auth"
 	"github.com/kervanserver/kervan/internal/quota"
 	"github.com/kervanserver/kervan/internal/store"
+	"github.com/kervanserver/kervan/internal/throttle"
 )
 
 func appWithGroups(t *testing.T) (*App, *auth.UserRepository) {
@@ -82,4 +86,55 @@ func TestBuildUserFSAppliesPrimaryGroupPolicy(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeViaFS(t, fsys, "/big.txt", strings.Repeat("x", 16))
+}
+
+func TestBuildUserFSAppliesSharedBandwidthLimit(t *testing.T) {
+	app, _ := appWithGroups(t)
+	app.userRates = throttle.NewRegistry()
+	app.totalRate = throttle.NewAdjustable(0)
+	app.cfg.Quota.Enabled = false
+	const rate = 1 << 20 // 1 MiB/s
+	if err := app.groups.Create(&auth.Group{Name: "slow", Permissions: auth.DefaultUserPermissions(), MaxBandwidth: rate}); err != nil {
+		t.Fatal(err)
+	}
+	user := &auth.User{Username: "s", Type: auth.UserTypeVirtual, Permissions: auth.DefaultUserPermissions(), PrimaryGroup: "slow"}
+
+	// Two "connections" of the same user share one limiter: together they
+	// cannot exceed the user's rate.
+	payload := make([]byte, 1<<20)
+	start := time.Now()
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		fsys, err := app.buildUserFS(user)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			f, err := fsys.Open("/f"+strconv.Itoa(i), os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			defer f.Close()
+			if _, err := f.Write(payload); err != nil {
+				t.Error(err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	// 2 MiB at 1 MiB/s, minus the 256 KiB burst.
+	if elapsed := time.Since(start); elapsed < 1500*time.Millisecond {
+		t.Fatalf("2 MiB over two connections took %v; the 1 MiB/s user limit was not shared", elapsed)
+	}
+
+	// A per-user override of -1 lifts the limit.
+	user.Username, user.MaxBandwidth = "fast", -1
+	fsys, _ := app.buildUserFS(user)
+	start = time.Now()
+	writeViaFS(t, fsys, "/big", string(make([]byte, 4<<20)))
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("unlimited user throttled: %v", elapsed)
+	}
 }

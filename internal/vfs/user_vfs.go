@@ -7,6 +7,8 @@ import (
 	"path"
 	"strings"
 	"time"
+
+	"github.com/kervanserver/kervan/internal/throttle"
 )
 
 type QuotaTracker interface {
@@ -19,6 +21,7 @@ type UserVFS struct {
 	resolver    *Resolver
 	permissions *UserPermissions
 	quota       QuotaTracker
+	limiters    []*throttle.Limiter
 }
 
 func NewUserVFS(mounts *MountTable, perms *UserPermissions, quota QuotaTracker) *UserVFS {
@@ -68,6 +71,9 @@ func (u *UserVFS) Open(name string, flags int, perm os.FileMode) (File, error) {
 	f, err := backend.Open(relPath, flags, perm)
 	if err != nil {
 		return nil, err
+	}
+	if len(u.limiters) > 0 {
+		f = &throttledFile{File: f, limiters: u.limiters}
 	}
 	if isWrite && u.quota != nil {
 		initialSize := int64(0)

@@ -7,19 +7,20 @@ import (
 )
 
 type Config struct {
-	Server   ServerConfig   `yaml:"server"`
-	FTP      FTPConfig      `yaml:"ftp"`
-	FTPS     FTPSConfig     `yaml:"ftps"`
-	SFTP     SFTPConfig     `yaml:"sftp"`
-	SCP      SCPConfig      `yaml:"scp"`
-	WebUI    WebUIConfig    `yaml:"webui"`
-	Debug    DebugConfig    `yaml:"debug"`
-	Auth     AuthConfig     `yaml:"auth"`
-	Storage  StorageConfig  `yaml:"storage"`
-	Quota    QuotaConfig    `yaml:"quota"`
-	Audit    AuditConfig    `yaml:"audit"`
-	Security SecurityConfig `yaml:"security"`
-	MCP      MCPConfig      `yaml:"mcp"`
+	Server    ServerConfig    `yaml:"server"`
+	FTP       FTPConfig       `yaml:"ftp"`
+	FTPS      FTPSConfig      `yaml:"ftps"`
+	SFTP      SFTPConfig      `yaml:"sftp"`
+	SCP       SCPConfig       `yaml:"scp"`
+	WebUI     WebUIConfig     `yaml:"webui"`
+	Debug     DebugConfig     `yaml:"debug"`
+	Auth      AuthConfig      `yaml:"auth"`
+	Storage   StorageConfig   `yaml:"storage"`
+	Quota     QuotaConfig     `yaml:"quota"`
+	Bandwidth BandwidthConfig `yaml:"bandwidth"`
+	Audit     AuditConfig     `yaml:"audit"`
+	Security  SecurityConfig  `yaml:"security"`
+	MCP       MCPConfig       `yaml:"mcp"`
 }
 
 type ServerConfig struct {
@@ -187,6 +188,15 @@ type QuotaConfig struct {
 	DefaultMaxStorage int64         `yaml:"default_max_storage"`
 	DefaultMaxFiles   int64         `yaml:"default_max_files"`
 	CheckInterval     time.Duration `yaml:"check_interval"`
+}
+
+// BandwidthConfig limits transfer rates in bytes per second (0 = no limit).
+// Users and groups can set max_bandwidth to override DefaultUserRate.
+type BandwidthConfig struct {
+	// MaxTotal caps the combined rate of all transfers on the server.
+	MaxTotal int64 `yaml:"max_total"`
+	// DefaultUserRate caps each user's combined rate across connections.
+	DefaultUserRate int64 `yaml:"default_user_rate"`
 }
 
 type AuditConfig struct {
