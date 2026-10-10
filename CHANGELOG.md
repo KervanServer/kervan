@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Self-service account.** A new WebUI **My Account** page and
+  `/api/v1/account` endpoints show a user's effective policy, and let them
+  change their password (local accounts) and manage their SSH public keys.
+  Previously neither was possible without the server CLI.
+- **Admin password reset and SSH key editing** from the WebUI Users dialog
+  and `PUT /api/v1/users` (`password`, `authorized_keys`).
+
+### Security
+
+- **Session revocation:** session tokens now carry `iat`, and a password
+  change or reset revokes every WebUI/API session issued before it. An
+  admin reset also ends the user's protocol sessions.
+- **SSH keys:** keys with `authorized_keys` options are rejected by the API,
+  and skipped with a warning by `kervan migrate ssh-keys`. Kervan does not
+  enforce the options, so a `from=` restriction would have been silently
+  lost.
+
+### Fixed
+
+- **WebUI:** an expired or revoked session now returns to the sign-in screen
+  with an explanation, instead of failing every request with "Session
+  expired".
+
 ## v0.5.0 (2026-10-09)
 
 ### Added

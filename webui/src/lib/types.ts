@@ -62,6 +62,20 @@ export type ApiUser = {
     max_storage: number
     group?: string
   }
+  authorized_keys?: ApiKeyInfo[]
+}
+
+export type ApiKeyInfo = {
+  type: string
+  fingerprint: string
+  comment?: string
+  line: string
+}
+
+export type ApiAccount = ApiUser & {
+  email?: string
+  password_changeable: boolean
+  authorized_keys: ApiKeyInfo[]
 }
 
 export type ApiGroup = {

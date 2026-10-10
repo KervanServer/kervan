@@ -19,6 +19,7 @@ export type AppRoutePath =
   | "/configuration"
   | "/monitoring"
   | "/apikeys"
+  | "/account"
 
 type RouteLoader = () => Promise<LazyPageModule>
 
@@ -33,6 +34,7 @@ export const routeModules: Record<AppRoutePath, RouteLoader> = {
   "/configuration": async () => ({ default: (await import("@/pages/configuration-page")).ConfigurationPage }),
   "/monitoring": async () => ({ default: (await import("@/pages/monitoring-page")).MonitoringPage }),
   "/apikeys": async () => ({ default: (await import("@/pages/apikeys-page")).ApiKeysPage }),
+  "/account": async () => ({ default: (await import("@/pages/account-page")).AccountPage }),
 }
 
 const prefetchedRoutes = new Map<AppRoutePath, Promise<LazyPageModule>>()

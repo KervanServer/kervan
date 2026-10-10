@@ -334,6 +334,9 @@ func (s *Server) Start(ctx context.Context) error {
 	mux.HandleFunc("/api/v1/users/import", s.withAuth(s.handleUsersImport))
 	mux.HandleFunc("/api/users/export", s.withAuth(s.handleUsersExport))
 	mux.HandleFunc("/api/v1/users/export", s.withAuth(s.handleUsersExport))
+	mux.HandleFunc("/api/v1/account", s.withAuth(s.handleAccount))
+	mux.HandleFunc("/api/v1/account/password", s.withAuth(s.handleAccountPassword))
+	mux.HandleFunc("/api/v1/account/keys", s.withAuth(s.handleAccountKeys))
 	mux.HandleFunc("/api/groups", s.withAuth(s.handleGroups))
 	mux.HandleFunc("/api/v1/groups", s.withAuth(s.handleGroups))
 	mux.HandleFunc("/api/apikeys", s.withAuth(s.handleAPIKeys))
@@ -819,10 +822,12 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusCreated, s.userResponse(user))
 	case http.MethodPut:
 		var req struct {
-			ID      string `json:"id"`
-			HomeDir string `json:"home_dir"`
-			Enabled *bool  `json:"enabled"`
-			Admin   *bool  `json:"admin"`
+			ID             string    `json:"id"`
+			HomeDir        string    `json:"home_dir"`
+			Enabled        *bool     `json:"enabled"`
+			Admin          *bool     `json:"admin"`
+			Password       string    `json:"password"`
+			AuthorizedKeys *[]string `json:"authorized_keys"`
 			userPolicyPatch
 		}
 		if err := decodeJSONBody(w, r, &req, false); err != nil {
@@ -856,6 +861,37 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 		if err := s.applyUserPolicyPatch(user, req.userPolicyPatch); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
+		}
+		if req.AuthorizedKeys != nil {
+			keys, err := auth.NormalizeAuthorizedKeys(*req.AuthorizedKeys)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			user.AuthorizedKeys = keys
+		}
+		if req.Password != "" {
+			if !passwordManaged(user) {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": auth.ErrPasswordNotManaged.Error()})
+				return
+			}
+			// Save the other edits first: ResetPassword reloads the user.
+			if err := s.users.Update(user); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			if err := s.auth.ResetPassword(user.Username, req.Password); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+			// Old credentials must not keep protocol sessions alive.
+			s.terminateUserSessions(user.Username)
+			reloaded, err := s.users.GetByID(user.ID)
+			if err != nil || reloaded == nil {
+				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "reload user failed"})
+				return
+			}
+			user = reloaded
 		}
 		if req.Admin != nil {
 			if *req.Admin {
@@ -2637,7 +2673,15 @@ func (s *Server) activeUserFromBearerToken(token string) (*auth.User, error) {
 	if err != nil {
 		return nil, errAuthenticatedUserUnavailable
 	}
-	return s.activeUserByUsername(claims.Sub)
+	user, err := s.activeUserByUsername(claims.Sub)
+	if err != nil {
+		return nil, err
+	}
+	// Sessions issued before the last password change are revoked.
+	if user.SessionsValidAfter != nil && claims.Iat < user.SessionsValidAfter.Unix() {
+		return nil, errAuthenticatedUserUnavailable
+	}
+	return user, nil
 }
 
 func (s *Server) activeUserByUsername(username string) (*auth.User, error) {

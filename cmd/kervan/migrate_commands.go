@@ -550,7 +550,7 @@ func parseAuthorizedKeysFile(filePath string) ([]string, []string, error) {
 	warnings := make([]string, 0)
 	remaining := raw
 	for len(remaining) > 0 {
-		pubKey, _, _, rest, parseErr := ssh.ParseAuthorizedKey(remaining)
+		pubKey, _, options, rest, parseErr := ssh.ParseAuthorizedKey(remaining)
 		if parseErr != nil {
 			line, next := splitAuthorizedKeyChunk(remaining)
 			remaining = next
@@ -559,6 +559,13 @@ func parseAuthorizedKeysFile(filePath string) ([]string, []string, error) {
 				continue
 			}
 			warnings = append(warnings, fmt.Sprintf("skipped invalid authorized_keys line in %s", filePath))
+			continue
+		}
+		if len(options) > 0 {
+			// Kervan does not enforce authorized_keys options, so a key
+			// restricted with from="..." would become usable from anywhere.
+			warnings = append(warnings, fmt.Sprintf("skipped key with unsupported options (%s) in %s", strings.Join(options, ","), filePath))
+			remaining = rest
 			continue
 		}
 		keys = append(keys, strings.TrimSpace(string(ssh.MarshalAuthorizedKey(pubKey))))

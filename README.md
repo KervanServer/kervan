@@ -415,6 +415,16 @@ All protocols share a common VFS layer ([internal/vfs](internal/vfs)):
   while the server is running: the store is shared safely between processes
   and changes are visible to the server immediately.
 - **Groups** — permission and quota templates; see [Groups](#groups).
+- **Self-service account** — every user has a **My Account** page in the
+  WebUI (`/api/v1/account`) to see their effective permissions and quota,
+  change their password and manage their SSH public keys. Changing a
+  password revokes the user's other WebUI/API sessions. Admins can reset
+  passwords and edit keys from the Users page. A reset also ends the
+  user's active FTP/SFTP sessions. Account endpoints refuse API keys.
+  SSH keys must be plain OpenSSH public keys: `authorized_keys` options
+  such as `from="..."` are rejected, because Kervan would not enforce them.
+  For the same reason, `kervan migrate ssh-keys` skips (with a warning) keys
+  that carry options.
 - **OIDC single sign-on** for the WebUI; see [Single sign-on](#single-sign-on-oidc).
 - **Not supported in this release:** SSH certificate
   and keyboard-interactive authentication, account expiry.

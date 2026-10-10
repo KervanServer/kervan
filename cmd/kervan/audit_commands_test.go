@@ -4,11 +4,15 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"golang.org/x/crypto/ssh"
 
 	"github.com/kervanserver/kervan/internal/audit"
 	"github.com/kervanserver/kervan/internal/config"
@@ -135,5 +139,23 @@ func TestIsRotatedFileOfRejectsTraversal(t *testing.T) {
 		if audit.IsRotatedFileOf(path, bad) {
 			t.Errorf("%q accepted", bad)
 		}
+	}
+}
+
+func TestParseAuthorizedKeysFileSkipsRestrictedKeys(t *testing.T) {
+	pub, _, _ := ed25519.GenerateKey(rand.Reader)
+	sshPub, _ := ssh.NewPublicKey(pub)
+	line := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(sshPub)))
+	path := filepath.Join(t.TempDir(), "authorized_keys")
+	content := line + " plain\n" + `from="10.0.0.0/8",no-pty ` + line + " restricted\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	keys, warnings, err := parseAuthorizedKeysFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(keys) != 1 || len(warnings) != 1 || !strings.Contains(warnings[0], "unsupported options") {
+		t.Fatalf("keys=%v warnings=%v", keys, warnings)
 	}
 }

@@ -38,6 +38,9 @@ type User struct {
 	// ExternalID is the identity provider's stable subject for externally
 	// authenticated accounts (OIDC "sub").
 	ExternalID string `json:"external_id,omitempty" yaml:"external_id,omitempty"`
+	// SessionsValidAfter invalidates WebUI/API sessions issued before it
+	// (set on password changes).
+	SessionsValidAfter *time.Time `json:"sessions_valid_after,omitempty" yaml:"sessions_valid_after,omitempty"`
 }
 
 // Group is a permission and quota template shared by its members. Users

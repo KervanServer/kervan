@@ -11,6 +11,7 @@ import {
   ScrollText,
   ServerCog,
   Settings2,
+  UserRound,
   UsersRound,
   X,
   type LucideIcon,
@@ -36,6 +37,7 @@ const items: NavItem[] = [
   { to: "/monitoring", icon: Activity, label: "Monitoring" },
   { to: "/apikeys", icon: KeyRound, label: "API Keys" },
   { to: "/configuration", icon: Settings2, label: "Configuration" },
+  { to: "/account", icon: UserRound, label: "My Account" },
 ]
 
 type Props = {

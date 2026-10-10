@@ -31,7 +31,16 @@ export function useUpdateUser(token: string) {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: (payload: { id: string; enabled?: boolean; home_dir?: string; admin?: boolean } & ApiUserPolicyPatch) =>
+    mutationFn: (
+      payload: {
+        id: string
+        enabled?: boolean
+        home_dir?: string
+        admin?: boolean
+        password?: string
+        authorized_keys?: string[]
+      } & ApiUserPolicyPatch,
+    ) =>
       api.updateUser(token, payload),
     onSuccess: async () => {
       toast.success("User updated.")

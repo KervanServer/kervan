@@ -1,6 +1,6 @@
 import { create } from "zustand"
 
-import { api, RequestError } from "@/lib/api"
+import { api, RequestError, setUnauthorizedHandler } from "@/lib/api"
 import type { AuthUser } from "@/lib/types"
 
 type AuthState = {
@@ -16,6 +16,8 @@ type AuthStore = {
   login: (username: string, password: string, otp?: string) => Promise<void>
   completeOIDC: (code: string) => Promise<void>
   setAuthError: (message: string | null) => void
+  /** Swaps in a new session token (e.g. after a password change). */
+  replaceToken: (token: string) => void
   logout: () => void
 }
 
@@ -73,6 +75,9 @@ export const useAuthStore = create<AuthStore>((set) => ({
   setAuthError: (message: string | null) => {
     set({ authError: message })
   },
+  replaceToken: (token: string) => {
+    set((state) => (state.auth ? { auth: { ...state.auth, token } } : {}))
+  },
   logout: () => {
     set({
       auth: null,
@@ -82,3 +87,16 @@ export const useAuthStore = create<AuthStore>((set) => ({
     })
   },
 }))
+
+// A rejected session (expired, or revoked by a password change elsewhere)
+// returns to the sign-in screen instead of leaving every page erroring.
+setUnauthorizedHandler(() => {
+  if (useAuthStore.getState().auth) {
+    useAuthStore.setState({
+      auth: null,
+      authLoading: false,
+      requiresOTP: false,
+      authError: "Your session has ended. Please sign in again.",
+    })
+  }
+})

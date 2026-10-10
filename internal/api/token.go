@@ -13,6 +13,8 @@ import (
 type tokenClaims struct {
 	Sub string `json:"sub"`
 	Exp int64  `json:"exp"`
+	// Iat lets a password change revoke older sessions.
+	Iat int64 `json:"iat,omitempty"`
 }
 
 func signToken(secret []byte, subject string, ttl time.Duration) (string, error) {
@@ -23,9 +25,11 @@ func signToken(secret []byte, subject string, ttl time.Duration) (string, error)
 		"alg": "HS256",
 		"typ": "JWT",
 	}
+	now := time.Now()
 	claims := tokenClaims{
 		Sub: subject,
-		Exp: time.Now().Add(ttl).Unix(),
+		Exp: now.Add(ttl).Unix(),
+		Iat: now.Unix(),
 	}
 	hb, err := json.Marshal(header)
 	if err != nil {

@@ -17,6 +17,7 @@ vi.mock("@/lib/api", () => ({
     login: vi.fn(),
   },
   RequestError: class RequestError extends Error {},
+  setUnauthorizedHandler: vi.fn(),
 }))
 
 const mockedAPI = vi.mocked(api)

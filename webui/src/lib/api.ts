@@ -10,6 +10,7 @@ import type {
   ApiPermissions,
   ApiUserPolicyPatch,
   AuthMethods,
+  ApiAccount,
   AuditEvent,
   LoginResponse,
   ServerStatus,
@@ -34,6 +35,13 @@ const asMessage = (value: unknown): string => {
   return "Request failed"
 }
 
+let unauthorizedHandler: (() => void) | null = null
+
+/** Registers what happens when the server rejects the session (401). */
+export function setUnauthorizedHandler(handler: (() => void) | null) {
+  unauthorizedHandler = handler
+}
+
 async function request<T>(url: string, token: string | null, init?: RequestInit): Promise<T> {
   const headers = new Headers(init?.headers)
   const body = init?.body
@@ -47,6 +55,7 @@ async function request<T>(url: string, token: string | null, init?: RequestInit)
 
   const res = await fetch(url, { ...init, headers })
   if (res.status === 401) {
+    unauthorizedHandler?.()
     throw new Error("Session expired")
   }
 
@@ -76,6 +85,7 @@ async function requestBlob(
 
   const res = await fetch(url, { ...init, headers })
   if (res.status === 401) {
+    unauthorizedHandler?.()
     throw new Error("Session expired")
   }
   if (!res.ok) {
@@ -229,7 +239,14 @@ export const api = {
 
   updateUser(
     token: string,
-    payload: { id: string; enabled?: boolean; home_dir?: string; admin?: boolean } & ApiUserPolicyPatch,
+    payload: {
+      id: string
+      enabled?: boolean
+      home_dir?: string
+      admin?: boolean
+      password?: string
+      authorized_keys?: string[]
+    } & ApiUserPolicyPatch,
   ): Promise<void> {
     return request<void>("/api/v1/users", token, {
       method: "PUT",
@@ -239,6 +256,24 @@ export const api = {
 
   deleteUser(token: string, id: string): Promise<void> {
     return request<void>(`/api/v1/users?id=${encodeURIComponent(id)}`, token, { method: "DELETE" })
+  },
+
+  account(token: string): Promise<ApiAccount> {
+    return request<ApiAccount>("/api/v1/account", token)
+  },
+
+  changePassword(token: string, payload: { current_password: string; new_password: string }): Promise<{ token: string }> {
+    return request<{ token: string }>("/api/v1/account/password", token, {
+      method: "POST",
+      body: JSON.stringify(payload),
+    })
+  },
+
+  setAccountKeys(token: string, authorizedKeys: string[]): Promise<ApiAccount> {
+    return request<ApiAccount>("/api/v1/account/keys", token, {
+      method: "PUT",
+      body: JSON.stringify({ authorized_keys: authorizedKeys }),
+    })
   },
 
   groups(token: string): Promise<{ groups: ApiGroup[] }> {

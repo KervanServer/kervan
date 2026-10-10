@@ -20,6 +20,7 @@ const AuditPage = lazy(routeModules["/audit"])
 const ConfigurationPage = lazy(routeModules["/configuration"])
 const MonitoringPage = lazy(routeModules["/monitoring"])
 const ApiKeysPage = lazy(routeModules["/apikeys"])
+const AccountPage = lazy(routeModules["/account"])
 
 export function App() {
   const { auth, authError, authLoading, requiresOTP, login, logout, completeOIDC, setAuthError } = useAuthStore()
@@ -64,6 +65,7 @@ export function App() {
                   <Route path="/configuration" element={<ConfigurationPage token={auth.token} />} />
                   <Route path="/monitoring" element={<MonitoringPage token={auth.token} />} />
                   <Route path="/apikeys" element={<ApiKeysPage token={auth.token} />} />
+                  <Route path="/account" element={<AccountPage token={auth.token} />} />
                   <Route path="*" element={<Navigate to="/" replace />} />
                 </Routes>
               </Suspense>

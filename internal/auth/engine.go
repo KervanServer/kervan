@@ -227,7 +227,37 @@ func (e *Engine) ResetPassword(username, password string) error {
 	u.PasswordHash = hash
 	u.FailedLogins = 0
 	u.LockedUntil = nil
+	// Sessions created with the old password stop working.
+	now := time.Now().UTC().Truncate(time.Second)
+	u.SessionsValidAfter = &now
 	return e.repo.Update(u)
+}
+
+// ErrPasswordNotManaged means the account's password lives elsewhere (LDAP
+// or an OIDC provider) and cannot be changed through Kervan.
+var ErrPasswordNotManaged = errors.New("password is managed by an external identity provider")
+
+// ChangePassword replaces a local user's password after verifying the
+// current one.
+func (e *Engine) ChangePassword(username, current, next string) error {
+	u, err := e.repo.GetByUsername(username)
+	if err != nil {
+		return err
+	}
+	if u == nil {
+		return ErrInvalidCredentials
+	}
+	if !strings.EqualFold(u.AuthProvider, AuthProviderLocal) && u.AuthProvider != "" {
+		return ErrPasswordNotManaged
+	}
+	if !VerifyPassword(current, u.PasswordHash) {
+		_ = e.registerFailedLogin(u)
+		return ErrInvalidCredentials
+	}
+	if current == next {
+		return errors.New("new password must differ from the current one")
+	}
+	return e.ResetPassword(username, next)
 }
 
 func (e *Engine) RecordSuccessfulLogin(userID string) error {

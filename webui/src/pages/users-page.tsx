@@ -20,6 +20,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
 import { Skeleton } from "@/components/ui/skeleton"
+import { Textarea } from "@/components/ui/textarea"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { Tooltip } from "@/components/ui/tooltip"
 
@@ -45,6 +46,8 @@ type PolicyDraft = {
   max_storage: number
   custom_permissions: boolean
   permissions: ApiPermissions
+  password: string
+  keys: string
 }
 
 function GroupSelect({
@@ -117,6 +120,8 @@ export function UsersPage({ token }: Props) {
       max_storage: user.max_storage ?? 0,
       custom_permissions: user.custom_permissions ?? false,
       permissions: { ...(user.permissions ?? DEFAULT_PERMISSIONS) },
+      password: "",
+      keys: (user.authorized_keys ?? []).map((key) => key.line).join("\n"),
     })
   }
 
@@ -130,6 +135,11 @@ export function UsersPage({ token }: Props) {
       max_storage: policyDraft.max_storage,
       custom_permissions: policyDraft.custom_permissions,
       permissions: policyDraft.permissions,
+      authorized_keys: policyDraft.keys
+        .split("\n")
+        .map((line) => line.trim())
+        .filter((line) => line !== ""),
+      ...(policyDraft.password ? { password: policyDraft.password } : {}),
     })
     setPolicyDraft(null)
   }
@@ -417,6 +427,34 @@ export function UsersPage({ token }: Props) {
                 />
                 Custom permissions (ignore the group template)
               </label>
+              {(policyDraft.user.auth_provider ?? "local") === "local" ? (
+                <div className="space-y-2">
+                  <label htmlFor="edit-user-password" className="text-sm font-medium">
+                    Reset password
+                  </label>
+                  <Input
+                    id="edit-user-password"
+                    type="password"
+                    autoComplete="new-password"
+                    placeholder="Leave empty to keep the current password"
+                    value={policyDraft.password}
+                    onChange={(event) => setPolicyDraft({ ...policyDraft, password: event.target.value })}
+                  />
+                </div>
+              ) : null}
+              <div className="space-y-2">
+                <label htmlFor="edit-user-keys" className="text-sm font-medium">
+                  SSH public keys
+                </label>
+                <Textarea
+                  id="edit-user-keys"
+                  rows={3}
+                  className="font-mono text-xs"
+                  placeholder="ssh-ed25519 AAAA... comment (one per line)"
+                  value={policyDraft.keys}
+                  onChange={(event) => setPolicyDraft({ ...policyDraft, keys: event.target.value })}
+                />
+              </div>
               {templateApplies && draftGroup ? (
                 <p className="rounded-md border border-[var(--border)] p-3 text-sm text-[var(--text-secondary)]">
                   Permissions from <strong>{draftGroup.name}</strong>: {permissionSummary(draftGroup.permissions)}

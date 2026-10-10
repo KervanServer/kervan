@@ -93,6 +93,7 @@ type userResponse struct {
 	CustomPermissions bool                 `json:"custom_permissions"`
 	Permissions       auth.UserPermissions `json:"permissions"`
 	Effective         effectivePolicyJSON  `json:"effective"`
+	AuthorizedKeys    []auth.KeyInfo       `json:"authorized_keys"`
 }
 
 type effectivePolicyJSON struct {
@@ -120,6 +121,7 @@ func (s *Server) userResponse(u *auth.User) userResponse {
 		MaxStorage:        u.MaxStorage,
 		CustomPermissions: u.CustomPermissions,
 		Permissions:       u.Permissions,
+		AuthorizedKeys:    auth.DescribeAuthorizedKeys(u.AuthorizedKeys),
 	}
 	cfg := s.currentConfig()
 	if policy, err := s.groups.PolicyFor(u, cfg.DefaultMaxStorage); err == nil {
