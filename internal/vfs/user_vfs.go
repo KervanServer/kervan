@@ -323,12 +323,54 @@ func (u *UserVFS) Chtimes(name string, atime, mtime time.Time) error {
 	return backend.Chtimes(rel, atime, mtime)
 }
 
+// QuotaReporter is implemented by quota trackers that can report usage, so
+// free-space queries reflect the user's quota rather than the whole disk.
+type QuotaReporter interface {
+	Usage() (usedBytes, maxBytes, usedFiles, maxFiles int64)
+}
+
 func (u *UserVFS) Statvfs(p string) (*StatVFS, error) {
 	backend, rel, _, err := u.lookup(p)
 	if err != nil {
 		return nil, err
 	}
-	return backend.Statvfs(rel)
+	st, err := backend.Statvfs(rel)
+	if err != nil {
+		return nil, err
+	}
+	if reporter, ok := u.quota.(QuotaReporter); ok {
+		capStatVFS(st, reporter)
+	}
+	return st, nil
+}
+
+// capStatVFS narrows backend free-space figures to the user's quota. A
+// backend that reports nothing (zero totals) takes the quota figures as is.
+func capStatVFS(st *StatVFS, r QuotaReporter) {
+	usedBytes, maxBytes, usedFiles, maxFiles := r.Usage()
+	if maxBytes > 0 {
+		if st.BlockSize == 0 {
+			st.BlockSize = 4096
+		}
+		known := st.TotalBlocks > 0
+		total := uint64(maxBytes) / st.BlockSize                  // #nosec G115 -- maxBytes > 0
+		free := uint64(max(maxBytes-usedBytes, 0)) / st.BlockSize // #nosec G115 -- non-negative
+		st.TotalBlocks = capCount(st.TotalBlocks, total, known)
+		st.FreeBlocks = capCount(st.FreeBlocks, free, known)
+		st.AvailBlocks = capCount(st.AvailBlocks, free, known)
+	}
+	if maxFiles > 0 {
+		known := st.TotalFiles > 0
+		st.TotalFiles = capCount(st.TotalFiles, uint64(maxFiles), known)                 // #nosec G115 -- maxFiles > 0
+		st.FreeFiles = capCount(st.FreeFiles, uint64(max(maxFiles-usedFiles, 0)), known) // #nosec G115 -- non-negative
+	}
+}
+
+func capCount(backend, quota uint64, known bool) uint64 {
+	if !known {
+		return quota
+	}
+	return min(backend, quota)
 }
 
 func (u *UserVFS) lookup(p string) (FileSystem, string, bool, error) {

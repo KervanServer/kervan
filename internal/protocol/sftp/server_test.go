@@ -310,19 +310,25 @@ func sftpSendRaw(t *testing.T, ch ssh.Channel, pktType byte, payload []byte) {
 	}
 }
 
+// sftpReadVersion reads one whole VERSION packet, including any extension
+// pairs after the version number.
 func sftpReadVersion(t *testing.T, ch ssh.Channel) (uint32, error) {
-	hdr := make([]byte, 5)
-	if _, err := io.ReadFull(ch, hdr); err != nil {
+	var lenBuf [4]byte
+	if _, err := io.ReadFull(ch, lenBuf[:]); err != nil {
 		return 0, err
 	}
-	if hdr[4] != 2 {
+	n := binary.BigEndian.Uint32(lenBuf[:])
+	if n < 5 || n > 4096 {
+		return 0, errors.New("implausible VERSION length")
+	}
+	body := make([]byte, n)
+	if _, err := io.ReadFull(ch, body); err != nil {
+		return 0, err
+	}
+	if body[0] != 2 {
 		return 0, errors.New("reply type is not VERSION (2)")
 	}
-	vp := make([]byte, 4)
-	if _, err := io.ReadFull(ch, vp); err != nil {
-		return 0, err
-	}
-	return binary.BigEndian.Uint32(vp), nil
+	return binary.BigEndian.Uint32(body[1:5]), nil
 }
 
 func TestSFTPInitVersionNegotiation(t *testing.T) {

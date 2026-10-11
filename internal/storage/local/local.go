@@ -215,11 +215,11 @@ func (b *Backend) Chtimes(name string, atime, mtime time.Time) error {
 }
 
 func (b *Backend) Statvfs(name string) (*vfs.StatVFS, error) {
-	_, err := b.resolvedPath(name, true, false)
+	p, err := b.resolvedPath(name, true, false)
 	if err != nil {
 		return nil, err
 	}
-	return &vfs.StatVFS{}, nil
+	return diskStats(p)
 }
 
 func (b *Backend) physicalPath(name string) (string, error) {

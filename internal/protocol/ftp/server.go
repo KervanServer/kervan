@@ -314,6 +314,7 @@ func readControlLine(reader *bufio.Reader) (string, error) {
 
 func (s *Server) handleConn(ctx context.Context, conn net.Conn, implicitTLS bool) {
 	defer conn.Close()
+	setOOBInline(conn)
 	state := &connState{
 		cwd:             "/",
 		passiveIP:       s.cfg.PassiveIP,
@@ -351,7 +352,7 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, implicitTLS bool
 			s.cleanupConnState(state)
 			return
 		}
-		line = strings.TrimSpace(line)
+		line = strings.TrimSpace(stripTelnet(line))
 		if line == "" {
 			continue
 		}
@@ -360,6 +361,9 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, implicitTLS bool
 		}
 
 		cmd, arg := splitCommand(line)
+		if alias, ok := legacyAliases[cmd]; ok {
+			cmd = alias
+		}
 		switch cmd {
 		case "HOST":
 			// RFC 7151: HOST must precede USER/login.
@@ -472,6 +476,7 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, implicitTLS bool
 				" HOST",
 				" SIZE",
 				" MDTM",
+				" MFMT",
 				" MLST type*;size*;modify*;",
 				" MLSD",
 			}
@@ -783,6 +788,7 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, implicitTLS bool
 				transferID = s.xfer.Start(state.user.Username, "ftp", p, transfer.DirectionDownload, total)
 			}
 			writeReply(conn, 150, "Opening binary mode data connection.")
+			stopWatch := watchAbort(conn, reader, dc)
 			n, err := io.Copy(dc, f)
 			// A zero-byte file means io.Copy never touches dc, so the lazy
 			// tls.Server handshake must be completed explicitly (RFC 4217).
@@ -791,6 +797,7 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, implicitTLS bool
 					err = hsErr
 				}
 			}
+			aborted := stopWatch()
 			closeFileErr := f.Close()
 			closeDataErr := dc.Close()
 			if err == nil {
@@ -800,27 +807,22 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, implicitTLS bool
 					err = closeDataErr
 				}
 			}
-			if err != nil {
-				if s.xfer != nil && transferID != "" {
-					s.xfer.AddBytes(transferID, n)
-					s.xfer.End(transferID, transfer.StatusFailed, err.Error())
-				}
-				writeReply(conn, 426, "Transfer aborted.")
-				continue
-			}
-			if s.xfer != nil && transferID != "" {
-				s.xfer.AddBytes(transferID, n)
-				s.xfer.End(transferID, transfer.StatusCompleted, "")
-			}
-			writeReply(conn, 226, "Transfer complete.")
-			s.emitAudit(audit.EventFileRead, state.user.Username, "ftp", p, state.remoteAddr, "ok", "download")
-		case "STOR", "APPE":
+			s.endTransfer(conn, state, transferID, audit.EventFileRead, p, "download", n, err, aborted)
+		case "STOR", "APPE", "STOU":
 			if !isAuthed(conn, state) {
 				continue
 			}
 			p := resolvePath(state.cwd, arg)
 			offset := state.restOffset
 			state.restOffset = 0
+			if cmd == "STOU" {
+				unique, uniqueErr := uniqueName(state.fs, state.cwd, arg)
+				if uniqueErr != nil {
+					writeReply(conn, 450, "Cannot pick a unique file name.")
+					continue
+				}
+				p, offset = unique, 0
+			}
 			dc, err := s.acceptDataConn(state)
 			if err != nil {
 				writeReply(conn, 425, "Use PASV, EPSV or PORT first.")
@@ -830,6 +832,8 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, implicitTLS bool
 			switch {
 			case cmd == "APPE":
 				flags |= os.O_APPEND
+			case cmd == "STOU":
+				flags |= os.O_EXCL
 			case offset == 0:
 				flags |= os.O_TRUNC
 			}
@@ -853,8 +857,15 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, implicitTLS bool
 			if s.xfer != nil {
 				transferID = s.xfer.Start(state.user.Username, "ftp", p, transfer.DirectionUpload, -1)
 			}
-			writeReply(conn, 150, "Ok to send data.")
+			if cmd == "STOU" {
+				// RFC 1123 §4.1.2.9: the 150 reply names the stored file.
+				writeReply(conn, 150, "FILE: "+path.Base(p))
+			} else {
+				writeReply(conn, 150, "Ok to send data.")
+			}
+			stopWatch := watchAbort(conn, reader, dc)
 			n, err := io.Copy(f, dc)
+			aborted := stopWatch()
 			closeDataErr := dc.Close()
 			closeFileErr := f.Close()
 			if err == nil {
@@ -864,20 +875,7 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, implicitTLS bool
 					err = closeDataErr
 				}
 			}
-			if err != nil {
-				if s.xfer != nil && transferID != "" {
-					s.xfer.AddBytes(transferID, n)
-					s.xfer.End(transferID, transfer.StatusFailed, err.Error())
-				}
-				writeReply(conn, 426, "Transfer aborted.")
-				continue
-			}
-			if s.xfer != nil && transferID != "" {
-				s.xfer.AddBytes(transferID, n)
-				s.xfer.End(transferID, transfer.StatusCompleted, "")
-			}
-			writeReply(conn, 226, "Transfer complete.")
-			s.emitAudit(audit.EventFileWrite, state.user.Username, "ftp", p, state.remoteAddr, "ok", "upload")
+			s.endTransfer(conn, state, transferID, audit.EventFileWrite, p, "upload", n, err, aborted)
 		case "AUTH":
 			if !s.ftpsExplicitEnabled() {
 				writeReply(conn, 502, "TLS not configured.")
@@ -952,6 +950,44 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, implicitTLS bool
 			default:
 				writeReply(conn, 504, "PROT accepts only C or P.")
 			}
+		case "ABOR":
+			// A transfer in progress is aborted by watchAbort; here there is
+			// none (or the client already closed the data connection).
+			writeReply(conn, 225, "No transfer to abort.")
+		case "MODE":
+			switch strings.ToUpper(arg) {
+			case "S":
+				writeReply(conn, 200, "Mode set to Stream.")
+			case "B", "C", "Z":
+				writeReply(conn, 504, "Only Stream mode is supported.")
+			default:
+				writeReply(conn, 501, "Unknown mode.")
+			}
+		case "STRU":
+			switch strings.ToUpper(arg) {
+			case "F":
+				writeReply(conn, 200, "Structure set to File.")
+			case "R", "P":
+				writeReply(conn, 504, "Only File structure is supported.")
+			default:
+				writeReply(conn, 501, "Unknown structure.")
+			}
+		case "ALLO":
+			writeReply(conn, 202, "No storage allocation necessary.")
+		case "SITE":
+			if !isAuthed(conn, state) {
+				continue
+			}
+			handleSite(conn, state, arg)
+		case "MFMT":
+			if !isAuthed(conn, state) {
+				continue
+			}
+			handleMFMT(conn, state, arg)
+		case "STAT":
+			handleStat(conn, state, arg)
+		case "HELP":
+			handleHelp(conn)
 		default:
 			writeReply(conn, 502, "Command not implemented.")
 		}
@@ -1014,6 +1050,52 @@ func (s *Server) cleanupConnState(state *connState) {
 	if state.session != nil {
 		s.sessions.End(state.session.ID)
 		state.session = nil
+	}
+}
+
+// endTransfer finishes a RETR/STOR: it closes out the transfer record,
+// sends the final reply (426 then 226 for ABOR, RFC 959 §4.1.3) and audits
+// the outcome with the byte count.
+func (s *Server) endTransfer(conn net.Conn, state *connState, transferID string, t audit.EventType, p, msg string, n int64, err error, aborted bool) {
+	if aborted && err == nil {
+		// ABOR raced the end of the copy: it still gets its own reply.
+		err = errors.New("transfer aborted by client")
+	}
+	status := "ok"
+	if err != nil {
+		status = "failed"
+		if aborted {
+			status = "aborted"
+		}
+	}
+	if s.xfer != nil && transferID != "" {
+		s.xfer.AddBytes(transferID, n)
+		if err != nil {
+			s.xfer.End(transferID, transfer.StatusFailed, err.Error())
+		} else {
+			s.xfer.End(transferID, transfer.StatusCompleted, "")
+		}
+	}
+	switch {
+	case err == nil:
+		writeReply(conn, 226, "Transfer complete.")
+	case aborted:
+		writeReply(conn, 426, "Transfer aborted.")
+		writeReply(conn, 226, "ABOR command successful.")
+	default:
+		writeReply(conn, 426, "Transfer aborted.")
+	}
+	if s.audit != nil {
+		s.audit.Emit(audit.Event{
+			Type:     t,
+			Username: state.user.Username,
+			Protocol: "ftp",
+			Path:     p,
+			IP:       state.remoteAddr,
+			Status:   status,
+			Message:  msg,
+			Meta:     map[string]string{"bytes": strconv.FormatInt(n, 10)},
+		})
 	}
 }
 

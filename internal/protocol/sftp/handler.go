@@ -164,7 +164,9 @@ func (h *sftpHandler) loop() error {
 			_ = h.handleSetstat(payload, false)
 		case fxpFsetstat:
 			_ = h.handleSetstat(payload, true)
-		case fxpReadlink, fxpSymlink, fxpExtended:
+		case fxpExtended:
+			_ = h.handleExtended(payload)
+		case fxpReadlink, fxpSymlink:
 			_ = h.replyStatus(idFromPayload(payload), fxOpUnsupported, "operation unsupported")
 		default:
 			_ = h.replyStatus(idFromPayload(payload), fxBadMessage, "unknown packet")
@@ -180,6 +182,10 @@ func (h *sftpHandler) handleInit(payload []byte) error {
 	}
 	var body packetWriter
 	body.uint32(3)
+	for _, ext := range supportedExtensions {
+		body.string(ext.name)
+		body.string(ext.version)
+	}
 	return writePacket(h.ch, fxpVersion, body.buf)
 }
 
@@ -200,6 +206,9 @@ func (h *sftpHandler) handleOpen(payload []byte) error {
 	}
 	if err := r.skipAttrs(); err != nil {
 		return h.replyStatus(id, fxBadMessage, "bad attrs")
+	}
+	if len(h.handles) >= maxOpenHandles {
+		return h.replyStatus(id, fxFailure, "too many open handles")
 	}
 
 	file, openErr := h.fsys.Open(p, mapOpenFlags(pflags), 0o644)
@@ -376,6 +385,9 @@ func (h *sftpHandler) handleOpenDir(payload []byte) error {
 		return h.replyStatus(id, fxBadMessage, "bad path")
 	}
 	p = h.normalizePath(p)
+	if len(h.handles) >= maxOpenHandles {
+		return h.replyStatus(id, fxFailure, "too many open handles")
+	}
 	entries, err := h.fsys.ReadDir(p)
 	if err != nil {
 		return h.replyStatus(id, mapStatus(err), err.Error())
@@ -714,6 +726,10 @@ func (h *sftpHandler) handleRename(payload []byte) error {
 		return h.replyStatus(id, fxBadMessage, "bad new path")
 	}
 	newName = h.normalizePath(newName)
+	return h.rename(id, oldName, newName)
+}
+
+func (h *sftpHandler) rename(id uint32, oldName, newName string) error {
 	if err := h.fsys.Rename(oldName, newName); err != nil {
 		return h.replyStatus(id, mapStatus(err), err.Error())
 	}
@@ -1094,4 +1110,108 @@ func (h *sftpHandler) normalizePath(in string) string {
 		return "/"
 	}
 	return clean
+}
+
+const fxpExtendedReply = 201
+
+// maxOpenHandles bounds the handles one SFTP session may hold, so a client
+// cannot exhaust server file descriptors.
+const maxOpenHandles = 1024
+
+// Transfer sizes advertised through limits@openssh.com; they match OpenSSH
+// and let clients use larger requests than the protocol's 32 KiB default.
+const (
+	limitPacketLength = 256*1024 + 1024
+	limitReadLength   = 255 * 1024
+	limitWriteLength  = 255 * 1024
+)
+
+var supportedExtensions = []struct{ name, version string }{
+	{"posix-rename@openssh.com", "1"},
+	{"statvfs@openssh.com", "2"},
+	{"fstatvfs@openssh.com", "2"},
+	{"fsync@openssh.com", "1"},
+	{"limits@openssh.com", "1"},
+}
+
+func (h *sftpHandler) handleExtended(payload []byte) error {
+	r := packetReader{buf: payload}
+	id, err := r.uint32()
+	if err != nil {
+		return err
+	}
+	name, err := r.string()
+	if err != nil {
+		return h.replyStatus(id, fxBadMessage, "bad extended request")
+	}
+	switch name {
+	case "posix-rename@openssh.com":
+		oldName, err1 := r.string()
+		newName, err2 := r.string()
+		if err1 != nil || err2 != nil {
+			return h.replyStatus(id, fxBadMessage, "bad rename paths")
+		}
+		return h.rename(id, h.normalizePath(oldName), h.normalizePath(newName))
+	case "statvfs@openssh.com":
+		p, err := r.string()
+		if err != nil {
+			return h.replyStatus(id, fxBadMessage, "bad path")
+		}
+		return h.replyStatVFS(id, h.normalizePath(p))
+	case "fstatvfs@openssh.com":
+		handle, err := r.string()
+		if err != nil {
+			return h.replyStatus(id, fxBadMessage, "bad handle")
+		}
+		switch v := h.handles[handle].(type) {
+		case *openFile:
+			return h.replyStatVFS(id, v.path)
+		case *openDir:
+			return h.replyStatVFS(id, v.path)
+		default:
+			return h.replyStatus(id, fxFailure, "invalid handle")
+		}
+	case "fsync@openssh.com":
+		handle, err := r.string()
+		if err != nil {
+			return h.replyStatus(id, fxBadMessage, "bad handle")
+		}
+		of, ok := h.handles[handle].(*openFile)
+		if !ok {
+			return h.replyStatus(id, fxFailure, "invalid handle")
+		}
+		if err := of.file.Sync(); err != nil {
+			return h.replyStatus(id, mapStatus(err), err.Error())
+		}
+		return h.replyStatus(id, fxOK, "ok")
+	case "limits@openssh.com":
+		var body packetWriter
+		body.uint32(id)
+		body.uint64(limitPacketLength)
+		body.uint64(limitReadLength)
+		body.uint64(limitWriteLength)
+		body.uint64(maxOpenHandles)
+		return writePacket(h.ch, fxpExtendedReply, body.buf)
+	default:
+		return h.replyStatus(id, fxOpUnsupported, "unsupported extension "+name)
+	}
+}
+
+func (h *sftpHandler) replyStatVFS(id uint32, p string) error {
+	st, err := h.fsys.Statvfs(p)
+	if err != nil {
+		return h.replyStatus(id, mapStatus(err), err.Error())
+	}
+	const stNoSUID = 0x2
+	var body packetWriter
+	body.uint32(id)
+	for _, v := range []uint64{
+		st.BlockSize, st.BlockSize, // f_bsize, f_frsize
+		st.TotalBlocks, st.FreeBlocks, st.AvailBlocks,
+		st.TotalFiles, st.FreeFiles, st.FreeFiles, // f_files, f_ffree, f_favail
+		0, stNoSUID, st.NameMaxLen, // f_fsid, f_flag, f_namemax
+	} {
+		body.uint64(v)
+	}
+	return writePacket(h.ch, fxpExtendedReply, body.buf)
 }

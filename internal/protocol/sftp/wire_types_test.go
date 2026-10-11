@@ -463,7 +463,7 @@ func TestStatAttrsAndBogusHandles(t *testing.T) {
 // unsupported requests: a truncated SETSTAT answers SSH_FX_BAD_MESSAGE with
 // the id echoed (no crash), SETSTAT on a missing path answers NO_SUCH_FILE,
 // FSETSTAT on an unknown handle answers FAILURE, READLINK, SYMLINK and
-// EXTENDED answer SSH_FX_OP_UNSUPPORTED, unknown packet types answer
+// unknown EXTENDED requests answer SSH_FX_OP_UNSUPPORTED, unknown packet types answer
 // SSH_FX_BAD_MESSAGE, and the connection stays fully functional afterwards.
 func TestUnsupportedOpsWireContract(t *testing.T) {
 	srv, sshCfg := sftpIdleServer(t, 30*time.Second)
@@ -488,7 +488,7 @@ func TestUnsupportedOpsWireContract(t *testing.T) {
 	wireExpectStatus(t, ch, 34, wireStatusUnsupported)
 	wireSend(t, ch, wireFxpSymlink, 35, wireStr("/link"), wireStr("/target"))
 	wireExpectStatus(t, ch, 35, wireStatusUnsupported)
-	wireSend(t, ch, wireFxpExtended, 36, wireStr("statvfs@openssh.com"), wireStr("/"))
+	wireSend(t, ch, wireFxpExtended, 36, wireStr("hardlink@openssh.com"), wireStr("/a"), wireStr("/b"))
 	wireExpectStatus(t, ch, 36, wireStatusUnsupported)
 
 	// Unknown packet type: the dispatch default replies SSH_FX_BAD_MESSAGE.

@@ -82,6 +82,16 @@ func (t *Tracker) OnFilesRemoved(n int64) {
 	t.usedFiles = max(t.usedFiles-n, 0)
 }
 
+// Usage reports current usage against the limits (0 = unlimited).
+func (t *Tracker) Usage() (usedBytes, maxBytes, usedFiles, maxFiles int64) {
+	if t == nil {
+		return 0, 0, 0, 0
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.usedBytes, t.maxStorage, t.usedFiles, t.maxFiles
+}
+
 func (t *Tracker) UsedBytes() int64 {
 	if t == nil {
 		return 0

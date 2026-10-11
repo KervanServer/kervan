@@ -340,6 +340,18 @@ privileged ports like `990` without running as root.
 - `TYPE A` is accepted for client compatibility; data is always transferred
   byte-for-byte (binary).
 - `MLSD` / `MLST` machine-readable listings, `SIZE`, `MDTM`, `REST`, `APPE`.
+- `ABOR` cancels a running upload or download (`426` then `226`). Kervan
+  accepts it with or without the Telnet IP/Synch prefix, and also as TCP
+  urgent data, which is how Python's `ftplib` sends it.
+- `STOU` stores under a unique name: the hint you give, or `upload`, then
+  `.1`, `.2`, … The `150` reply names the file.
+- `MFMT` sets modification times. `SITE CHMOD` needs the `chmod`
+  permission; `SITE HELP` lists the SITE commands.
+- `STAT` shows connection status, or with a path lists it on the control
+  connection. Also supported: `HELP`, `MODE S`, `STRU F`, `ALLO`, and the
+  legacy `XPWD`/`XCWD`/`XCUP`/`XMKD`/`XRMD`.
+- Upload and download audit events carry the byte count. Aborted or
+  failed transfers are recorded with that status.
 - Virtual hosts (RFC 7151 `HOST`, or the TLS server name for FTPS): each
   host name in `ftp.virtual_hosts` can have its own banner and restrict
   logins to members of `allowed_groups`, so several tenants can share one IP
@@ -372,8 +384,18 @@ privileged ports like `990` without running as root.
   auto-generated on first run (or pre-created with `kervan keygen`).
 - SFTP v3 subsystem covering open/close/read/write, stat/lstat/fstat,
   setstat/fsetstat (truncate; permissions and times best-effort), readdir,
-  mkdir/rmdir, remove, rename and realpath. Symlinks and extensions are
-  reported as unsupported.
+  mkdir/rmdir, remove, rename and realpath. Symlinks are reported as
+  unsupported.
+- OpenSSH extensions:
+  - `posix-rename@openssh.com`: overwrites the target.
+  - `statvfs@openssh.com` / `fstatvfs@openssh.com`: `df` in `sftp` shows
+    the user's quota and usage, capped by the real free disk space on local
+    storage.
+  - `fsync@openssh.com`.
+  - `limits@openssh.com`: lets clients use 255 KiB requests instead of
+    32 KiB.
+
+  A session can hold at most 1024 open handles.
 - Password and public-key authentication. Users' `authorized_keys` entries are
   standard OpenSSH lines (comments and options allowed); import them in bulk
   with `kervan migrate ssh-keys`.

@@ -24,8 +24,18 @@
   record the destination in `meta.to`. Admin events name the affected
   account in `meta.target_user`; passwords are never logged.
 
+- **FTP commands.** New: `ABOR` (including during a transfer, Telnet- or
+  urgent-data-framed), `STOU`, `MFMT`, `SITE CHMOD`/`SITE HELP`, `STAT`,
+  `HELP`, `MODE`, `STRU`, `ALLO`, and the `X*` legacy aliases. FTP
+  upload/download audit events now include `meta.bytes`, and failed or
+  aborted transfers are audited.
+- **SFTP extensions.** `posix-rename`, `statvfs`/`fstatvfs` (`df` shows the
+  quota), `fsync` and `limits` (OpenSSH clients switch to 255 KiB
+  requests). Local storage now reports real disk space.
+
 ### Changed
 
+- **SFTP sessions are capped at 1024 open handles.**
 - **One SFTP audit event per transfer.** SFTP used to write a `file.write`
   event for every WRITE packet (thousands for one large upload). It now
   writes one `file.write` or `file.read` event when the handle closes, with
