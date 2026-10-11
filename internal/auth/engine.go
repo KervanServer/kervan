@@ -106,13 +106,8 @@ func (e *Engine) AuthenticatePublicKey(_ context.Context, username string, key s
 	if user == nil {
 		return nil, ErrInvalidCredentials
 	}
-	if !user.Enabled {
-		return nil, ErrUserDisabled
-	}
-
-	now := time.Now().UTC()
-	if user.LockedUntil != nil && user.LockedUntil.After(now) {
-		return nil, ErrUserLocked
+	if err := e.ensureLoginAllowed(user); err != nil {
+		return nil, err
 	}
 
 	for _, authorized := range user.AuthorizedKeys {
@@ -383,6 +378,9 @@ func (e *Engine) ensureLoginAllowed(user *User) error {
 		return ErrUserDisabled
 	}
 	now := time.Now().UTC()
+	if user.Expired(now) {
+		return ErrAccountExpired
+	}
 	if user.LockedUntil != nil && user.LockedUntil.After(now) {
 		return ErrUserLocked
 	}

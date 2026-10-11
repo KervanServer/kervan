@@ -5,6 +5,7 @@ import { useForm } from "react-hook-form"
 import { toast } from "sonner"
 import { z } from "zod"
 
+import { AccessFields, accessDraftFrom, accessPatch, describeAccess, type AccessDraft } from "@/components/shared/access-fields"
 import { ConfirmDialog } from "@/components/shared/confirm-dialog"
 import { EmptyState } from "@/components/shared/empty-state"
 import { PageHeader } from "@/components/shared/page-header"
@@ -50,6 +51,7 @@ type PolicyDraft = {
   permissions: ApiPermissions
   password: string
   keys: string
+  access: AccessDraft
 }
 
 function GroupSelect({
@@ -126,6 +128,7 @@ export function UsersPage({ token }: Props) {
       permissions: { ...(user.permissions ?? DEFAULT_PERMISSIONS) },
       password: "",
       keys: (user.authorized_keys ?? []).map((key) => key.line).join("\n"),
+      access: accessDraftFrom(user),
     })
   }
 
@@ -141,6 +144,7 @@ export function UsersPage({ token }: Props) {
       max_files: policyDraft.max_files,
       custom_permissions: policyDraft.custom_permissions,
       permissions: policyDraft.permissions,
+      ...accessPatch(policyDraft.access),
       authorized_keys: policyDraft.keys
         .split("\n")
         .map((line) => line.trim())
@@ -254,7 +258,16 @@ export function UsersPage({ token }: Props) {
                           {user.type}
                         </span>
                       </TableCell>
-                      <TableCell>{user.enabled ? "Enabled" : "Disabled"}</TableCell>
+                      <TableCell>
+                        {!user.enabled ? "Disabled" : user.expired ? "Expired" : "Enabled"}
+                        {describeAccess(user).filter((part) => part !== "Expired").length > 0 ? (
+                          <div className="text-xs text-[var(--text-secondary)]">
+                            {describeAccess(user)
+                              .filter((part) => part !== "Expired")
+                              .join(" · ")}
+                          </div>
+                        ) : null}
+                      </TableCell>
                       <TableCell>{user.primary_group || "-"}</TableCell>
                       <TableCell>{user.effective ? describeEffectiveQuota(user.effective.max_storage) : "-"}</TableCell>
                       <TableCell className="max-w-[200px] truncate">{user.home_dir || "/"}</TableCell>
@@ -436,6 +449,11 @@ export function UsersPage({ token }: Props) {
                 value={policyDraft.max_bandwidth}
                 inheritLabel={draftGroup ? `Inherit from ${draftGroup.name}` : "Server default"}
                 onChange={(max_bandwidth) => setPolicyDraft({ ...policyDraft, max_bandwidth })}
+              />
+              <AccessFields
+                idPrefix="edit-user"
+                value={policyDraft.access}
+                onChange={(access) => setPolicyDraft({ ...policyDraft, access })}
               />
               <label className="flex min-h-9 items-center gap-2 text-sm">
                 <input

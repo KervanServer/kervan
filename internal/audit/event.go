@@ -32,6 +32,10 @@ const (
 	EventAdminConfigUpdate EventType = "admin.config.update"
 	EventAdminConfigReload EventType = "admin.config.reload"
 	EventAdminSessionKill  EventType = "admin.session.kill"
+	// EventSessionRevoked records a connection ended because its user no
+	// longer passes the sign-in policy (expired, disabled, deleted, or an
+	// address outside the user's allow list).
+	EventSessionRevoked EventType = "session.revoked"
 )
 
 type Event struct {

@@ -495,6 +495,11 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	s.clearLoginFailures(clientIP)
 	throttle.RecordSuccess(r.RemoteAddr)
+	if accessErr := user.CheckAccess(r.RemoteAddr, time.Now(), auth.ProtocolWebUI); accessErr != nil {
+		s.emitAuditFor(r, user.Username, audit.EventAuthFailure, "", "failed", accessErr.Error(), nil)
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": accessErr.Error(), "code": "access_denied"})
+		return
+	}
 	token, err := signToken(s.secret, user.Username, cfg.SessionTimeout)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "token generation failed"})
@@ -936,6 +941,21 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 		}
 		if req.PrimaryGroup != nil {
 			changes["primary_group"] = user.PrimaryGroup
+		}
+		if req.ExpiresAt != nil {
+			changes["expires_at"] = "never"
+			if user.ExpiresAt != nil {
+				changes["expires_at"] = user.ExpiresAt.Format(time.RFC3339)
+			}
+		}
+		if req.AllowedIPs != nil {
+			changes["allowed_ips"] = strings.Join(user.AllowedIPs, ",")
+		}
+		if req.AllowedProtocols != nil {
+			changes["allowed_protocols"] = strings.Join(user.AllowedProtocols, ",")
+		}
+		if req.MaxSessions != nil {
+			changes["max_sessions"] = strconv.Itoa(user.MaxSessions)
 		}
 		s.emitAudit(r, audit.EventAdminUserUpdate, "", "ok", "user updated", changes)
 		writeJSON(w, http.StatusOK, s.userResponse(user))
@@ -1852,6 +1872,9 @@ func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 				writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to resolve authenticated user"})
 				return
 			}
+			if !writeAccessDenied(w, user, r) {
+				return
+			}
 			r.Header.Set("X-Auth-User", user.Username)
 			r.Header.Set("X-Auth-Method", "bearer")
 			next(w, r)
@@ -1887,6 +1910,9 @@ func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 			writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "api key owner is not available"})
 			return
 		}
+		if !writeAccessDenied(w, user, r) {
+			return
+		}
 		if allowed, reason := apiKeyPermissionAllowsRequest(record.Permissions, r.Method, r.URL.Path); !allowed {
 			writeJSON(w, http.StatusForbidden, map[string]string{"error": reason})
 			return
@@ -1900,6 +1926,22 @@ func (s *Server) withAuth(next http.HandlerFunc) http.HandlerFunc {
 		r.Header.Set("X-Auth-Permissions", record.Permissions)
 		next(w, r)
 	}
+}
+
+// writeAccessDenied applies the user's access policy to an authenticated
+// API request, so expiring an account or narrowing its addresses takes
+// effect on live sessions. It reports whether the request may proceed.
+func writeAccessDenied(w http.ResponseWriter, user *auth.User, r *http.Request) bool {
+	err := user.CheckAccess(r.RemoteAddr, time.Now(), auth.ProtocolWebUI)
+	switch {
+	case err == nil:
+		return true
+	case errors.Is(err, auth.ErrAccountExpired):
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
+	default:
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error(), "code": "access_denied"})
+	}
+	return false
 }
 
 // contentSecurityPolicy is computed once from the embedded index.html.

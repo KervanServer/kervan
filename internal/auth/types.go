@@ -48,6 +48,18 @@ type User struct {
 	// SessionsValidAfter invalidates WebUI/API sessions issued before it
 	// (set on password changes).
 	SessionsValidAfter *time.Time `json:"sessions_valid_after,omitempty" yaml:"sessions_valid_after,omitempty"`
+	// ExpiresAt disables sign-in on every protocol from this instant on;
+	// nil never expires.
+	ExpiresAt *time.Time `json:"expires_at,omitempty" yaml:"expires_at,omitempty"`
+	// AllowedIPs restricts sign-in to these addresses or CIDR ranges; empty
+	// allows any address the server admits.
+	AllowedIPs []string `json:"allowed_ips,omitempty" yaml:"allowed_ips,omitempty"`
+	// AllowedProtocols restricts sign-in to these protocols (see
+	// KnownProtocols); empty allows all.
+	AllowedProtocols []string `json:"allowed_protocols,omitempty" yaml:"allowed_protocols,omitempty"`
+	// MaxSessions caps the user's concurrent FTP/SFTP/SCP connections; 0 is
+	// unlimited.
+	MaxSessions int `json:"max_sessions,omitempty" yaml:"max_sessions,omitempty"`
 }
 
 // Group is a permission and quota template shared by its members. Users

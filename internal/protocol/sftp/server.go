@@ -5,7 +5,9 @@ import (
 	"errors"
 	"log/slog"
 	"net"
+	"slices"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,6 +28,9 @@ type Config struct {
 	IdleTimeout time.Duration
 	// IPFilter rejects connections from denied addresses; nil admits all.
 	IPFilter *netguard.IPFilter
+	// PerIP caps concurrent connections per source address, shared across
+	// protocols; nil is unlimited.
+	PerIP *netguard.PerIPLimiter
 	// MaxConnections caps concurrent SSH connections; <= 0 is unlimited.
 	MaxConnections int
 }
@@ -98,14 +103,13 @@ func (s *Server) Start(ctx context.Context) error {
 				return nil, errors.New("invalid credentials")
 			}
 			throttle.RecordSuccess(remote)
+			if accessErr := s.checkAccess(user, remote); accessErr != nil {
+				s.emitAudit(audit.EventAuthFailure, user.Username, "sftp", "", remote, "failed", accessErr.Error())
+				return nil, accessErr
+			}
 			_ = s.auth.RecordSuccessfulLogin(user.ID)
-			s.emitAudit(audit.EventAuthSuccess, user.Username, "sftp", "", meta.RemoteAddr().String(), "ok", "login success")
-			return &ssh.Permissions{
-				Extensions: map[string]string{
-					"username": user.Username,
-					"user_id":  user.ID,
-				},
-			}, nil
+			s.emitAudit(audit.EventAuthSuccess, user.Username, "sftp", "", remote, "ok", "login success")
+			return sshPermissions(user), nil
 		},
 		PublicKeyCallback: func(meta ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
 			// A rejected public key is a normal step of SSH auth negotiation
@@ -119,13 +123,12 @@ func (s *Server) Start(ctx context.Context) error {
 				s.emitAudit(audit.EventAuthFailure, meta.User(), "sftp", "", meta.RemoteAddr().String(), "failed", authErr.Error())
 				return nil, errors.New("invalid public key")
 			}
+			if accessErr := s.checkAccess(user, meta.RemoteAddr().String()); accessErr != nil {
+				s.emitAudit(audit.EventAuthFailure, user.Username, "sftp", "", meta.RemoteAddr().String(), "failed", accessErr.Error())
+				return nil, accessErr
+			}
 			s.emitAudit(audit.EventAuthSuccess, user.Username, "sftp", "", meta.RemoteAddr().String(), "ok", "public key login success")
-			return &ssh.Permissions{
-				Extensions: map[string]string{
-					"username": user.Username,
-					"user_id":  user.ID,
-				},
-			}, nil
+			return sshPermissions(user), nil
 		},
 	}
 	sshCfg.AddHostKey(signer)
@@ -157,12 +160,14 @@ func (s *Server) Start(ctx context.Context) error {
 				continue
 			}
 			acceptFailures = 0
-			if !s.admit(conn) {
+			releaseIP, admitted := s.admit(conn)
+			if !admitted {
 				continue
 			}
 			s.wg.Add(1)
 			go func(c net.Conn) {
 				defer s.wg.Done()
+				defer releaseIP()
 				defer s.limiter.Release()
 				defer s.recoverConnPanic(c)
 				s.handleConn(sshCfg, c)
@@ -174,8 +179,9 @@ func (s *Server) Start(ctx context.Context) error {
 
 // admit applies the IP filter and connection cap to a freshly accepted
 // connection. A rejected connection is closed; on success the caller owns one
-// limiter slot and must Release it.
-func (s *Server) admit(conn net.Conn) bool {
+// limiter slot and must Release it, and must call the returned per-IP
+// release func.
+func (s *Server) admit(conn net.Conn) (func(), bool) {
 	remote := conn.RemoteAddr().String()
 	if !s.cfg.IPFilter.AllowedRemote(remote) {
 		// Not audited: a scanner on a denied range would flood the audit log.
@@ -183,7 +189,7 @@ func (s *Server) admit(conn net.Conn) bool {
 			s.logger.Debug("sftp connection rejected", "remote_addr", remote, "reason", "ip not allowed")
 		}
 		_ = conn.Close()
-		return false
+		return nil, false
 	}
 	if !s.limiter.TryAcquire() {
 		if s.logger != nil {
@@ -191,9 +197,19 @@ func (s *Server) admit(conn net.Conn) bool {
 		}
 		s.emitAudit(audit.EventConnectionRejected, "", "sftp", "", remote, "rejected", "max connections reached")
 		_ = conn.Close()
-		return false
+		return nil, false
 	}
-	return true
+	releaseIP, ok := s.cfg.PerIP.Acquire(remote)
+	if !ok {
+		s.limiter.Release()
+		if s.logger != nil {
+			s.logger.Warn("sftp connection rejected", "remote_addr", remote, "reason", "max connections per ip reached")
+		}
+		s.emitAudit(audit.EventConnectionRejected, "", "sftp", "", remote, "rejected", "max connections per ip reached")
+		_ = conn.Close()
+		return nil, false
+	}
+	return releaseIP, true
 }
 
 func (s *Server) recoverConnPanic(conn net.Conn) {
@@ -239,7 +255,15 @@ func (s *Server) handleConn(cfg *ssh.ServerConfig, c net.Conn) {
 		_ = sshConn.Close()
 		return
 	}
-	sess := s.sessions.Start(username, "sftp", c.RemoteAddr().String())
+	maxSessions, _ := strconv.Atoi(sshConn.Permissions.Extensions["max_sessions"])
+	sess, started := s.sessions.StartLimited(username, "sftp", c.RemoteAddr().String(), maxSessions)
+	if !started {
+		// Checked at auth time too; this closes the race between parallel
+		// logins.
+		s.emitAudit(audit.EventAuthFailure, username, "sftp", "", c.RemoteAddr().String(), "failed", auth.ErrTooManySessions.Error())
+		return
+	}
+	allowed := strings.Split(sshConn.Permissions.Extensions["protocols"], ",")
 	_ = s.sessions.AttachTerminator(sess.ID, func() {
 		_ = c.Close()
 		_ = sshConn.Close()
@@ -261,16 +285,56 @@ func (s *Server) handleConn(cfg *ssh.ServerConfig, c net.Conn) {
 		if acceptErr != nil {
 			continue
 		}
-		go s.handleSessionChannel(channel, requests, userFS, username, c.RemoteAddr().String(), touch)
+		go s.handleSessionChannel(channel, requests, userFS, username, c.RemoteAddr().String(), allowed, touch)
 	}
 }
 
-func (s *Server) handleSessionChannel(ch ssh.Channel, requests <-chan *ssh.Request, fsys vfs.FileSystem, username, remoteAddr string, touch func()) {
+// sshPermissions carries the authenticated user's identity and the parts of
+// its access policy enforced after the handshake.
+func sshPermissions(user *auth.User) *ssh.Permissions {
+	return &ssh.Permissions{
+		Extensions: map[string]string{
+			"username":     user.Username,
+			"user_id":      user.ID,
+			"max_sessions": strconv.Itoa(user.MaxSessions),
+			"protocols":    strings.Join(user.AllowedProtocols, ","),
+		},
+	}
+}
+
+// checkAccess applies the per-user access policy to an SSH sign-in. The
+// session cap is pre-checked here so the client gets an auth failure rather
+// than a dropped connection; handleConn enforces it atomically.
+func (s *Server) checkAccess(user *auth.User, remote string) error {
+	if err := user.CheckAccess(remote, time.Now(), auth.ProtocolSFTP, auth.ProtocolSCP); err != nil {
+		return err
+	}
+	if user.MaxSessions > 0 && s.sessions.CountUser(user.Username) >= user.MaxSessions {
+		return auth.ErrTooManySessions
+	}
+	return nil
+}
+
+// sshProtocolAllowed reports whether protocol is in the comma-joined
+// allow list carried in the SSH permissions; an empty list allows all.
+func sshProtocolAllowed(allowed []string, protocol string) bool {
+	if len(allowed) == 0 || (len(allowed) == 1 && allowed[0] == "") {
+		return true
+	}
+	return slices.Contains(allowed, protocol)
+}
+
+func (s *Server) handleSessionChannel(ch ssh.Channel, requests <-chan *ssh.Request, fsys vfs.FileSystem, username, remoteAddr string, allowed []string, touch func()) {
 	defer ch.Close()
 	for req := range requests {
 		switch req.Type {
 		case "subsystem":
 			if len(req.Payload) >= 4 && string(req.Payload[4:]) == "sftp" {
+				if !sshProtocolAllowed(allowed, auth.ProtocolSFTP) {
+					_ = req.Reply(false, nil)
+					s.emitAudit(audit.EventAuthFailure, username, "sftp", "", remoteAddr, "failed", auth.ErrProtocolNotAllowed.Error())
+					continue
+				}
 				_ = req.Reply(true, nil)
 				s.runSFTP(ch, fsys, username, remoteAddr, touch)
 				// Without an exit-status the OpenSSH client reports failure
@@ -288,6 +352,11 @@ func (s *Server) handleSessionChannel(ch ssh.Channel, requests <-chan *ssh.Reque
 			scpReq, err := parseSCPExec(command)
 			if err != nil {
 				_ = req.Reply(false, nil)
+				return
+			}
+			if !sshProtocolAllowed(allowed, auth.ProtocolSCP) {
+				_ = req.Reply(false, nil)
+				s.emitAudit(audit.EventAuthFailure, username, "scp", "", remoteAddr, "failed", auth.ErrProtocolNotAllowed.Error())
 				return
 			}
 			_ = req.Reply(true, nil)

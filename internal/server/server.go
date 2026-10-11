@@ -66,6 +66,7 @@ type App struct {
 	acmeHTTP   *http.Server
 	debugHTTP  *http.Server
 	ipFilter   *netguard.IPFilter
+	perIP      *netguard.PerIPLimiter
 	groups     *auth.GroupRepository
 	cfgMu      sync.RWMutex // guards runtime-reloadable cfg fields read per connection
 	userRates  *throttle.Registry
@@ -138,9 +139,11 @@ func New(cfg *config.Config, configPath string, logger *slog.Logger) (*App, erro
 		_ = st.Close()
 		return nil, fmt.Errorf("security ip filter: %w", err)
 	}
+	perIP := netguard.NewPerIPLimiter(cfg.Security.MaxConnectionsPerIP)
 
 	app := &App{
 		ipFilter:  ipFilter,
+		perIP:     perIP,
 		groups:    auth.NewGroupRepository(st, repo),
 		userRates: throttle.NewRegistry(),
 		totalRate: throttle.NewAdjustable(cfg.Bandwidth.MaxTotal),
@@ -229,6 +232,7 @@ func New(cfg *config.Config, configPath string, logger *slog.Logger) (*App, erro
 			ActiveMode:       cfg.FTP.ActiveMode,
 			VirtualHosts:     ftpVirtualHosts(cfg.FTP.VirtualHosts),
 			IPFilter:         ipFilter,
+			PerIP:            perIP,
 			MaxConnections:   cfg.FTP.MaxConnections,
 		},
 		logger,
@@ -246,6 +250,7 @@ func New(cfg *config.Config, configPath string, logger *slog.Logger) (*App, erro
 			HostKeyDir:     cfg.SFTP.HostKeyDir,
 			IdleTimeout:    cfg.SFTP.IdleTimeout,
 			IPFilter:       ipFilter,
+			PerIP:          perIP,
 			MaxConnections: cfg.SFTP.MaxConnections,
 		},
 		logger,
@@ -512,6 +517,7 @@ func (a *App) Start(ctx context.Context) error {
 			return fmt.Errorf("start debug server: %w", err)
 		}
 	}
+	go a.runAccessSweeper(runCtx)
 	if a.logger != nil {
 		a.logger.Info("Kervan server started")
 	}
@@ -1194,6 +1200,8 @@ func (a *App) applyRuntimeConfig(nextCfg *config.Config) ([]string, []string) {
 			a.logger.Error("ip throttle reload failed", "error", err)
 		}
 	}
+	a.perIP.SetMax(nextCfg.Security.MaxConnectionsPerIP)
+	a.cfg.Security.MaxConnectionsPerIP = nextCfg.Security.MaxConnectionsPerIP
 	if a.ipFilter != nil {
 		// nextCfg passed validation, so the entries parse.
 		if err := a.ipFilter.Update(nextCfg.Security.AllowedIPs, nextCfg.Security.DeniedIPs); err == nil {

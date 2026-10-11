@@ -169,6 +169,9 @@ func (c *Config) Validate() error {
 			errs = append(errs, "security.allowed_ips contains invalid entry: "+ip)
 		}
 	}
+	if c.Security.MaxConnectionsPerIP < 0 {
+		errs = append(errs, "security.max_connections_per_ip must be 0 (unlimited) or positive")
+	}
 	for _, ip := range c.Security.DeniedIPs {
 		if !validIPOrCIDR(ip) {
 			errs = append(errs, "security.denied_ips contains invalid entry: "+ip)

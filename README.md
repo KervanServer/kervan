@@ -114,6 +114,11 @@ go run ./cmd/kervan status --config ./kervan.yaml
 go run ./cmd/kervan user list   --config ./kervan.yaml
 go run ./cmd/kervan user create --config ./kervan.yaml --username alice --password 'StrongPass123!' --home-dir /uploads
 go run ./cmd/kervan user delete --config ./kervan.yaml --username alice
+# Show or change sign-in restrictions (also recovers a locked-out admin)
+go run ./cmd/kervan user access --config ./kervan.yaml --username alice \
+  --expires 2026-12-31 --allowed-ips 10.0.0.0/8,203.0.113.7 --protocols ftps,sftp --max-sessions 2
+go run ./cmd/kervan user access --config ./kervan.yaml --username alice \
+  --expires never --allowed-ips any --protocols all --max-sessions 0
 
 # Discover API key presets and supported scopes
 go run ./cmd/kervan apikey scopes
@@ -426,8 +431,25 @@ All protocols share a common VFS layer ([internal/vfs](internal/vfs)):
   For the same reason, `kervan migrate ssh-keys` skips (with a warning) keys
   that carry options.
 - **OIDC single sign-on** for the WebUI; see [Single sign-on](#single-sign-on-oidc).
+- **Sign-in restrictions** — per user, from the Users page, the
+  `/api/v1/users` API or `kervan user access`. Any combination of:
+  - `expires_at`: the account cannot sign in from this time on.
+  - `allowed_ips`: IPs or CIDR ranges. This narrows `security.allowed_ips`
+    and never widens it.
+  - `allowed_protocols`: any of `ftp`, `ftps`, `sftp`, `scp` and `webui`
+    (`webui` also covers the REST API and API keys). Listing only `ftps`
+    forces TLS for that user.
+  - `max_sessions`: concurrent FTP/SFTP/SCP connections.
+
+  Refusals are audited as `auth.failure` with the reason. Every 30 seconds,
+  Kervan also ends open FTP/SFTP/SCP connections whose
+  account has expired, been disabled or deleted, or whose address is no
+  longer allowed. Each is audited as `session.revoked`. WebUI/API requests
+  are checked on every call. An expired account gets the same "invalid
+  credentials" answer as a wrong password, so expiry does not reveal that
+  the account exists.
 - **Not supported in this release:** SSH certificate
-  and keyboard-interactive authentication, account expiry.
+  and keyboard-interactive authentication.
 
 ---
 
@@ -810,6 +832,9 @@ All listeners (FTP, FTPS, SFTP/SCP and the WebUI/API) share these controls:
 - **Connection caps** — `ftp.max_connections` and `sftp.max_connections`
   bound concurrent control/SSH connections (`0` = unlimited). Over-limit FTP
   clients get `421`; each rejection is audited as `connection.rejected`.
+  `security.max_connections_per_ip` caps concurrent FTP/FTPS plus SFTP/SCP
+  connections from one address, counted across both (`0` = unlimited,
+  reloadable).
 - **Brute-force protection** (`security.brute_force`) — per-account lockout
   after `max_attempts` failures for `lockout_duration`, plus a per-address ban
   after `ip_ban_threshold` failed logins within `ip_ban_duration`. The address

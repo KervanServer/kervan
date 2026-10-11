@@ -84,3 +84,27 @@ func TestTouchUpdatesLastSeen(t *testing.T) {
 	var nilM *Manager
 	nilM.Touch(s.ID)
 }
+
+func TestStartLimited(t *testing.T) {
+	m := NewManager()
+	a, ok := m.StartLimited("bob", "ftp", "192.0.2.1:1", 2)
+	if !ok {
+		t.Fatal("first session refused")
+	}
+	if _, ok := m.StartLimited("bob", "sftp", "192.0.2.1:2", 2); !ok {
+		t.Fatal("second session refused")
+	}
+	if _, ok := m.StartLimited("bob", "ftp", "192.0.2.1:3", 2); ok {
+		t.Fatal("third session admitted over the cap")
+	}
+	if _, ok := m.StartLimited("carol", "ftp", "192.0.2.1:4", 2); !ok {
+		t.Fatal("another user's session refused")
+	}
+	m.End(a.ID)
+	if _, ok := m.StartLimited("bob", "ftp", "192.0.2.1:5", 2); !ok {
+		t.Fatal("slot not freed by End")
+	}
+	if got := m.CountUser("bob"); got != 2 {
+		t.Fatalf("CountUser = %d, want 2", got)
+	}
+}

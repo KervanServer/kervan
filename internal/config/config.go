@@ -242,9 +242,12 @@ type AuditOutput struct {
 }
 
 type SecurityConfig struct {
-	AllowedIPs []string         `yaml:"allowed_ips"`
-	DeniedIPs  []string         `yaml:"denied_ips"`
-	BruteForce BruteForceConfig `yaml:"brute_force"`
+	AllowedIPs []string `yaml:"allowed_ips"`
+	DeniedIPs  []string `yaml:"denied_ips"`
+	// MaxConnectionsPerIP caps concurrent FTP/FTPS and SFTP/SCP connections
+	// from one address, across both; 0 is unlimited.
+	MaxConnectionsPerIP int              `yaml:"max_connections_per_ip"`
+	BruteForce          BruteForceConfig `yaml:"brute_force"`
 }
 
 type BruteForceConfig struct {

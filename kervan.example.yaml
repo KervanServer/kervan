@@ -141,6 +141,9 @@ security:
   # An empty allowed_ips admits everyone. Reloadable at runtime.
   allowed_ips: []
   denied_ips: []
+  # Concurrent FTP/FTPS + SFTP/SCP connections allowed from one address;
+  # 0 is unlimited. Reloadable at runtime.
+  max_connections_per_ip: 0
   brute_force:
     enabled: true
     max_attempts: 5          # per-account failures before lockout

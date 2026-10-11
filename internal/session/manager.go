@@ -33,6 +33,14 @@ func NewManager() *Manager {
 }
 
 func (m *Manager) Start(username, protocol, remoteAddr string) *Session {
+	s, _ := m.StartLimited(username, protocol, remoteAddr, 0)
+	return s
+}
+
+// StartLimited is Start for a user capped at maxPerUser concurrent sessions
+// (<= 0 is unlimited). The check and the insert are atomic; ok is false when
+// the cap is already reached.
+func (m *Manager) StartLimited(username, protocol, remoteAddr string, maxPerUser int) (*Session, bool) {
 	now := time.Now().UTC()
 	s := &Session{
 		ID:         ulid.New(),
@@ -43,11 +51,32 @@ func (m *Manager) Start(username, protocol, remoteAddr string) *Session {
 		LastSeenAt: now,
 	}
 	m.mu.Lock()
+	if maxPerUser > 0 && m.countLocked(username) >= maxPerUser {
+		m.mu.Unlock()
+		return nil, false
+	}
 	m.sessions[s.ID] = s
 	m.totals[protocol]++
 	m.mu.Unlock()
 	m.changed()
-	return s
+	return s, true
+}
+
+// CountUser returns the user's active sessions.
+func (m *Manager) CountUser(username string) int {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.countLocked(username)
+}
+
+func (m *Manager) countLocked(username string) int {
+	n := 0
+	for _, s := range m.sessions {
+		if s.Username == username {
+			n++
+		}
+	}
+	return n
 }
 
 // SetOnChange registers a callback run after sessions start or end.

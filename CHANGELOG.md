@@ -4,6 +4,18 @@
 
 ### Added
 
+- **Per-user sign-in restrictions.** Each user can have an expiry time,
+  allowed IP/CIDR ranges, allowed protocols (`ftp`, `ftps`, `sftp`, `scp`,
+  `webui`) and a cap on concurrent FTP/SFTP/SCP sessions. Set them from the
+  Users page, the users API, or the new `kervan user access` command. They
+  apply on every protocol and to existing WebUI/API sessions. Every 30 s,
+  open FTP/SFTP/SCP connections of expired, disabled or deleted accounts,
+  or from addresses no longer allowed, are ended and audited as
+  `session.revoked`.
+- **Per-address connection limit.** `security.max_connections_per_ip`
+  caps concurrent FTP and SSH connections from one address, counted across
+  both protocols.
+
 - **Wider audit coverage.** Sign-ins through the WebUI and OIDC (both
   success and failure), password changes, user, group and API-key
   management, config updates and reloads, session kills, and file

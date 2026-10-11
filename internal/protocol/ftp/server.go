@@ -42,6 +42,9 @@ type Config struct {
 	ActiveMode bool
 	// IPFilter rejects control connections from denied addresses; nil admits all.
 	IPFilter *netguard.IPFilter
+	// PerIP caps concurrent connections per source address, shared across
+	// protocols; nil is unlimited.
+	PerIP *netguard.PerIPLimiter
 	// MaxConnections caps concurrent control connections across all FTP
 	// listeners; <= 0 is unlimited.
 	MaxConnections int
@@ -175,12 +178,14 @@ func (s *Server) startListener(ctx context.Context, port int, label string, impl
 				continue
 			}
 			acceptFailures = 0
-			if !s.admit(conn) {
+			releaseIP, admitted := s.admit(conn)
+			if !admitted {
 				continue
 			}
 			s.wg.Add(1)
 			go func(c net.Conn) {
 				defer s.wg.Done()
+				defer releaseIP()
 				defer s.limiter.Release()
 				defer s.recoverConnPanic(c)
 				s.handleConn(ctx, c, implicitTLS)
@@ -192,8 +197,9 @@ func (s *Server) startListener(ctx context.Context, port int, label string, impl
 
 // admit applies the IP filter and connection cap to a freshly accepted
 // control connection. A rejected connection is closed; on success the caller
-// owns one limiter slot and must Release it.
-func (s *Server) admit(conn net.Conn) bool {
+// owns one limiter slot and must Release it, and must call the returned
+// per-IP release func.
+func (s *Server) admit(conn net.Conn) (func(), bool) {
 	remote := conn.RemoteAddr().String()
 	if !s.cfg.IPFilter.AllowedRemote(remote) {
 		// Not audited: a scanner on a denied range would flood the audit log.
@@ -201,16 +207,25 @@ func (s *Server) admit(conn net.Conn) bool {
 			s.logger.Debug("ftp connection rejected", "remote_addr", remote, "reason", "ip not allowed")
 		}
 		_ = conn.Close()
-		return false
+		return nil, false
 	}
 	if !s.limiter.TryAcquire() {
 		s.emitRejection(remote, "max connections reached")
 		_ = conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
 		_, _ = conn.Write([]byte("421 Too many connections, try again later.\r\n"))
 		_ = conn.Close()
-		return false
+		return nil, false
 	}
-	return true
+	releaseIP, ok := s.cfg.PerIP.Acquire(remote)
+	if !ok {
+		s.limiter.Release()
+		s.emitRejection(remote, "max connections per ip reached")
+		_ = conn.SetWriteDeadline(time.Now().Add(2 * time.Second))
+		_, _ = conn.Write([]byte("421 Too many connections from your address.\r\n"))
+		_ = conn.Close()
+		return nil, false
+	}
+	return releaseIP, true
 }
 
 func (s *Server) emitRejection(remote, reason string) {
@@ -396,23 +411,41 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, implicitTLS bool
 				s.emitAudit(audit.EventAuthFailure, user.Username, "ftp", "", state.remoteAddr, "failed", "not permitted on virtual host "+state.vhost)
 				continue
 			}
+			loginProtocol := auth.ProtocolFTP
+			if state.secureControl {
+				loginProtocol = auth.ProtocolFTPS
+			}
+			if accessErr := user.CheckAccess(state.remoteAddr, time.Now(), loginProtocol); accessErr != nil {
+				writeReply(conn, 530, "Login not allowed: "+accessErr.Error()+".")
+				s.emitAudit(audit.EventAuthFailure, user.Username, "ftp", "", state.remoteAddr, "failed", accessErr.Error())
+				continue
+			}
 			userFS, fsErr := s.buildFS(user)
 			if fsErr != nil {
 				writeReply(conn, 550, "Unable to mount filesystem.")
+				continue
+			}
+			// A successful re-login on the same connection replaces the
+			// previous session; end it first so it does not linger in the
+			// manager (its stale terminator would otherwise close this
+			// connection if the orphan were ever killed) or count against
+			// the session cap.
+			if state.session != nil {
+				s.sessions.End(state.session.ID)
+				state.session = nil
+			}
+			sess, started := s.sessions.StartLimited(user.Username, "ftp", state.remoteAddr, user.MaxSessions)
+			if !started {
+				state.user, state.fs = nil, nil
+				writeReply(conn, 530, "Login not allowed: too many concurrent sessions.")
+				s.emitAudit(audit.EventAuthFailure, user.Username, "ftp", "", state.remoteAddr, "failed", auth.ErrTooManySessions.Error())
 				continue
 			}
 			_ = s.auth.RecordSuccessfulLogin(user.ID)
 			state.user = user
 			state.fs = userFS
 			state.cwd = "/"
-			// A successful re-login on the same connection replaces the
-			// previous session; end it first so it does not linger in the
-			// manager (its stale terminator would otherwise close this
-			// connection if the orphan were ever killed).
-			if state.session != nil {
-				s.sessions.End(state.session.ID)
-			}
-			state.session = s.sessions.Start(user.Username, "ftp", state.remoteAddr)
+			state.session = sess
 			_ = s.sessions.AttachTerminator(state.session.ID, func() {
 				_ = conn.Close()
 			})

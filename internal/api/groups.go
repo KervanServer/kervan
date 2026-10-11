@@ -22,11 +22,17 @@ type userPolicyPatch struct {
 	MaxFiles          *int64                `json:"max_files"`
 	CustomPermissions *bool                 `json:"custom_permissions"`
 	Permissions       *auth.UserPermissions `json:"permissions"`
+	// ExpiresAt is an RFC 3339 time; "" clears the expiry.
+	ExpiresAt        *string   `json:"expires_at"`
+	AllowedIPs       *[]string `json:"allowed_ips"`
+	AllowedProtocols *[]string `json:"allowed_protocols"`
+	MaxSessions      *int      `json:"max_sessions"`
 }
 
 func (p userPolicyPatch) set() bool {
 	return p.PrimaryGroup != nil || p.SecondaryGroups != nil || p.MaxStorage != nil || p.MaxBandwidth != nil || p.MaxFiles != nil ||
-		p.CustomPermissions != nil || p.Permissions != nil
+		p.CustomPermissions != nil || p.Permissions != nil ||
+		p.ExpiresAt != nil || p.AllowedIPs != nil || p.AllowedProtocols != nil || p.MaxSessions != nil
 }
 
 // applyUserPolicyPatch validates the patch and applies it to u. Group
@@ -92,6 +98,34 @@ func (s *Server) applyUserPolicyPatch(u *auth.User, p userPolicyPatch) error {
 	if p.Permissions != nil {
 		u.Permissions = *p.Permissions
 	}
+	if p.ExpiresAt != nil {
+		raw := strings.TrimSpace(*p.ExpiresAt)
+		if raw == "" {
+			u.ExpiresAt = nil
+		} else {
+			t, err := time.Parse(time.RFC3339, raw)
+			if err != nil {
+				return errors.New("expires_at must be an RFC 3339 time, e.g. 2026-12-31T23:59:59Z, or empty to clear")
+			}
+			t = t.UTC()
+			u.ExpiresAt = &t
+		}
+	}
+	ips, protocols, maxSessions := u.AllowedIPs, u.AllowedProtocols, u.MaxSessions
+	if p.AllowedIPs != nil {
+		ips = *p.AllowedIPs
+	}
+	if p.AllowedProtocols != nil {
+		protocols = *p.AllowedProtocols
+	}
+	if p.MaxSessions != nil {
+		maxSessions = *p.MaxSessions
+	}
+	ips, protocols, err := auth.NormalizeAccessPolicy(ips, protocols, maxSessions)
+	if err != nil {
+		return err
+	}
+	u.AllowedIPs, u.AllowedProtocols, u.MaxSessions = ips, protocols, maxSessions
 	return nil
 }
 
@@ -112,6 +146,11 @@ type userResponse struct {
 	Permissions       auth.UserPermissions `json:"permissions"`
 	Effective         effectivePolicyJSON  `json:"effective"`
 	AuthorizedKeys    []auth.KeyInfo       `json:"authorized_keys"`
+	ExpiresAt         *time.Time           `json:"expires_at"`
+	Expired           bool                 `json:"expired"`
+	AllowedIPs        []string             `json:"allowed_ips"`
+	AllowedProtocols  []string             `json:"allowed_protocols"`
+	MaxSessions       int                  `json:"max_sessions"`
 }
 
 type effectivePolicyJSON struct {
@@ -146,6 +185,11 @@ func (s *Server) userResponse(u *auth.User) userResponse {
 		CustomPermissions: u.CustomPermissions,
 		Permissions:       u.Permissions,
 		AuthorizedKeys:    auth.DescribeAuthorizedKeys(u.AuthorizedKeys),
+		ExpiresAt:         u.ExpiresAt,
+		Expired:           u.Expired(time.Now()),
+		AllowedIPs:        nonNil(u.AllowedIPs),
+		AllowedProtocols:  nonNil(u.AllowedProtocols),
+		MaxSessions:       u.MaxSessions,
 	}
 	cfg := s.currentConfig()
 	defaults := auth.PolicyDefaults{MaxStorage: cfg.DefaultMaxStorage, MaxBandwidth: cfg.DefaultUserRate, MaxFiles: cfg.DefaultMaxFiles}
@@ -280,4 +324,11 @@ func (s *Server) handleGroups(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 	}
+}
+
+func nonNil(v []string) []string {
+	if v == nil {
+		return []string{}
+	}
+	return v
 }

@@ -181,7 +181,7 @@ func runStatusCommand(stdout io.Writer, args []string) error {
 
 func runUserCommand(stdout io.Writer, args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: kervan user <list|create|delete|import|export> [flags]")
+		return errors.New("usage: kervan user <list|create|delete|access|import|export> [flags]")
 	}
 	switch args[0] {
 	case "list":
@@ -190,6 +190,8 @@ func runUserCommand(stdout io.Writer, args []string) error {
 		return runUserCreateCommand(stdout, args[1:])
 	case "delete":
 		return runUserDeleteCommand(stdout, args[1:])
+	case "access":
+		return runUserAccessCommand(stdout, args[1:])
 	case "import":
 		return runUserImportCommand(stdout, args[1:])
 	case "export":

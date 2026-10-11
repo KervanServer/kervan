@@ -103,3 +103,37 @@ func TestAcceptBackoff(t *testing.T) {
 		t.Fatal("backoff must cap at 1s")
 	}
 }
+
+func TestPerIPLimiter(t *testing.T) {
+	l := NewPerIPLimiter(2)
+	r1, ok1 := l.Acquire("192.0.2.1:1000")
+	r2, ok2 := l.Acquire("[::ffff:192.0.2.1]:1001") // same address, v4-mapped
+	if !ok1 || !ok2 {
+		t.Fatal("first two connections refused")
+	}
+	if _, ok := l.Acquire("192.0.2.1:1002"); ok {
+		t.Fatal("third connection from the same address admitted")
+	}
+	if _, ok := l.Acquire("192.0.2.2:1000"); !ok {
+		t.Fatal("other address refused")
+	}
+	r1()
+	r1() // idempotent
+	if _, ok := l.Acquire("192.0.2.1:1003"); !ok {
+		t.Fatal("slot not returned on release")
+	}
+	if _, ok := l.Acquire("192.0.2.1:1004"); ok {
+		t.Fatal("double release freed two slots")
+	}
+	r2()
+	l.SetMax(0)
+	for i := 0; i < 10; i++ {
+		if _, ok := l.Acquire("192.0.2.1:2000"); !ok {
+			t.Fatal("unlimited limiter refused")
+		}
+	}
+	var nilLimiter *PerIPLimiter
+	if release, ok := nilLimiter.Acquire("192.0.2.1:1"); !ok || release == nil {
+		t.Fatal("nil limiter must admit with a non-nil release")
+	}
+}

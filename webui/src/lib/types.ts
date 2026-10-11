@@ -71,6 +71,15 @@ export type ApiUser = {
     group?: string
   }
   authorized_keys?: ApiKeyInfo[]
+  /** RFC 3339 expiry; null or absent never expires. */
+  expires_at?: string | null
+  expired?: boolean
+  /** IPs/CIDRs; empty allows any address. */
+  allowed_ips?: string[]
+  /** Subset of ACCESS_PROTOCOLS; empty allows all. */
+  allowed_protocols?: string[]
+  /** Concurrent FTP/SFTP/SCP sessions; 0 is unlimited. */
+  max_sessions?: number
 }
 
 export type ApiKeyInfo = {
@@ -109,6 +118,11 @@ export type ApiUserPolicyPatch = {
   max_files?: number
   custom_permissions?: boolean
   permissions?: ApiPermissions
+  /** RFC 3339; "" clears the expiry. */
+  expires_at?: string
+  allowed_ips?: string[]
+  allowed_protocols?: string[]
+  max_sessions?: number
 }
 
 type ApiUserImportError = {

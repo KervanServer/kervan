@@ -31,6 +31,8 @@ const OIDC_ERRORS: Record<string, string> = {
   not_provisioned: "No Kervan account exists for you yet. Ask an administrator to create one.",
   account_conflict: "This username already belongs to a local Kervan account.",
   account_disabled: "Your Kervan account is disabled.",
+  account_expired: "Your Kervan account has expired.",
+  access_restricted: "Sign-in is not allowed from this address or over the web interface.",
 }
 
 export function describeOIDCError(code: string): string {

@@ -166,3 +166,73 @@ func AcceptBackoff(n int) time.Duration {
 	d := 5 * time.Millisecond << min(n-1, 8)
 	return min(d, time.Second)
 }
+
+// PerIPLimiter caps concurrent connections from one source address across
+// every listener that shares it. A nil *PerIPLimiter or a cap <= 0 is
+// unlimited; the cap can be changed at runtime.
+type PerIPLimiter struct {
+	mu     sync.Mutex
+	max    int
+	counts map[netip.Addr]int
+}
+
+// NewPerIPLimiter returns a limiter admitting at most max concurrent
+// connections per address.
+func NewPerIPLimiter(max int) *PerIPLimiter {
+	return &PerIPLimiter{max: max, counts: make(map[netip.Addr]int)}
+}
+
+// SetMax changes the cap. Connections already admitted are kept.
+func (l *PerIPLimiter) SetMax(max int) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	l.max = max
+	l.mu.Unlock()
+}
+
+// Acquire takes a slot for remote ("host:port" or a bare address). On
+// success the returned release func must be called once the connection
+// closes; it is never nil. Unparseable addresses are not limited.
+func (l *PerIPLimiter) Acquire(remote string) (release func(), ok bool) {
+	noop := func() {}
+	if l == nil {
+		return noop, true
+	}
+	ip, err := parseRemote(remote)
+	if err != nil {
+		return noop, true
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.max > 0 && l.counts[ip] >= l.max {
+		return noop, false
+	}
+	l.counts[ip]++
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			l.mu.Lock()
+			if l.counts[ip]--; l.counts[ip] <= 0 {
+				delete(l.counts, ip)
+			}
+			l.mu.Unlock()
+		})
+	}, true
+}
+
+func parseRemote(remote string) (netip.Addr, error) {
+	host := remote
+	if h, _, err := net.SplitHostPort(remote); err == nil {
+		host = h
+	}
+	if i := strings.IndexByte(host, '%'); i >= 0 {
+		host = host[:i]
+	}
+	ip, err := netip.ParseAddr(host)
+	if err != nil {
+		return netip.Addr{}, err
+	}
+	return ip.Unmap(), nil
+}

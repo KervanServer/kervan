@@ -370,6 +370,14 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if accessErr := user.CheckAccess(r.RemoteAddr, time.Now(), auth.ProtocolWebUI); accessErr != nil {
+		code := "access_restricted"
+		if errors.Is(accessErr, auth.ErrAccountExpired) {
+			code = "account_expired"
+		}
+		s.oidcFail(w, r, code, accessErr)
+		return
+	}
 	token, err := signToken(s.secret, user.Username, s.currentConfig().SessionTimeout)
 	if err != nil {
 		s.oidcFail(w, r, "server_error", err)
