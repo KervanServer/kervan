@@ -750,7 +750,15 @@ The management API is served from the same process as the WebUI (default
 | `POST` | `/api/v1/server/reload`      | Validate/reload config file (admin)       |
 | `GET`  | `/api/v1/users`              | List users (admin)                        |
 | `POST` | `/api/v1/users`              | Create user (admin)                       |
+| `PUT`  | `/api/v1/users`              | Update user: policy, password reset, keys, sign-in restrictions (admin) |
 | `DELETE` | `/api/v1/users?id=…`       | Delete user (admin)                       |
+| `POST` | `/api/v1/users/import`       | Bulk import users from CSV/JSON (admin)   |
+| `GET`  | `/api/v1/users/export`       | Export users as CSV/JSON (admin)          |
+| `GET` `POST` `PUT` `DELETE` | `/api/v1/groups` | Group templates (admin)         |
+| `GET`  | `/api/v1/account`            | Own profile and effective policy          |
+| `POST` | `/api/v1/account/password`   | Change own password                       |
+| `PUT`  | `/api/v1/account/keys`       | Replace own SSH keys                      |
+| `GET`  | `/api/v1/auth/methods`       | Sign-in methods (password, OIDC)          |
 | `GET`  | `/api/v1/apikeys`            | List API keys plus supported scopes/presets |
 | `POST` | `/api/v1/apikeys`            | Create scoped API key (shown once)        |
 | `DELETE` | `/api/v1/apikeys?id=…`     | Revoke API key                            |
@@ -759,15 +767,17 @@ The management API is served from the same process as the WebUI (default
 | `GET`  | `/api/v1/files/{user}/stat`  | File or directory metadata                |
 | `POST` | `/api/v1/files/{user}/mkdir` | Create directory                          |
 | `POST` | `/api/v1/files/{user}/rename`| Rename or move file/directory            |
-| `POST` | `/api/v1/files/{user}/share` | Create file share link                    |
+| `POST` | `/api/v1/files/{user}/share` | Create share link: `path`, `ttl`, optional `password`, `max_downloads` |
 | `POST` | `/api/v1/files/{user}/upload`| Upload file content                       |
 | `GET`  | `/api/v1/files/{user}/download` | Stream file download                   |
 | `DELETE` | `/api/v1/files/{user}/rm`  | Remove file or directory                  |
 | `GET`  | `/api/v1/share`              | List own share links                      |
 | `DELETE` | `/api/v1/share?token=…`    | Revoke a share link                       |
-| `GET`  | `/api/v1/share/{token}`      | Public share download                     |
+| `GET`  | `/api/v1/share/{token}/info` | Public: name, size, expiry, whether a password is needed |
+| `GET` `POST` | `/api/v1/share/{token}` | Public download; password via `X-Share-Password` header or a form `password` field |
 | `GET`  | `/api/v1/transfers`          | Transfer registry (active + recent)      |
-| `GET`  | `/api/v1/audit/events`       | Paginated audit events                    |
+| `GET`  | `/api/v1/audit/events`       | Paginated audit events; filters `from`, `to` (RFC 3339 or `YYYY-MM-DD`), `type`, `username`, `status`, `q` |
+| `GET`  | `/api/v1/audit/export`       | Same filters, as `format=json` or `csv`   |
 | `GET`  | `/api/v1/ws?types=server,sessions,transfers,audit` | WebSocket live snapshots |
 
 WebSocket clients authenticate with an `Authorization: Bearer` header or, from
@@ -777,8 +787,6 @@ Tokens are never accepted in the URL, and the server only echoes `kervan.v1`.
 Bearer token signing keys are persisted under `data_dir`, so valid sessions now
 survive normal process restarts as long as the same data directory is reused.
 
-The full `/api/v1/...` surface from Spec §8.4 still has planned gaps (groups,
-bulk import/export, advanced server config editing).
 The reload endpoint applies runtime-safe settings immediately —
 `webui.session_timeout`, `webui.totp_enabled`, `webui.cors_origins`,
 `auth.min_password_length`, `auth.require_special_char`,
@@ -908,15 +916,23 @@ kervan.example.yaml      # Reference configuration
 
 ## Roadmap
 
-Shipped in the current release: FTP/FTPS/SFTP/SCP, local + LDAP auth with
-TOTP and SSH keys, local/memory/S3 storage, quotas, share links, API keys,
-audit file + webhook sinks, backup/restore, migrations, the WebUI with live
-WebSocket updates, Prometheus metrics, and the `stdio` MCP server.
+Shipped: FTP/FTPS/SFTP/SCP, local, LDAP and OIDC sign-in with TOTP and SSH
+keys, per-user sign-in restrictions, groups, storage/file-count quotas,
+bandwidth limits, local/memory/S3 storage, password-protected share links,
+API keys, a tamper-evident audit log with file/HTTP/syslog sinks, backup and
+restore, migrations, the WebUI with live updates, Prometheus metrics, and the
+`stdio` MCP server.
 
-Planned beyond v1.0 (see [.project/SPECIFICATION.md](.project/SPECIFICATION.md)):
+Before v1.0:
 
-- Syslog/CEF and queryable audit storage, HMAC-chained logs.
-- A database-backed metadata store for large installations.
+- An OpenAPI reference for the REST API and a contributor guide.
+- Interop checks with more clients (FileZilla, WinSCP, lftp, Cyberduck).
+- Fuzz tests for the FTP and SFTP parsers.
+
+Later (see [.project/SPECIFICATION.md](.project/SPECIFICATION.md)):
+
+- A queryable audit store and a database-backed metadata store for large
+  installations.
 
 ---
 

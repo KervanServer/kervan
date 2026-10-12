@@ -2,6 +2,8 @@ import type {
   ApiFileEntry,
   ApiSession,
   ApiShareLink,
+  AuditFilters,
+  AuditPagination,
   ApiKeysResponse,
   ApiTransfer,
   ApiUserImportReport,
@@ -352,12 +354,22 @@ export const api = {
     )
   },
 
-  createShareLink(token: string, targetPath: string, ttl = "24h"): Promise<{ token: string; share_url: string; expires_at: string }> {
-    return request<{ token: string; share_url: string; expires_at: string }>(
-      `/api/v1/files/me/share?path=${encodeURIComponent(targetPath)}&ttl=${encodeURIComponent(ttl)}`,
-      token,
-      { method: "POST" },
-    )
+  createShareLink(
+    token: string,
+    targetPath: string,
+    ttl = "24h",
+    options: { password?: string; maxDownloads?: number } = {},
+  ): Promise<ApiShareLink> {
+    // The password travels in the body only, never in the URL.
+    return request<ApiShareLink>("/api/v1/files/me/share", token, {
+      method: "POST",
+      body: JSON.stringify({
+        path: targetPath,
+        ttl,
+        max_downloads: options.maxDownloads ?? 0,
+        ...(options.password ? { password: options.password } : {}),
+      }),
+    })
   },
 
   shareLinks(token: string): Promise<{ links: ApiShareLink[] }> {
@@ -383,14 +395,24 @@ export const api = {
     )
   },
 
-  audit(token: string, page = 1, limit = 100): Promise<{ events: AuditEvent[]; pagination: Record<string, unknown> }> {
-    return request<{ events: AuditEvent[]; pagination: Record<string, unknown> }>(
-      `/api/v1/audit/events?page=${page}&limit=${limit}`,
-      token,
-    )
+  audit(token: string, filters: AuditFilters = {}, page = 1, limit = 100): Promise<{ events: AuditEvent[]; pagination: AuditPagination }> {
+    const params = auditParams(filters)
+    params.set("page", String(page))
+    params.set("limit", String(limit))
+    return request<{ events: AuditEvent[]; pagination: AuditPagination }>(`/api/v1/audit/events?${params}`, token)
   },
 
-  exportAudit(token: string, format: "json" | "csv"): Promise<{ blob: Blob; filename: string | null }> {
-    return requestBlob(`/api/v1/audit/export?format=${encodeURIComponent(format)}`, token)
+  exportAudit(token: string, format: "json" | "csv", filters: AuditFilters = {}): Promise<{ blob: Blob; filename: string | null }> {
+    const params = auditParams(filters)
+    params.set("format", format)
+    return requestBlob(`/api/v1/audit/export?${params}`, token)
   },
+}
+
+function auditParams(filters: AuditFilters): URLSearchParams {
+  const params = new URLSearchParams()
+  for (const [key, value] of Object.entries(filters)) {
+    if (value && value.trim() !== "") params.set(key, value.trim())
+  }
+  return params
 }

@@ -4,11 +4,13 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/kervanserver/kervan/internal/auth"
 	"github.com/kervanserver/kervan/internal/store"
 )
 
@@ -27,7 +29,16 @@ type ShareLink struct {
 	ExpiresAt     time.Time `json:"expires_at"`
 	DownloadCount int       `json:"download_count"`
 	MaxDownloads  int       `json:"max_downloads"`
+	// PasswordHash, when set, must be matched before a download.
+	PasswordHash string `json:"password_hash,omitempty"`
 }
+
+// Protected reports whether the link needs a password.
+func (l *ShareLink) Protected() bool { return l.PasswordHash != "" }
+
+// minSharePasswordLength keeps share passwords out of trivial guessing range;
+// failed attempts also count toward the per-address login ban.
+const minSharePasswordLength = 6
 
 type shareLinkRepository struct {
 	store *store.Store
@@ -41,7 +52,7 @@ func newShareLinkRepository(st *store.Store) *shareLinkRepository {
 	return &shareLinkRepository{store: st}
 }
 
-func (r *shareLinkRepository) Create(username, filePath string, ttl time.Duration, maxDownloads int) (*ShareLink, error) {
+func (r *shareLinkRepository) Create(username, filePath string, ttl time.Duration, maxDownloads int, password string) (*ShareLink, error) {
 	if r == nil || r.store == nil {
 		return nil, errors.New("share links are not configured")
 	}
@@ -59,6 +70,17 @@ func (r *shareLinkRepository) Create(username, filePath string, ttl time.Duratio
 	if maxDownloads < 0 {
 		return nil, errors.New("max_downloads cannot be negative")
 	}
+	var passwordHash string
+	if password != "" {
+		if len([]rune(password)) < minSharePasswordLength {
+			return nil, fmt.Errorf("share password must be at least %d characters", minSharePasswordLength)
+		}
+		hash, err := auth.HashPassword(password, "argon2id")
+		if err != nil {
+			return nil, err
+		}
+		passwordHash = hash
+	}
 	token, err := generateShareToken()
 	if err != nil {
 		return nil, err
@@ -71,6 +93,7 @@ func (r *shareLinkRepository) Create(username, filePath string, ttl time.Duratio
 		ExpiresAt:     time.Now().UTC().Add(ttl),
 		DownloadCount: 0,
 		MaxDownloads:  maxDownloads,
+		PasswordHash:  passwordHash,
 	}
 	if err := r.store.Put(collShareLinks, link.Token, link); err != nil {
 		return nil, err

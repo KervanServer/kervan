@@ -230,7 +230,7 @@ func (s *Server) buildWebSocketSnapshot(username string, requestedTypes map[stri
 	if hasSnapshotType(requestedTypes, "audit") {
 		events := s.readRecentAuditEvents(50)
 		if scopedUsername != "" {
-			events = filterAuditEvents(events, scopedUsername, "", "", "", "")
+			events = filterAuditEvents(events, auditQuery{Username: scopedUsername})
 		}
 		payload["audit"] = map[string]any{
 			"events": events,

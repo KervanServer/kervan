@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react"
 import { zodResolver } from "@hookform/resolvers/zod"
-import { Copy, FileText, FolderPlus, Loader2, Pencil, RefreshCw, Share2, Upload } from "lucide-react"
+import { Copy, FileText, FolderPlus, Loader2, Lock, Pencil, RefreshCw, Share2, Upload } from "lucide-react"
 import { useForm } from "react-hook-form"
 import { toast } from "sonner"
 import { z } from "zod"
@@ -47,15 +47,20 @@ const renameSchema = z.object({
 
 const shareSchema = z.object({
   ttl: z.string().trim().min(1, "TTL is required").max(32, "TTL is too long"),
+  password: z.union([z.literal(""), z.string().min(6, "Use at least 6 characters").max(128, "Password is too long")]),
+  maxDownloads: z.coerce.number().int().min(0, "Use 0 for unlimited").max(1_000_000),
 })
 
 type FolderValues = z.infer<typeof folderSchema>
 type RenameValues = z.infer<typeof renameSchema>
-type ShareValues = z.infer<typeof shareSchema>
+type ShareValues = z.output<typeof shareSchema>
+type ShareInput = z.input<typeof shareSchema>
+const SHARE_DEFAULTS: ShareInput = { ttl: "24h", password: "", maxDownloads: 0 }
 
 type SharePreview = {
   url: string
   expiresAt: string
+  protected: boolean
 }
 
 function joinPath(basePath: string, child: string): string {
@@ -118,10 +123,10 @@ export function FilesPage({ token }: Props) {
     handleSubmit: handleShareSubmit,
     reset: resetShareForm,
     formState: { errors: shareErrors, isValid: isShareValid },
-  } = useForm<ShareValues>({
+  } = useForm<ShareInput, unknown, ShareValues>({
     resolver: zodResolver(shareSchema),
     mode: "onChange",
-    defaultValues: { ttl: "24h" },
+    defaultValues: SHARE_DEFAULTS,
   })
 
   useEffect(() => {
@@ -138,7 +143,7 @@ export function FilesPage({ token }: Props) {
 
   useEffect(() => {
     if (entryToShare) {
-      resetShareForm({ ttl: "24h" })
+      resetShareForm(SHARE_DEFAULTS)
     }
   }, [entryToShare, resetShareForm])
 
@@ -202,10 +207,13 @@ export function FilesPage({ token }: Props) {
     const response = await createShareLinkMutation.mutateAsync({
       targetPath: entryToShare.path,
       ttl: values.ttl.trim(),
+      password: values.password || undefined,
+      maxDownloads: values.maxDownloads,
     })
     setSharePreview({
       url: toAbsoluteShareURL(response.share_url),
       expiresAt: response.expires_at,
+      protected: Boolean(response.password_protected),
     })
     setEntryToShare(null)
   }
@@ -322,6 +330,7 @@ export function FilesPage({ token }: Props) {
                 </Tooltip>
                 <span className="text-xs text-[var(--muted-foreground)]">
                   Expires: {new Date(sharePreview.expiresAt).toLocaleString()}
+                  {sharePreview.protected ? " · Password protected: send the password separately." : ""}
                 </span>
               </div>
             </div>
@@ -433,7 +442,10 @@ export function FilesPage({ token }: Props) {
                   const full = toAbsoluteShareURL(link.share_url)
                   return (
                     <div key={link.token} className="rounded-lg border border-[var(--border)] bg-[var(--muted)] p-3 text-xs">
-                      <p className="font-medium">{link.path}</p>
+                      <p className="flex items-center gap-1 font-medium">
+                        {link.password_protected ? <Lock className="h-3.5 w-3.5" aria-label="Password protected" /> : null}
+                        {link.path}
+                      </p>
                       <p className="mt-1 break-all">{full}</p>
                       <div className="mt-2 flex flex-wrap items-center gap-2">
                         <Tooltip content="Copy share link">
@@ -516,8 +528,39 @@ export function FilesPage({ token }: Props) {
           </DialogHeader>
           <form className="space-y-4" onSubmit={handleShareSubmit(onShare)}>
             <div className="space-y-2">
-              <Input placeholder="TTL (e.g. 24h, 7d)" aria-invalid={shareErrors.ttl ? "true" : "false"} {...registerShare("ttl")} />
+              <label htmlFor="share-ttl" className="text-sm font-medium">
+                Valid for
+              </label>
+              <Input id="share-ttl" placeholder="e.g. 24h, 7d" aria-invalid={shareErrors.ttl ? "true" : "false"} {...registerShare("ttl")} />
               {shareErrors.ttl ? <p className="text-sm text-[var(--error)]">{shareErrors.ttl.message}</p> : null}
+            </div>
+            <div className="space-y-2">
+              <label htmlFor="share-password" className="text-sm font-medium">
+                Password (optional)
+              </label>
+              <Input
+                id="share-password"
+                type="password"
+                autoComplete="new-password"
+                placeholder="Leave empty for an open link"
+                aria-invalid={shareErrors.password ? "true" : "false"}
+                {...registerShare("password")}
+              />
+              {shareErrors.password ? <p className="text-sm text-[var(--error)]">{shareErrors.password.message}</p> : null}
+            </div>
+            <div className="space-y-2">
+              <label htmlFor="share-max-downloads" className="text-sm font-medium">
+                Download limit
+              </label>
+              <Input
+                id="share-max-downloads"
+                type="number"
+                min={0}
+                aria-invalid={shareErrors.maxDownloads ? "true" : "false"}
+                {...registerShare("maxDownloads")}
+              />
+              <p className="text-xs text-[var(--text-secondary)]">0 = unlimited</p>
+              {shareErrors.maxDownloads ? <p className="text-sm text-[var(--error)]">{shareErrors.maxDownloads.message}</p> : null}
             </div>
             <DialogFooter>
               <Button type="button" variant="outline" onClick={() => setEntryToShare(null)}>

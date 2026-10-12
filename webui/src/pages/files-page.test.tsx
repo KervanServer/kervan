@@ -142,12 +142,19 @@ describe("FilesPage", () => {
       ],
     })
     mockedAPI.shareLinks.mockImplementation(async () => ({ links: [...links] }))
-    mockedAPI.createShareLink.mockImplementation(async (_token, targetPath, ttl) => {
+    mockedAPI.createShareLink.mockImplementation(async (_token, targetPath, ttl, options) => {
       expect(targetPath).toBe("/notes.txt")
       expect(ttl).toBe("48h")
+      expect(options).toEqual({ password: "open-sesame", maxDownloads: 3 })
       return {
         token: "share-2",
-        share_url: "/share/share-2",
+        username: "alice",
+        path: "/notes.txt",
+        created_at: "2026-04-12T10:00:00Z",
+        download_count: 0,
+        max_downloads: 3,
+        password_protected: true,
+        share_url: "/s/share-2",
         expires_at: "2026-04-14T10:00:00Z",
       }
     })
@@ -158,14 +165,19 @@ describe("FilesPage", () => {
     expect(row).not.toBeNull()
     await user.click(within(row as HTMLTableRowElement).getByRole("button", { name: "Create share link for notes.txt" }))
 
-    const ttlInput = await screen.findByPlaceholderText("TTL (e.g. 24h, 7d)")
+    const ttlInput = await screen.findByLabelText("Valid for")
     await user.clear(ttlInput)
     await user.type(ttlInput, "48h")
+    await user.type(screen.getByLabelText("Password (optional)"), "open-sesame")
+    const limit = screen.getByLabelText("Download limit")
+    await user.clear(limit)
+    await user.type(limit, "3")
     await user.click(screen.getByRole("button", { name: "Create link" }))
 
     await waitFor(() => expect(mockedAPI.createShareLink).toHaveBeenCalled())
     expect(await screen.findByText("Share link created")).toBeInTheDocument()
-    expect(screen.getByText((content) => content.includes("/share/share-2"))).toBeInTheDocument()
+    expect(screen.getByText((content) => content.includes("/s/share-2"))).toBeInTheDocument()
+    expect(screen.getByText((content) => content.includes("Password protected"))).toBeInTheDocument()
     expect(screen.getByText("/notes.txt")).toBeInTheDocument()
   })
 })

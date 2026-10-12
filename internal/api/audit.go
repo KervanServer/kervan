@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/kervanserver/kervan/internal/audit"
 )
@@ -18,8 +19,11 @@ func (s *Server) emitAuditFor(r *http.Request, username string, t audit.EventTyp
 		return
 	}
 	protocol := "webui"
-	if r.Header.Get("X-Auth-Method") == "api-key" {
+	switch {
+	case r.Header.Get("X-Auth-Method") == "api-key":
 		protocol = "api"
+	case isPublicSharePath(r.URL.Path):
+		protocol = "share"
 	}
 	s.audit.Emit(audit.Event{
 		Type:     t,
@@ -31,4 +35,8 @@ func (s *Server) emitAuditFor(r *http.Request, username string, t audit.EventTyp
 		Message:  msg,
 		Meta:     meta,
 	})
+}
+
+func isPublicSharePath(p string) bool {
+	return strings.HasPrefix(p, "/api/v1/share/") || strings.HasPrefix(p, "/api/share/")
 }

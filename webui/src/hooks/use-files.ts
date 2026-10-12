@@ -84,7 +84,8 @@ export function useCreateShareLink(token: string) {
   const queryClient = useQueryClient()
 
   return useMutation({
-    mutationFn: ({ targetPath, ttl }: { targetPath: string; ttl: string }) => api.createShareLink(token, targetPath, ttl),
+    mutationFn: ({ targetPath, ttl, password, maxDownloads }: { targetPath: string; ttl: string; password?: string; maxDownloads?: number }) =>
+      api.createShareLink(token, targetPath, ttl, { password, maxDownloads }),
     onSuccess: async () => {
       toast.success("Share link created.")
       await queryClient.invalidateQueries({ queryKey: ["share-links", token] })

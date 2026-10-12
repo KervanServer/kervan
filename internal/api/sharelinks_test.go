@@ -26,7 +26,7 @@ func TestShareLinkRepositoryCreateGetReserveDownload(t *testing.T) {
 	})
 
 	repo := newShareLinkRepository(st)
-	link, err := repo.Create("alice", "/docs/report.pdf", 24*time.Hour, 3)
+	link, err := repo.Create("alice", "/docs/report.pdf", 24*time.Hour, 3, "")
 	if err != nil {
 		t.Fatalf("create share link: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestShareLinkRepositoryReserveDownloadRespectsLimit(t *testing.T) {
 	})
 
 	repo := newShareLinkRepository(st)
-	link, err := repo.Create("alice", "/docs/report.pdf", 24*time.Hour, 1)
+	link, err := repo.Create("alice", "/docs/report.pdf", 24*time.Hour, 1, "")
 	if err != nil {
 		t.Fatalf("create share link: %v", err)
 	}
@@ -157,7 +157,7 @@ func TestHandleShareDownloadRollsBackReservationOnFailure(t *testing.T) {
 	})
 
 	repo := newShareLinkRepository(st)
-	link, err := repo.Create("alice", "/missing.txt", 24*time.Hour, 1)
+	link, err := repo.Create("alice", "/missing.txt", 24*time.Hour, 1, "")
 	if err != nil {
 		t.Fatalf("create share link: %v", err)
 	}
@@ -196,7 +196,7 @@ func TestHandleShareDownloadEscapesAttachmentFilename(t *testing.T) {
 
 	repo := newShareLinkRepository(st)
 	filename := `/reports/quarter"1.txt`
-	link, err := repo.Create("alice", filename, 24*time.Hour, 0)
+	link, err := repo.Create("alice", filename, 24*time.Hour, 0, "")
 	if err != nil {
 		t.Fatalf("create share link: %v", err)
 	}

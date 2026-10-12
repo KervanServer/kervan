@@ -175,6 +175,18 @@ export type ApiTransfer = {
 
 export type AuditEvent = Record<string, unknown>
 
+/** Audit filters; from/to are YYYY-MM-DD (UTC), "to" includes that day. */
+export type AuditFilters = {
+  from?: string
+  to?: string
+  type?: string
+  username?: string
+  status?: string
+  q?: string
+}
+
+export type AuditPagination = { page: number; page_size: number; total: number }
+
 export type ApiKey = {
   id: string
   name: string
@@ -212,5 +224,20 @@ export type ApiShareLink = {
   expires_at: string
   download_count: number
   max_downloads: number
+  password_protected?: boolean
+  /** Public landing page (/s/<token>). */
   share_url: string
+  /** Direct download endpoint. */
+  download_url?: string
+}
+
+export type ApiShareInfo = {
+  name: string
+  size?: number
+  expires_at: string
+  password_protected: boolean
+  expired: boolean
+  exhausted: boolean
+  unavailable?: boolean
+  downloads_remaining?: number
 }

@@ -1,5 +1,30 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Password-protected share links.** Links can require a password (at
+  least 6 characters, stored as an Argon2id hash) and the WebUI now sets
+  the download limit too. Share URLs open a public landing page
+  (`/s/<token>`) that shows the file name, size, expiry and remaining
+  downloads, and asks for the password when one is set. Wrong passwords
+  count toward the per-address login ban. Scripts can use
+  `/api/v1/share/<token>` with an `X-Share-Password` header. Creating,
+  revoking and downloading through share links is audited (`share.*`);
+  the audit record holds only a short token prefix.
+- **Audit filters.** `/api/v1/audit/events` and `/api/v1/audit/export`
+  accept `from` and `to` (RFC 3339 or `YYYY-MM-DD`). The Audit page now
+  filters by date, event type, status, user and text, pages through
+  results, shows user, protocol, address and details for each event, and
+  exports with the same filters.
+
+### Changed
+
+- Share-link `share_url` is now the landing page (`/s/<token>`). The direct
+  download is `download_url`. Existing `/api/v1/share/<token>` links keep
+  working.
+
 ## v0.7.0 (2026-10-11)
 
 ### Added

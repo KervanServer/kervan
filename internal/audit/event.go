@@ -36,6 +36,11 @@ const (
 	// longer passes the sign-in policy (expired, disabled, deleted, or an
 	// address outside the user's allow list).
 	EventSessionRevoked EventType = "session.revoked"
+	// Share-link lifecycle and public downloads. Download events are
+	// attributed to the link owner, with the requester's address in IP.
+	EventShareCreate   EventType = "share.create"
+	EventShareRevoke   EventType = "share.revoke"
+	EventShareDownload EventType = "share.download"
 )
 
 type Event struct {

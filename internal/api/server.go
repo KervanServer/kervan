@@ -18,6 +18,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"slices"
@@ -1298,6 +1299,9 @@ func (s *Server) handleFilesShare(w http.ResponseWriter, r *http.Request) {
 		Path         string `json:"path"`
 		TTL          string `json:"ttl"`
 		MaxDownloads int    `json:"max_downloads"`
+		// Password is accepted only in the body, never the query string,
+		// so it stays out of access logs.
+		Password string `json:"password"`
 	}
 	if !isBodyEmpty(r) {
 		if err := decodeJSONBody(w, r, &req, false); err != nil {
@@ -1347,19 +1351,18 @@ func (s *Server) handleFilesShare(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	link, err := s.shareLinks.Create(user, p, ttl, maxDownloads)
+	link, err := s.shareLinks.Create(user, p, ttl, maxDownloads, req.Password)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusCreated, map[string]any{
-		"token":         link.Token,
-		"path":          link.Path,
-		"username":      link.Username,
-		"expires_at":    link.ExpiresAt,
-		"max_downloads": link.MaxDownloads,
-		"share_url":     "/api/v1/share/" + link.Token,
+	s.emitAudit(r, audit.EventShareCreate, p, "ok", "share link created", map[string]string{
+		"share":              shortToken(link.Token),
+		"expires_at":         link.ExpiresAt.Format(time.RFC3339),
+		"max_downloads":      strconv.Itoa(link.MaxDownloads),
+		"password_protected": strconv.FormatBool(link.Protected()),
 	})
+	writeJSON(w, http.StatusCreated, shareLinkJSON(link))
 }
 
 func (s *Server) handleFilesUpload(w http.ResponseWriter, r *http.Request) {
@@ -1551,16 +1554,7 @@ func (s *Server) handleShareLinks(w http.ResponseWriter, r *http.Request) {
 			if item == nil {
 				continue
 			}
-			out = append(out, map[string]any{
-				"token":          item.Token,
-				"username":       item.Username,
-				"path":           item.Path,
-				"created_at":     item.CreatedAt,
-				"expires_at":     item.ExpiresAt,
-				"download_count": item.DownloadCount,
-				"max_downloads":  item.MaxDownloads,
-				"share_url":      "/api/v1/share/" + item.Token,
-			})
+			out = append(out, shareLinkJSON(item))
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"links": out})
 	case http.MethodDelete:
@@ -1583,22 +1577,51 @@ func (s *Server) handleShareLinks(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
+		s.emitAudit(r, audit.EventShareRevoke, link.Path, "ok", "share link revoked", map[string]string{"share": shortToken(token), "owner": link.Username})
 		writeJSON(w, http.StatusOK, map[string]any{"revoked": true, "token": token})
 	default:
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 	}
 }
 
-func (s *Server) handleShareDownload(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-		return
+// shareLinkJSON is the owner-facing view of a link. share_url opens the
+// public landing page; download_url fetches the file directly (for
+// unprotected links, or with an X-Share-Password header).
+func shareLinkJSON(l *ShareLink) map[string]any {
+	return map[string]any{
+		"token":              l.Token,
+		"username":           l.Username,
+		"path":               l.Path,
+		"created_at":         l.CreatedAt,
+		"expires_at":         l.ExpiresAt,
+		"download_count":     l.DownloadCount,
+		"max_downloads":      l.MaxDownloads,
+		"password_protected": l.Protected(),
+		"share_url":          "/s/" + l.Token,
+		"download_url":       "/api/v1/share/" + l.Token,
 	}
+}
+
+// shortToken identifies a share link in audit records without recording
+// the full bearer token.
+func shortToken(token string) string {
+	token = strings.TrimPrefix(token, "share_")
+	if len(token) <= 8 {
+		return token
+	}
+	return token[:8]
+}
+
+// handleShareDownload serves the public share endpoints:
+//
+//	GET  /api/v1/share/<token>/info  metadata for the landing page
+//	GET  /api/v1/share/<token>       download (X-Share-Password if protected)
+//	POST /api/v1/share/<token>       download with a form-encoded password
+func (s *Server) handleShareDownload(w http.ResponseWriter, r *http.Request) {
 	if s.shareLinks == nil {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "share link not found"})
 		return
 	}
-
 	token := ""
 	switch {
 	case strings.HasPrefix(r.URL.Path, "/api/v1/share/"):
@@ -1607,24 +1630,85 @@ func (s *Server) handleShareDownload(w http.ResponseWriter, r *http.Request) {
 		token = strings.TrimPrefix(r.URL.Path, "/api/share/")
 	}
 	token = strings.Trim(strings.TrimSpace(token), "/")
-	if token == "" {
+	infoRequest := false
+	if t, ok := strings.CutSuffix(token, "/info"); ok {
+		token, infoRequest = t, true
+	}
+	if token == "" || strings.Contains(token, "/") {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "share link not found"})
 		return
 	}
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Referrer-Policy", "no-referrer")
 
-	link, err := s.shareLinks.ReserveDownload(token, time.Now().UTC())
+	switch {
+	case infoRequest && r.Method == http.MethodGet:
+		s.handleShareInfo(w, token)
+		return
+	case !infoRequest && (r.Method == http.MethodGet || r.Method == http.MethodPost):
+	default:
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
+
+	// A browser form post gets redirects back to the landing page instead
+	// of JSON errors.
+	formPost := r.Method == http.MethodPost
+	fail := func(status int, code, msg string) {
+		if formPost {
+			http.Redirect(w, r, "/s/"+url.PathEscape(token)+"?error="+code, http.StatusSeeOther)
+			return
+		}
+		writeJSON(w, status, map[string]string{"error": msg, "code": code})
+	}
+
+	link, err := s.shareLinks.Get(token)
 	switch {
 	case errors.Is(err, store.ErrNotFound) || (err == nil && link == nil):
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "share link not found"})
-		return
-	case errors.Is(err, ErrShareLinkExpired):
-		writeJSON(w, http.StatusGone, map[string]string{"error": err.Error()})
-		return
-	case errors.Is(err, ErrShareLinkDownloadLimitExceeded):
-		writeJSON(w, http.StatusGone, map[string]string{"error": err.Error()})
+		fail(http.StatusNotFound, "not_found", "share link not found")
 		return
 	case err != nil:
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		fail(http.StatusInternalServerError, "server_error", "share link lookup failed")
+		return
+	}
+
+	if link.Protected() {
+		password := r.Header.Get("X-Share-Password")
+		if formPost {
+			r.Body = http.MaxBytesReader(w, r.Body, 4096)
+			if err := r.ParseForm(); err == nil {
+				password = r.PostForm.Get("password")
+			}
+		}
+		throttle := s.auth.IPThrottle()
+		now := time.Now()
+		if banErr := throttle.Check(r.RemoteAddr, now); banErr != nil {
+			fail(http.StatusTooManyRequests, "throttled", "too many failed attempts, try again later")
+			return
+		}
+		if password == "" || !auth.VerifyPassword(password, link.PasswordHash) {
+			if password != "" {
+				throttle.RecordFailure(r.RemoteAddr, now)
+				s.emitAuditFor(r, link.Username, audit.EventShareDownload, link.Path, "failed", "wrong share password", map[string]string{"share": shortToken(token)})
+			}
+			fail(http.StatusUnauthorized, "password_required", "this link needs a password")
+			return
+		}
+	}
+
+	link, err = s.shareLinks.ReserveDownload(token, time.Now().UTC())
+	switch {
+	case errors.Is(err, store.ErrNotFound) || (err == nil && link == nil):
+		fail(http.StatusNotFound, "not_found", "share link not found")
+		return
+	case errors.Is(err, ErrShareLinkExpired):
+		fail(http.StatusGone, "expired", err.Error())
+		return
+	case errors.Is(err, ErrShareLinkDownloadLimitExceeded):
+		fail(http.StatusGone, "exhausted", err.Error())
+		return
+	case err != nil:
+		fail(http.StatusInternalServerError, "server_error", err.Error())
 		return
 	}
 	releaseReservation := true
@@ -1635,24 +1719,24 @@ func (s *Server) handleShareDownload(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	if s.fsBuilder == nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "filesystem builder is not available"})
+		fail(http.StatusInternalServerError, "server_error", "filesystem builder is not available")
 		return
 	}
 	fsys, err := s.fsBuilder(link.Username)
 	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "unable to open shared file"})
+		fail(http.StatusInternalServerError, "server_error", "unable to open shared file")
 		return
 	}
 	f, err := fsys.Open(link.Path, os.O_RDONLY, 0)
 	if err != nil {
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "shared file is not available"})
+		fail(http.StatusNotFound, "unavailable", "shared file is not available")
 		return
 	}
 	defer f.Close()
 
 	info, _ := f.Stat()
 	if info != nil && info.IsDir() {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "shared target is a directory"})
+		fail(http.StatusBadRequest, "unavailable", "shared target is a directory")
 		return
 	}
 
@@ -1661,9 +1745,48 @@ func (s *Server) handleShareDownload(w http.ResponseWriter, r *http.Request) {
 	if info != nil {
 		w.Header().Set("Content-Length", strconv.FormatInt(info.Size(), 10))
 	}
-	if _, err := io.Copy(w, f); err == nil {
+	n, copyErr := io.Copy(w, f)
+	status := "ok"
+	if copyErr == nil {
 		releaseReservation = false
+	} else {
+		status = "incomplete"
 	}
+	s.emitAuditFor(r, link.Username, audit.EventShareDownload, link.Path, status, "share download", map[string]string{
+		"share": shortToken(token),
+		"bytes": strconv.FormatInt(n, 10),
+	})
+}
+
+// handleShareInfo describes a link for the public landing page without
+// consuming a download. It reveals only the file's name and size.
+func (s *Server) handleShareInfo(w http.ResponseWriter, token string) {
+	link, err := s.shareLinks.Get(token)
+	if err != nil || link == nil {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "share link not found", "code": "not_found"})
+		return
+	}
+	now := time.Now().UTC()
+	out := map[string]any{
+		"name":               path.Base(link.Path),
+		"expires_at":         link.ExpiresAt,
+		"password_protected": link.Protected(),
+		"expired":            !link.ExpiresAt.IsZero() && now.After(link.ExpiresAt),
+		"exhausted":          link.MaxDownloads > 0 && link.DownloadCount >= link.MaxDownloads,
+	}
+	if link.MaxDownloads > 0 {
+		out["downloads_remaining"] = max(link.MaxDownloads-link.DownloadCount, 0)
+	}
+	if s.fsBuilder != nil {
+		if fsys, err := s.fsBuilder(link.Username); err == nil {
+			if info, err := fsys.Stat(link.Path); err == nil && !info.IsDir() {
+				out["size"] = info.Size()
+			} else {
+				out["unavailable"] = true
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
@@ -1686,12 +1809,11 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 	if page < 1 {
 		page = 1
 	}
-	viewer := currentUser(r)
-	username := s.viewerScopedUsername(viewer, r.URL.Query().Get("username"))
-	protocol := strings.TrimSpace(r.URL.Query().Get("protocol"))
-	eventType := strings.TrimSpace(r.URL.Query().Get("type"))
-	status := strings.TrimSpace(r.URL.Query().Get("status"))
-	query := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
+	q, err := s.parseAuditQuery(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
 
 	// Stream the audit log instead of replaying it: matches are counted and
 	// only the requested page window is retained, so per-request memory does
@@ -1700,7 +1822,7 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 	// in file order and reversed below.
 	total := 0
 	if err := s.streamAuditEvents(func(fields auditEventFilterFields, _ []byte) error {
-		if fields.matches(username, protocol, eventType, status, query) {
+		if fields.matches(q) {
 			total++
 		}
 		return nil
@@ -1722,7 +1844,7 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 	eventsPage := make([]map[string]any, 0, limit)
 	matchIdx := 0
 	if err := s.streamAuditEvents(func(fields auditEventFilterFields, line []byte) error {
-		if !fields.matches(username, protocol, eventType, status, query) {
+		if !fields.matches(q) {
 			return nil
 		}
 		if matchIdx >= windowLo && matchIdx < windowHi {
@@ -1779,13 +1901,12 @@ func (s *Server) handleAuditExport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	viewer := currentUser(r)
-	username := s.viewerScopedUsername(viewer, r.URL.Query().Get("username"))
-	protocol := strings.TrimSpace(r.URL.Query().Get("protocol"))
-	eventType := strings.TrimSpace(r.URL.Query().Get("type"))
-	status := strings.TrimSpace(r.URL.Query().Get("status"))
-	query := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
-	filtered := filterAuditEvents(allEvents, username, protocol, eventType, status, query)
+	q, err := s.parseAuditQuery(r)
+	if err != nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	filtered := filterAuditEvents(allEvents, q)
 
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="audit-export.%s"`, format))
 	switch format {
@@ -2484,24 +2605,22 @@ func paginateTransfers(in []*transfer.Transfer, page, size int) ([]*transfer.Tra
 	return in[start:end], total
 }
 
-func filterAuditEvents(
-	events []map[string]any,
-	username, protocol, eventType, status, query string,
-) []map[string]any {
+func filterAuditEvents(events []map[string]any, q auditQuery) []map[string]any {
 	if len(events) == 0 {
 		return events
 	}
 	out := make([]map[string]any, 0, len(events))
 	for _, evt := range events {
 		fields := auditEventFilterFields{
-			Username: strField(evt, "username"),
-			Protocol: strField(evt, "protocol"),
-			Type:     strField(evt, "type"),
-			Status:   strField(evt, "status"),
-			Message:  strField(evt, "message"),
-			Path:     strField(evt, "path"),
+			Username:  strField(evt, "username"),
+			Protocol:  strField(evt, "protocol"),
+			Type:      strField(evt, "type"),
+			Status:    strField(evt, "status"),
+			Message:   strField(evt, "message"),
+			Path:      strField(evt, "path"),
+			Timestamp: strField(evt, "timestamp"),
 		}
-		if fields.matches(username, protocol, eventType, status, query) {
+		if fields.matches(q) {
 			out = append(out, evt)
 		}
 	}
@@ -2512,22 +2631,82 @@ func filterAuditEvents(
 // filter arguments shared by the whole-file and streaming audit readers.
 // The receiver carries the event's own field values; the arguments carry the
 // request filters (username is the viewer-scoped username).
-func (f auditEventFilterFields) matches(username, protocol, eventType, status, query string) bool {
-	if username != "" && !strings.EqualFold(f.Username, username) {
+// auditQuery is a parsed audit filter. Empty fields match everything; From
+// is inclusive and To exclusive.
+type auditQuery struct {
+	Username, Protocol, Type, Status string
+	// Text is a lower-cased substring searched across the text fields.
+	Text     string
+	From, To time.Time
+}
+
+// parseAuditQuery reads the audit filter parameters. from/to accept RFC 3339
+// times or YYYY-MM-DD dates (UTC); a bare "to" date includes that whole day.
+func (s *Server) parseAuditQuery(r *http.Request) (auditQuery, error) {
+	v := r.URL.Query()
+	q := auditQuery{
+		Username: s.viewerScopedUsername(currentUser(r), v.Get("username")),
+		Protocol: strings.TrimSpace(v.Get("protocol")),
+		Type:     strings.TrimSpace(v.Get("type")),
+		Status:   strings.TrimSpace(v.Get("status")),
+		Text:     strings.ToLower(strings.TrimSpace(v.Get("q"))),
+	}
+	var err error
+	if q.From, err = parseAuditTime(v.Get("from"), false); err != nil {
+		return q, fmt.Errorf("from: %w", err)
+	}
+	if q.To, err = parseAuditTime(v.Get("to"), true); err != nil {
+		return q, fmt.Errorf("to: %w", err)
+	}
+	if !q.From.IsZero() && !q.To.IsZero() && !q.From.Before(q.To) {
+		return q, errors.New("from must be before to")
+	}
+	return q, nil
+}
+
+func parseAuditTime(raw string, endOfDay bool) (time.Time, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}, nil
+	}
+	if t, err := time.Parse(time.RFC3339, raw); err == nil {
+		return t, nil
+	}
+	d, err := time.Parse(time.DateOnly, raw)
+	if err != nil {
+		return time.Time{}, errors.New("use RFC 3339 or YYYY-MM-DD")
+	}
+	if endOfDay {
+		d = d.AddDate(0, 0, 1)
+	}
+	return d, nil
+}
+
+func (f auditEventFilterFields) matches(q auditQuery) bool {
+	if q.Username != "" && !strings.EqualFold(f.Username, q.Username) {
 		return false
 	}
-	if protocol != "" && !strings.EqualFold(f.Protocol, protocol) {
+	if q.Protocol != "" && !strings.EqualFold(f.Protocol, q.Protocol) {
 		return false
 	}
-	if eventType != "" && !strings.EqualFold(f.Type, eventType) {
+	if q.Type != "" && !strings.EqualFold(f.Type, q.Type) {
 		return false
 	}
-	if status != "" && !strings.EqualFold(f.Status, status) {
+	if q.Status != "" && !strings.EqualFold(f.Status, q.Status) {
 		return false
 	}
-	if query != "" {
+	if !q.From.IsZero() || !q.To.IsZero() {
+		ts, err := time.Parse(time.RFC3339Nano, f.Timestamp)
+		if err != nil {
+			return false
+		}
+		if (!q.From.IsZero() && ts.Before(q.From)) || (!q.To.IsZero() && !ts.Before(q.To)) {
+			return false
+		}
+	}
+	if q.Text != "" {
 		hay := strings.ToLower(strings.Join([]string{f.Username, f.Protocol, f.Type, f.Status, f.Message, f.Path}, " "))
-		if !strings.Contains(hay, query) {
+		if !strings.Contains(hay, q.Text) {
 			return false
 		}
 	}
@@ -2625,6 +2804,8 @@ type auditEventFilterFields struct {
 	Status   string `json:"status"`
 	Message  string `json:"message"`
 	Path     string `json:"path"`
+	// Timestamp stays a string; it is parsed only when a time range is set.
+	Timestamp string `json:"timestamp"`
 }
 
 // streamAuditEvents replays the audit log in file order (oldest first),
@@ -2659,12 +2840,13 @@ func (s *Server) streamAuditEvents(visit func(fields auditEventFilterFields, lin
 				continue
 			}
 			fields = auditEventFilterFields{
-				Username: strField(evt, "username"),
-				Protocol: strField(evt, "protocol"),
-				Type:     strField(evt, "type"),
-				Status:   strField(evt, "status"),
-				Message:  strField(evt, "message"),
-				Path:     strField(evt, "path"),
+				Username:  strField(evt, "username"),
+				Protocol:  strField(evt, "protocol"),
+				Type:      strField(evt, "type"),
+				Status:    strField(evt, "status"),
+				Message:   strField(evt, "message"),
+				Path:      strField(evt, "path"),
+				Timestamp: strField(evt, "timestamp"),
 			}
 		}
 		if err := visit(fields, line); err != nil {
