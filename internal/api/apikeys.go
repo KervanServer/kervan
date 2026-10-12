@@ -89,16 +89,22 @@ func (r *APIKeyRepository) Create(userID, name, permissions string) (string, *AP
 	return token, record, nil
 }
 
+// ErrAPIKeyNotFound covers both a missing key and someone else's key.
+var ErrAPIKeyNotFound = errors.New("api key not found")
+
 func (r *APIKeyRepository) Delete(userID, id string) error {
 	if r == nil || r.store == nil {
 		return errors.New("api key repository is not configured")
 	}
 	var record APIKeyRecord
 	if err := r.store.Get(collAPIKeys, id, &record); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return ErrAPIKeyNotFound
+		}
 		return err
 	}
 	if record.UserID != userID {
-		return errors.New("api key not found")
+		return ErrAPIKeyNotFound
 	}
 	return r.store.Delete(collAPIKeys, id)
 }

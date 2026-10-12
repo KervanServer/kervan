@@ -1,6 +1,7 @@
 package sftp
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -65,6 +66,10 @@ const (
 )
 
 const maxPacketSize = 16 * 1024 * 1024
+
+// packetPreallocLimit is the largest packet buffer allocated before its bytes
+// arrive; it covers every request OpenSSH clients send (see limits@openssh.com).
+const packetPreallocLimit = 512 * 1024
 
 type sftpHandler struct {
 	ch       ssh.Channel
@@ -950,9 +955,24 @@ func readPacket(r io.Reader) (byte, []byte, error) {
 	if n == 0 || n > maxPacketSize {
 		return 0, nil, errors.New("invalid packet size")
 	}
-	payload := make([]byte, n)
-	if _, err := io.ReadFull(r, payload); err != nil {
-		return 0, nil, err
+	// Allocate up front only for ordinary packets; a large declared length
+	// grows the buffer as bytes actually arrive, so a client cannot make the
+	// server reserve 16 MiB per channel without sending it.
+	var payload []byte
+	if n <= packetPreallocLimit {
+		payload = make([]byte, n)
+		if _, err := io.ReadFull(r, payload); err != nil {
+			return 0, nil, err
+		}
+	} else {
+		buf := bytes.NewBuffer(make([]byte, 0, packetPreallocLimit))
+		if _, err := io.CopyN(buf, r, int64(n)); err != nil {
+			if errors.Is(err, io.EOF) {
+				err = io.ErrUnexpectedEOF
+			}
+			return 0, nil, err
+		}
+		payload = buf.Bytes()
 	}
 	return payload[0], payload[1:], nil
 }

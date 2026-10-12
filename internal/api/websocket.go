@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kervanserver/kervan/internal/auth"
 	"github.com/kervanserver/kervan/internal/events"
 )
 
@@ -62,9 +63,9 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "missing token"})
 		return
 	}
-	user, err := s.activeUserFromBearerToken(token)
+	user, err := s.webSocketUser(token, r.RemoteAddr)
 	if err != nil {
-		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "invalid token"})
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": err.Error()})
 		return
 	}
 	username := strings.TrimSpace(user.Username)
@@ -126,6 +127,13 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	sendSnapshot := func() error {
+		// Re-check before every frame: the socket outlives the sign-in, so
+		// a disabled or expired account, a revoked session or a narrowed
+		// address list must end the stream too.
+		if _, err := s.webSocketUser(token, r.RemoteAddr); err != nil {
+			_ = writeFrameSafe(wsOpcodeClose, wsClosePayload(wsClosePolicyViolation, err.Error()))
+			return err
+		}
 		payload := s.buildWebSocketSnapshot(username, requestedTypes)
 		raw, err := json.Marshal(payload)
 		if err != nil {
@@ -491,4 +499,27 @@ func mapKeys(set map[string]struct{}) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// wsClosePolicyViolation is the RFC 6455 close code for policy violations.
+const wsClosePolicyViolation = 1008
+
+func wsClosePayload(code uint16, reason string) []byte {
+	if len(reason) > 120 {
+		reason = reason[:120]
+	}
+	return append([]byte{byte(code >> 8), byte(code)}, reason...)
+}
+
+// webSocketUser resolves the token's user and applies the per-user access
+// policy, as withAuth does for ordinary requests.
+func (s *Server) webSocketUser(token, remoteAddr string) (*auth.User, error) {
+	user, err := s.activeUserFromBearerToken(token)
+	if err != nil {
+		return nil, errors.New("invalid token")
+	}
+	if err := user.CheckAccess(remoteAddr, time.Now(), auth.ProtocolWebUI); err != nil {
+		return nil, err
+	}
+	return user, nil
 }

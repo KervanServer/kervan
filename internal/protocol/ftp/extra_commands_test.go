@@ -184,3 +184,19 @@ func TestFTPMiscCommands(t *testing.T) {
 		t.Fatalf("FEAT lacks MFMT: %q", lines)
 	}
 }
+
+// Data connections must not send TLS 1.3 session tickets (lftp uploads fail
+// otherwise); the control connection's config is left untouched.
+func TestDataTLSConfigDisablesSessionTickets(t *testing.T) {
+	base := selfSignedTLSConfig(t)
+	data := dataTLSConfig(base)
+	if !data.SessionTicketsDisabled || base.SessionTicketsDisabled {
+		t.Fatalf("data=%v base=%v", data.SessionTicketsDisabled, base.SessionTicketsDisabled)
+	}
+	if len(data.Certificates) != len(base.Certificates) {
+		t.Fatal("certificates not carried over")
+	}
+	if dataTLSConfig(nil) != nil {
+		t.Fatal("nil base must stay nil")
+	}
+}

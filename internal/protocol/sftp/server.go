@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net"
+	"runtime/debug"
 	"slices"
 	"strconv"
 	"strings"
@@ -285,7 +286,19 @@ func (s *Server) handleConn(cfg *ssh.ServerConfig, c net.Conn) {
 		if acceptErr != nil {
 			continue
 		}
-		go s.handleSessionChannel(channel, requests, userFS, username, c.RemoteAddr().String(), allowed, touch)
+		go func() {
+			// A panic in one channel must end that channel, not the process:
+			// the connection-level recover does not cover this goroutine.
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					if s.logger != nil {
+						s.logger.Error("sftp channel panicked", "panic", recovered, "user", username, "remote_addr", c.RemoteAddr().String(), "stack", string(debug.Stack()))
+					}
+					_ = channel.Close()
+				}
+			}()
+			s.handleSessionChannel(channel, requests, userFS, username, c.RemoteAddr().String(), allowed, touch)
+		}()
 	}
 }
 

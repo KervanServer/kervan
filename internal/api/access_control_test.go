@@ -96,8 +96,9 @@ func TestHandleSessionByIDDeniesOtherUsers(t *testing.T) {
 
 	srv.handleSessionByID(rec, req)
 
-	if rec.Code != http.StatusForbidden {
-		t.Fatalf("expected forbidden, got %d", rec.Code)
+	// Another user's session looks exactly like a missing one.
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected not found, got %d", rec.Code)
 	}
 }
 

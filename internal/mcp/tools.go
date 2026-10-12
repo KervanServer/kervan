@@ -3,11 +3,12 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 )
 
 func (s *Server) toolDefinitions() []map[string]any {
-	return []map[string]any{
+	return append([]map[string]any{
 		{
 			"name":        "list_users",
 			"description": "List local Kervan users without secrets.",
@@ -20,13 +21,16 @@ func (s *Server) toolDefinitions() []map[string]any {
 		},
 		{
 			"name":        "audit_query",
-			"description": "Read recent audit events and optionally filter by username or type.",
+			"description": "Read the newest audit events, optionally filtered by username, event type, status and time range.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
 					"limit":    map[string]any{"type": "integer", "minimum": 1, "maximum": 500},
 					"username": map[string]any{"type": "string"},
-					"type":     map[string]any{"type": "string"},
+					"type":     map[string]any{"type": "string", "description": "e.g. auth.failure, file.write, admin.user.update"},
+					"status":   map[string]any{"type": "string", "description": "ok, failed, rejected, incomplete, aborted"},
+					"from":     map[string]any{"type": "string", "description": "RFC 3339 time or YYYY-MM-DD (inclusive)"},
+					"to":       map[string]any{"type": "string", "description": "RFC 3339 time (exclusive) or YYYY-MM-DD (whole day included)"},
 				},
 			},
 		},
@@ -38,7 +42,7 @@ func (s *Server) toolDefinitions() []map[string]any {
 				"properties": map[string]any{},
 			},
 		},
-	}
+	}, s.extraToolDefinitions()...)
 }
 
 func (s *Server) handleToolCall(ctx context.Context, raw json.RawMessage) (any, *rpcError) {
@@ -67,6 +71,9 @@ func (s *Server) handleToolCall(ctx context.Context, raw json.RawMessage) (any, 
 			Limit    int    `json:"limit"`
 			Username string `json:"username"`
 			Type     string `json:"type"`
+			Status   string `json:"status"`
+			From     string `json:"from"`
+			To       string `json:"to"`
 		}](params.Arguments)
 		if err != nil {
 			return nil, &rpcError{Code: -32602, Message: "invalid audit_query arguments"}
@@ -74,10 +81,18 @@ func (s *Server) handleToolCall(ctx context.Context, raw json.RawMessage) (any, 
 		if args.Limit <= 0 {
 			args.Limit = 50
 		}
+		from, fromErr := parseToolTime(args.From, false)
+		to, toErr := parseToolTime(args.To, true)
+		if fromErr != nil || toErr != nil {
+			return nil, &rpcError{Code: -32602, Message: "invalid audit_query time range: " + errors.Join(fromErr, toErr).Error()}
+		}
 		events, err := readRecentAuditEvents(s.auditLog, auditFilter{
-			Limit:    args.Limit,
+			Limit:    min(args.Limit, 500),
 			Username: args.Username,
 			Type:     args.Type,
+			Status:   args.Status,
+			From:     from,
+			To:       to,
 		})
 		if err != nil {
 			return nil, &rpcError{Code: -32603, Message: err.Error()}
@@ -97,6 +112,9 @@ func (s *Server) handleToolCall(ctx context.Context, raw json.RawMessage) (any, 
 		}
 		return makeTextResult(stats)
 	default:
+		if result, rpcErr, ok := s.handleExtraTool(params.Name, params.Arguments); ok {
+			return result, rpcErr
+		}
 		return nil, &rpcError{Code: -32601, Message: "unknown tool"}
 	}
 }

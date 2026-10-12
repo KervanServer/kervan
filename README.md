@@ -732,6 +732,33 @@ Limits:
 
 ---
 
+## MCP server
+
+`kervan mcp --config ./kervan.yaml` speaks the Model Context Protocol over
+stdio, so an MCP client such as Claude Code or Claude Desktop can inspect a
+Kervan installation. It reads the same store and audit log as the server
+(running or not) and is read-only.
+
+| Tool | What it returns |
+|---|---|
+| `list_users` | Users without secrets (`enabled_only` filter) |
+| `get_user` | One user: group, quotas, sign-in restrictions, SSH key fingerprints and the effective policy |
+| `list_groups` | Groups with their templates and member counts |
+| `audit_query` | Newest audit events; filters `username`, `type`, `status`, `from`, `to`, `limit` (≤ 500) |
+| `verify_audit` | Result of verifying the tamper-evident audit chain |
+| `transfer_stats` | Transfer statistics (only when running inside the server process) |
+
+Resources: `kervan://config/summary`, `kervan://users` and
+`kervan://audit/recent`.
+
+Example client entry:
+
+```json
+{ "mcpServers": { "kervan": { "command": "kervan", "args": ["mcp", "--config", "/etc/kervan/kervan.yaml"] } } }
+```
+
+---
+
 ## REST API
 
 The management API is served from the same process as the WebUI (default
@@ -886,31 +913,9 @@ All listeners (FTP, FTPS, SFTP/SCP and the WebUI/API) share these controls:
 
 ## Project Layout
 
-```
-cmd/kervan/              # Entry point + CLI subcommands (init, keygen, admin, version)
-internal/
-  api/                   # REST API router, JWT-style tokens, file/audit handlers
-  audit/                 # Event schema + JSONL file sink
-  auth/                  # Auth engine, user repo, Argon2id/bcrypt hashing
-  build/                 # Version & build metadata
-  config/                # Loader, defaults, env overlay and validation
-  crypto/                # TLS config builder, SSH host-key generation
-  protocol/
-    ftp/                 # FTP (and FTPS wrapper) server
-    sftp/                # SFTP + SCP subsystem over SSH
-  server/                # Top-level Application wiring all subsystems
-  session/               # Session manager
-  storage/
-    local/               # Local filesystem backend
-    memory/              # In-memory backend
-  store/                 # Embedded JSON-backed key-value store
-  transfer/              # Transfer tracker
-  util/                  # Logging, ULID generation helpers
-  vfs/                   # VFS interface, resolver, mount registry, user VFS
-  webui/                 # embed.FS handler for the bundled dashboard
-kervan.example.yaml      # Reference configuration
-.project/SPECIFICATION.md  # Full product specification
-```
+See [CONTRIBUTING.md](CONTRIBUTING.md#architecture) for the package map,
+architecture overview and development workflow. The REST API is described in
+[docs/openapi.yaml](docs/openapi.yaml).
 
 ---
 

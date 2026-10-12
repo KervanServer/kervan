@@ -103,7 +103,7 @@ func TestServerToolsAndResources(t *testing.T) {
 	}
 
 	toolsList := responses[1]["result"].(map[string]any)
-	if len(toolsList["tools"].([]any)) != 3 {
+	if len(toolsList["tools"].([]any)) != 6 {
 		t.Fatalf("unexpected tools payload: %#v", toolsList)
 	}
 

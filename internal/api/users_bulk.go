@@ -12,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/kervanserver/kervan/internal/audit"
 	"github.com/kervanserver/kervan/internal/auth"
 )
 
@@ -113,6 +114,16 @@ func (s *Server) handleUsersExport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	includePasswordHashes := parseBoolQuery(r.URL.Query().Get("include_password_hashes"))
+	// Hashes are credential material: only a signed-in admin may export
+	// them, never a (read-scoped) API key.
+	if includePasswordHashes && r.Header.Get("X-Auth-Method") != "bearer" {
+		writeJSON(w, http.StatusForbidden, map[string]string{"error": "exporting password hashes requires a signed-in admin session, not an API key"})
+		return
+	}
+	s.emitAudit(r, audit.EventAdminUserExport, "", "ok", "users exported", map[string]string{
+		"format":          format,
+		"password_hashes": strconv.FormatBool(includePasswordHashes),
+	})
 
 	users, err := s.users.List()
 	if err != nil {
@@ -160,9 +171,9 @@ func (s *Server) handleUsersExport(w http.ResponseWriter, r *http.Request) {
 		_ = encoder.Encode(records)
 	case "csv":
 		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
-		if err := writeUserExportCSV(w, records, includePasswordHashes); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-			return
+		// Headers are already sent; a failure is the client going away.
+		if err := writeUserExportCSV(w, records, includePasswordHashes); err != nil && s.logger != nil {
+			s.logger.Warn("user csv export failed", "error", err)
 		}
 	default:
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "unsupported format"})

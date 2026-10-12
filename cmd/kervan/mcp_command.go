@@ -37,6 +37,7 @@ func runMCPCommand(stdin io.Reader, stdout io.Writer, args []string) error {
 	}
 
 	server := mcp.NewServer(ctx.cfg, ctx.repo, nil, auditLog, stdin, stdout)
+	server.SetGroups(ctx.groups)
 	if err := server.Serve(context.Background()); err != nil {
 		return fmt.Errorf("serve MCP stdio session: %w", err)
 	}

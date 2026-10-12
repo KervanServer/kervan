@@ -28,6 +28,7 @@ type Server struct {
 	repo      *auth.UserRepository
 	auditLog  string
 	transfers *transfer.Manager
+	groups    *auth.GroupRepository
 	reader    *bufio.Reader
 	writer    io.Writer
 }

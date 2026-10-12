@@ -31,7 +31,7 @@ type Transfer struct {
 	BytesDone    int64     `json:"bytes_done"`
 	BytesTotal   int64     `json:"bytes_total,omitempty"`
 	StartedAt    time.Time `json:"started_at"`
-	CompletedAt  time.Time `json:"completed_at,omitempty"`
+	CompletedAt  time.Time `json:"completed_at,omitzero"`
 	ErrorMessage string    `json:"error_message,omitempty"`
 }
 

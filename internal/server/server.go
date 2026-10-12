@@ -951,12 +951,11 @@ func joinPath(prefix, key string) string {
 	return prefix + "." + key
 }
 
+// isSensitivePath reports whether a config patch may not touch path. It
+// uses the redaction rule, so anything hidden from GET is also unpatchable
+// (e.g. storage.backends.*.options.access_key).
 func isSensitivePath(path string) bool {
-	lower := strings.ToLower(path)
-	if strings.Contains(lower, "password") || strings.Contains(lower, "secret") || strings.Contains(lower, "token") {
-		return true
-	}
-	return strings.Contains(lower, "private_key")
+	return shouldRedact(path)
 }
 
 func isSameJSONValue(a, b any) bool {

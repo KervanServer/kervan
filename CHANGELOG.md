@@ -19,6 +19,64 @@
   results, shows user, protocol, address and details for each event, and
   exports with the same filters.
 
+- **MCP tools.** `get_user` (sign-in restrictions, SSH key fingerprints,
+  effective policy), `list_groups` and `verify_audit` (checks the
+  tamper-evident chain). `audit_query` now also filters by `status`,
+  `from` and `to`. The README gains an MCP section.
+- **Fuzz targets** for the SFTP packet handler, SCP sink and exec parser,
+  the FTP command loop and its path/command parsers (`go test -fuzz`).
+  `go test` runs their seed corpora, including the crashers found so far.
+- **Interop suite.** `make interop` runs lftp (FTP, explicit and implicit
+  FTPS, SFTP), rclone (FTP, FTPS, SFTP) and paramiko against a running
+  server: 26 checks.
+- **Docs.** `docs/openapi.yaml` (OpenAPI 3.1 reference for the REST API),
+  `CONTRIBUTING.md` (workflow, architecture map, conventions, release
+  steps), and an up-to-date `.project/ROADMAP.md`.
+
+### Fixed
+
+- **FTPS uploads from lftp (GnuTLS) failed** with `426` and empty files.
+  Under TLS 1.3 the server sent session tickets on the data connection that
+  the client never read, so its close turned into a TCP reset that dropped
+  the upload. Data connections no longer issue session tickets.
+- **An SFTP write at a huge offset crashed the server** when the user's
+  storage was the memory backend: the backend tried to allocate the whole
+  gap. The memory backend now refuses gaps over 64 MiB and files over
+  4 GiB, writes in place instead of copying the file on every write, and
+  rejects overflowing seeks.
+- **A panic in an SFTP/SCP channel ended the whole process**, because the
+  channel goroutine had no recovery. It now ends only that channel and is
+  logged.
+- **SFTP packets declaring a large length** (up to 16 MiB) were allocated
+  in full before any data arrived. Buffers above 512 KiB now grow only as
+  the data actually arrives.
+- Failed FTP transfers are now logged with the underlying error.
+- **Admin file actions were audited under the wrong user.** When an admin
+  worked on another user's files through `/api/v1/files/{user}/…`, the
+  audit record named the owner as the actor. It now names the admin, with
+  the owner in `meta.target_user`.
+- **The WebSocket ignored sign-in restrictions.** It now applies expiry,
+  allowed addresses and allowed protocols at connect and before every
+  snapshot, so a disabled or expired account loses its live stream too.
+- **Client-sent `X-Auth-*` headers** are now stripped before routing. They
+  were already overwritten on authenticated routes, but public routes could
+  see them.
+- **Password-hash export** (`/api/v1/users/export?include_password_hashes=1`)
+  now requires a signed-in admin session; a `users:read` API key gets 403.
+  Every user export is audited (`admin.user.export`).
+- **Config patches** can no longer change fields the config view redacts,
+  such as `storage.backends.*.options.access_key`.
+- **Existence probing.** Another user's session or share link now returns
+  404, like a missing one, instead of 403. Deleting an unknown API key
+  returns 404 (was 400). An admin naming an unknown user under
+  `/api/v1/files/{user}/` gets 404 (was 500).
+- `GET /api/v1/server/status` rejects other methods with 405.
+- Audit export validates its filters before reading the log, and streams
+  the log, keeping only matching events. A CSV export cut short no longer
+  tries to write a JSON error after the headers were sent.
+- `completed_at` is omitted for transfers still in progress (it showed the
+  zero time).
+
 ### Changed
 
 - Share-link `share_url` is now the landing page (`/s/<token>`). The direct

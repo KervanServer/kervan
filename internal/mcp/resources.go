@@ -16,6 +16,9 @@ type auditFilter struct {
 	Limit    int
 	Username string
 	Type     string
+	Status   string
+	// From is inclusive and To exclusive; zero values are unbounded.
+	From, To time.Time
 }
 
 func (s *Server) resourceDefinitions() []map[string]any {
@@ -171,6 +174,12 @@ func readRecentAuditEvents(auditLog string, filter auditFilter) ([]audit.Event, 
 			continue
 		}
 		if filter.Type != "" && !strings.EqualFold(string(evt.Type), filter.Type) {
+			continue
+		}
+		if filter.Status != "" && !strings.EqualFold(evt.Status, filter.Status) {
+			continue
+		}
+		if (!filter.From.IsZero() && evt.Timestamp.Before(filter.From)) || (!filter.To.IsZero() && !evt.Timestamp.Before(filter.To)) {
 			continue
 		}
 		if len(ring) < filter.Limit {

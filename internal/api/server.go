@@ -672,6 +672,10 @@ func (s *Server) handleTOTPEnable(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleServerStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
+		return
+	}
 	if !s.isAdminUser(currentUser(r)) {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "admin access required"})
 		return
@@ -1029,7 +1033,8 @@ func (s *Server) handleSessionByID(w http.ResponseWriter, r *http.Request) {
 
 	viewer := currentUser(r)
 	if !s.isAdminUser(viewer) && !strings.EqualFold(viewer, sessionItem.Username) {
-		writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
+		// Same answer as a missing session, so IDs cannot be probed.
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "session not found"})
 		return
 	}
 
@@ -1120,7 +1125,11 @@ func (s *Server) handleAPIKeys(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.apiKeys.Delete(user.ID, id); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			status := http.StatusInternalServerError
+			if errors.Is(err, ErrAPIKeyNotFound) {
+				status = http.StatusNotFound
+			}
+			writeJSON(w, status, map[string]string{"error": err.Error()})
 			return
 		}
 		s.emitAudit(r, audit.EventAdminAPIKeyDelete, "", "ok", "api key revoked", map[string]string{"key_id": id})
@@ -1464,6 +1473,17 @@ func (s *Server) handleFilesV1(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
 		return
 	}
+	if !strings.EqualFold(targetUser, currentUser(r)) {
+		// Only admins get here; name a missing user plainly instead of
+		// failing later inside the filesystem builder.
+		if target, err := s.users.GetByUsername(targetUser); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		} else if target == nil {
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "user not found"})
+			return
+		}
+	}
 
 	requestWithTarget := withTargetUser(r, targetUser)
 	action := parts[1]
@@ -1570,7 +1590,8 @@ func (s *Server) handleShareLinks(w http.ResponseWriter, r *http.Request) {
 		}
 		requestUser := currentUser(r)
 		if !s.isAdminUser(requestUser) && !strings.EqualFold(requestUser, link.Username) {
-			writeJSON(w, http.StatusForbidden, map[string]string{"error": "forbidden"})
+			// Same answer as a missing link, so tokens cannot be probed.
+			writeJSON(w, http.StatusNotFound, map[string]string{"error": "share link not found"})
 			return
 		}
 		if err := s.shareLinks.Delete(token); err != nil {
@@ -1895,18 +1916,28 @@ func (s *Server) handleAuditExport(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	allEvents, err := s.readAllAuditEvents()
-	if err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-		return
-	}
-
 	q, err := s.parseAuditQuery(r)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	filtered := filterAuditEvents(allEvents, q)
+	// Stream the log and keep only matches, so a narrow export of a large
+	// log does not load the whole log into memory.
+	filtered := []map[string]any{}
+	if err := s.streamAuditEvents(func(fields auditEventFilterFields, line []byte) error {
+		if !fields.matches(q) {
+			return nil
+		}
+		var evt map[string]any
+		if json.Unmarshal(line, &evt) == nil {
+			filtered = append(filtered, evt)
+		}
+		return nil
+	}); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	slices.Reverse(filtered) // newest first
 
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="audit-export.%s"`, format))
 	switch format {
@@ -1917,9 +1948,10 @@ func (s *Server) handleAuditExport(w http.ResponseWriter, r *http.Request) {
 		_ = encoder.Encode(filtered)
 	case "csv":
 		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
-		if err := writeAuditCSV(w, filtered); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-			return
+		// Headers are already sent; a failure here is the client going
+		// away, so it is only logged.
+		if err := writeAuditCSV(w, filtered); err != nil && s.logger != nil {
+			s.logger.Warn("audit csv export failed", "error", err)
 		}
 	}
 }
@@ -2070,6 +2102,9 @@ var contentSecurityPolicy = webui.ContentSecurityPolicy()
 
 func (s *Server) withMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for _, h := range internalAuthHeaders {
+			r.Header.Del(h)
+		}
 		// /health stays reachable so local container/LB probes keep working
 		// under a restrictive allow list; it exposes no sensitive data.
 		if r.URL.Path != "/health" && !s.ipFilter().AllowedRemote(r.RemoteAddr) {
@@ -2771,21 +2806,6 @@ func (s *Server) readRecentAuditEvents(limit int) []map[string]any {
 	return events
 }
 
-// readAllAuditEvents returns every event across the rotated log set, newest
-// first.
-func (s *Server) readAllAuditEvents() ([]map[string]any, error) {
-	events := []map[string]any{}
-	err := s.streamAuditEvents(func(_ auditEventFilterFields, line []byte) error {
-		var evt map[string]any
-		if json.Unmarshal(line, &evt) == nil {
-			events = append(events, evt)
-		}
-		return nil
-	})
-	slices.Reverse(events)
-	return events, err
-}
-
 // maxAuditScanLineBytes bounds the scanner buffer for replaying audit lines;
 // audit events are small JSON objects, with generous headroom for odd lines.
 const maxAuditScanLineBytes = 1 << 20
@@ -2889,11 +2909,20 @@ func normalizeTargetUser(raw, current string) string {
 	return name
 }
 
+// withTargetUser runs a file handler as username (whose filesystem it acts
+// on) while X-Auth-Actor keeps the authenticated caller for the audit log.
 func withTargetUser(r *http.Request, username string) *http.Request {
 	clone := r.Clone(r.Context())
+	if actor := currentUser(r); actor != "" && !strings.EqualFold(actor, username) {
+		clone.Header.Set("X-Auth-Actor", actor)
+	}
 	clone.Header.Set("X-Auth-User", username)
 	return clone
 }
+
+// internalAuthHeaders are set by the auth middleware only; any client-sent
+// copies are dropped before routing so they cannot be spoofed.
+var internalAuthHeaders = []string{"X-Auth-User", "X-Auth-Method", "X-Auth-Permissions", "X-Auth-Actor"}
 
 func isBodyEmpty(r *http.Request) bool {
 	return r.Body == nil || r.ContentLength == 0

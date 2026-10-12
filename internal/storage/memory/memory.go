@@ -1,10 +1,10 @@
 package memory
 
 import (
-	"bytes"
 	"errors"
 	"io"
 	"io/fs"
+	"math"
 	"os"
 	"path"
 	"sort"
@@ -313,7 +313,7 @@ type memFile struct {
 	node    *node
 	offset  int
 	closed  bool
-	buf     *bytes.Buffer
+	data    []byte
 	mode    os.FileMode
 	modTime time.Time
 }
@@ -324,7 +324,7 @@ func newMemFile(b *Backend, path string, n *node, offset int) *memFile {
 		path:    path,
 		node:    n,
 		offset:  offset,
-		buf:     bytes.NewBuffer(append([]byte(nil), n.data...)),
+		data:    append([]byte(nil), n.data...),
 		mode:    n.mode,
 		modTime: n.modTime,
 	}
@@ -334,7 +334,7 @@ func (m *memFile) Read(p []byte) (int, error) {
 	if m.closed {
 		return 0, os.ErrClosed
 	}
-	data := m.buf.Bytes()
+	data := m.data
 	if m.offset >= len(data) {
 		return 0, io.EOF
 	}
@@ -347,7 +347,7 @@ func (m *memFile) ReadAt(p []byte, off int64) (int, error) {
 	if m.closed {
 		return 0, os.ErrClosed
 	}
-	data := m.buf.Bytes()
+	data := m.data
 	if off >= int64(len(data)) {
 		return 0, io.EOF
 	}
@@ -358,27 +358,48 @@ func (m *memFile) ReadAt(p []byte, off int64) (int, error) {
 	return n, nil
 }
 
+// maxMemFileSize caps a single in-memory file. The memory backend keeps
+// whole files in RAM, so writes past this point are refused rather than
+// attempted (a write at a huge offset would otherwise try to allocate it).
+const maxMemFileSize = 4 << 30
+
+// maxMemHole bounds how far past the end of a file a write or truncate may
+// start. Files here cannot be sparse, so a gap is allocated in full; real
+// clients write at most a few MiB ahead (pipelined SFTP requests), so a
+// larger gap is refused instead of letting one request allocate gigabytes.
+const maxMemHole = 64 << 20
+
+var (
+	errMemFileTooLarge = errors.New("memory backend: file would exceed 4 GiB")
+	errMemHoleTooLarge = errors.New("memory backend: write leaves a gap larger than 64 MiB")
+)
+
 func (m *memFile) Write(p []byte) (int, error) {
 	if m.closed {
 		return 0, os.ErrClosed
 	}
-	data := m.buf.Bytes()
-	if m.offset > len(data) {
-		pad := make([]byte, m.offset-len(data))
-		_, _ = m.buf.Write(pad)
-		data = m.buf.Bytes()
+	if m.offset > maxMemFileSize || len(p) > maxMemFileSize-m.offset {
+		return 0, errMemFileTooLarge
 	}
-	head := append([]byte(nil), data[:m.offset]...)
-	tail := []byte{}
-	if m.offset < len(data) {
-		tail = data[m.offset:]
+	if m.offset > len(m.data)+maxMemHole {
+		return 0, errMemHoleTooLarge
 	}
-	next := append(head, p...)
-	if len(tail) > len(p) {
-		next = append(next, tail[len(p):]...)
+	end := m.offset + len(p)
+	if end > len(m.data) {
+		oldLen := len(m.data)
+		if end <= cap(m.data) {
+			m.data = m.data[:end]
+			// Bytes past the old length may hold data from before a
+			// truncate; a gap must read back as zeros.
+			clear(m.data[oldLen:m.offset])
+		} else {
+			grown := make([]byte, end, max(end, 2*cap(m.data)))
+			copy(grown, m.data)
+			m.data = grown
+		}
 	}
-	m.buf = bytes.NewBuffer(next)
-	m.offset += len(p)
+	copy(m.data[m.offset:], p)
+	m.offset = end
 	return len(p), nil
 }
 
@@ -401,9 +422,12 @@ func (m *memFile) Seek(offset int64, whence int) (int64, error) {
 	case io.SeekCurrent:
 		base = m.offset
 	case io.SeekEnd:
-		base = len(m.buf.Bytes())
+		base = len(m.data)
 	default:
 		return 0, errors.New("invalid whence")
+	}
+	if offset > math.MaxInt-int64(base) {
+		return 0, errors.New("seek offset overflows")
 	}
 	next := base + int(offset)
 	if next < 0 {
@@ -424,7 +448,7 @@ func (m *memFile) Close() error {
 	// Rename keeps the same node, so buffered data follows the new name; a
 	// removed node is unreachable, so buffered writes are discarded like
 	// writes to an unlinked POSIX inode.
-	m.node.data = append([]byte(nil), m.buf.Bytes()...)
+	m.node.data = append([]byte(nil), m.data...)
 	m.node.modTime = time.Now().UTC()
 	m.node.mode = m.mode
 	m.backend.mu.Unlock()
@@ -437,7 +461,7 @@ func (m *memFile) Stat() (os.FileInfo, error) {
 	}
 	return memFileInfo{
 		name:    path.Base(m.path),
-		size:    int64(len(m.buf.Bytes())),
+		size:    int64(len(m.data)),
 		mode:    m.mode,
 		modTime: m.modTime,
 	}, nil
@@ -449,14 +473,18 @@ func (m *memFile) Truncate(size int64) error {
 	if size < 0 {
 		return errors.New("negative size")
 	}
-	data := m.buf.Bytes()
-	switch {
-	case int(size) < len(data):
-		data = data[:size]
-	case int(size) > len(data):
-		data = append(data, make([]byte, int(size)-len(data))...)
+	if size > maxMemFileSize {
+		return errMemFileTooLarge
 	}
-	m.buf = bytes.NewBuffer(data)
+	if size > int64(len(m.data))+maxMemHole {
+		return errMemHoleTooLarge
+	}
+	switch {
+	case int(size) < len(m.data):
+		m.data = m.data[:size]
+	case int(size) > len(m.data):
+		m.data = append(m.data, make([]byte, int(size)-len(m.data))...)
+	}
 	if m.offset > int(size) {
 		m.offset = int(size)
 	}

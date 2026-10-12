@@ -6,7 +6,7 @@ LDFLAGS := -s -w \
   -X github.com/kervanserver/kervan/internal/build.Commit=$(COMMIT) \
   -X github.com/kervanserver/kervan/internal/build.Date=$(DATE)
 
-.PHONY: build webui test check audit clean docker-build compose-config compose-up compose-down release-snapshot release-check
+.PHONY: build webui test check audit clean docker-build compose-config compose-up compose-down release-snapshot release-check interop
 
 build: webui
 	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/kervan ./cmd/kervan
@@ -34,6 +34,14 @@ check:
 
 # audit scans Go code (reachable stdlib/module vulnerabilities) and the WebUI
 # dependency tree for known security advisories.
+# interop runs third-party clients (lftp, rclone, paramiko) against a running
+# server; see scripts/interop/run.sh for the environment it needs.
+interop:
+	docker build -q -t kervan-interop scripts/interop
+	docker run --rm --network host -e KERVAN_HOST -e FTP_PORT -e FTPS_PORT -e SFTP_PORT \
+	  -e KERVAN_USER -e KERVAN_PASSWORD \
+	  -v $(CURDIR)/scripts/interop/run.sh:/run.sh:ro kervan-interop /run.sh
+
 audit:
 	@if command -v govulncheck >/dev/null 2>&1; then govulncheck ./...; \
 	  else echo "govulncheck not installed: go install golang.org/x/vuln/cmd/govulncheck@latest"; exit 1; fi

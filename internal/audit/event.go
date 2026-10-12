@@ -24,6 +24,7 @@ const (
 	EventAdminUserCreate   EventType = "admin.user.create"
 	EventAdminUserUpdate   EventType = "admin.user.update"
 	EventAdminUserDelete   EventType = "admin.user.delete"
+	EventAdminUserExport   EventType = "admin.user.export"
 	EventAdminGroupCreate  EventType = "admin.group.create"
 	EventAdminGroupUpdate  EventType = "admin.group.update"
 	EventAdminGroupDelete  EventType = "admin.group.delete"

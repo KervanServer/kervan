@@ -73,6 +73,10 @@ type Server struct {
 	buildFS  UserFSBuilder
 	xfer     *transfer.Manager
 	limiter  *netguard.Limiter
+	// dataWait bounds how long a transfer waits for its data connection.
+	dataWait time.Duration
+	// dataTLS is TLSConfig without session tickets, for data connections.
+	dataTLS *tls.Config
 
 	listeners []net.Listener
 	wg        sync.WaitGroup
@@ -114,7 +118,22 @@ func NewServer(cfg Config, logger *slog.Logger, authEngine *auth.Engine, session
 		buildFS:  buildFS,
 		xfer:     xfer,
 		limiter:  netguard.NewLimiter(cfg.MaxConnections),
+		dataTLS:  dataTLSConfig(cfg.TLSConfig),
 	}
+}
+
+// dataTLSConfig derives the data-connection TLS config. Session tickets are
+// off: under TLS 1.3 the server sends them right after the handshake, and a
+// client that never reads them (lftp/GnuTLS on upload) closes the socket
+// with unread data, which the kernel turns into a reset that can discard
+// the uploaded bytes.
+func dataTLSConfig(base *tls.Config) *tls.Config {
+	if base == nil {
+		return nil
+	}
+	cfg := base.Clone()
+	cfg.SessionTicketsDisabled = true
+	return cfg
 }
 
 func (s *Server) Start(ctx context.Context) error {
@@ -1068,6 +1087,9 @@ func (s *Server) endTransfer(conn net.Conn, state *connState, transferID string,
 			status = "aborted"
 		}
 	}
+	if err != nil && s.logger != nil {
+		s.logger.Warn("ftp transfer failed", "user", state.user.Username, "path", p, "op", msg, "bytes", n, "aborted", aborted, "error", err)
+	}
 	if s.xfer != nil && transferID != "" {
 		s.xfer.AddBytes(transferID, n)
 		if err != nil {
@@ -1139,11 +1161,18 @@ func (s *Server) enterPassiveMode(state *connState) error {
 	return nil
 }
 
+func (s *Server) dataWaitTimeout() time.Duration {
+	if s.dataWait > 0 {
+		return s.dataWait
+	}
+	return 30 * time.Second
+}
+
 func (s *Server) acceptDataConn(state *connState) (net.Conn, error) {
 	if state.activeAddr != "" {
 		target := state.activeAddr
 		state.activeAddr = ""
-		conn, err := net.DialTimeout("tcp", target, 30*time.Second)
+		conn, err := net.DialTimeout("tcp", target, s.dataWaitTimeout())
 		if err != nil {
 			return nil, err
 		}
@@ -1158,7 +1187,7 @@ func (s *Server) acceptDataConn(state *connState) (net.Conn, error) {
 		_ = ln.Close()
 	}()
 	if tcpLn, ok := ln.(*net.TCPListener); ok {
-		_ = tcpLn.SetDeadline(time.Now().Add(30 * time.Second))
+		_ = tcpLn.SetDeadline(time.Now().Add(s.dataWaitTimeout()))
 	}
 	controlHost := hostFromAddr(state.remoteAddr)
 	for {
@@ -1193,7 +1222,7 @@ func (s *Server) wrapDataConn(state *connState, conn net.Conn) net.Conn {
 		// channel, before (or concurrently with) the transfer command.
 		// Wrapping without an eager handshake lets it complete lazily on
 		// first I/O on either side; the transfer deadline below bounds it.
-		conn = tls.Server(conn, s.cfg.TLSConfig)
+		conn = tls.Server(conn, s.dataTLS)
 	}
 	_ = conn.SetDeadline(time.Now().Add(s.cfg.TransferTimeout))
 	return conn
@@ -1305,14 +1334,12 @@ func splitCommand(line string) (string, string) {
 	return cmd, strings.TrimSpace(parts[1])
 }
 
+// resolvePath returns the absolute, cleaned path arg names relative to cwd.
 func resolvePath(cwd, arg string) string {
-	if arg == "" {
-		return cwd
-	}
 	if strings.HasPrefix(arg, "/") {
 		return path.Clean(arg)
 	}
-	return path.Clean(path.Join(cwd, arg))
+	return path.Join("/", cwd, arg)
 }
 
 func writeReply(conn net.Conn, code int, msg string) {

@@ -375,7 +375,7 @@ func TestFTPReLoginReplacesSessionWithoutOrphan(t *testing.T) {
 	}
 }
 
-func selfSignedTLSConfig(t *testing.T) *tls.Config {
+func selfSignedTLSConfig(t testing.TB) *tls.Config {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {

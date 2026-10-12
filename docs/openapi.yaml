@@ -1,0 +1,2155 @@
+openapi: 3.1.0
+info:
+  title: Kervan REST API
+  version: 0.8.0
+  description: |
+    REST API of the Kervan file-transfer server (FTP/FTPS/SFTP/SCP with a WebUI).
+    It is served by the WebUI HTTP listener and backs the bundled single-page app.
+
+    **Authentication.** Protected endpoints accept either
+    - a WebUI session token (`Authorization: Bearer <token>`) obtained from
+      `POST /api/v1/auth/login` or the OIDC exchange, or
+    - an API key, sent as `X-API-Key: <key>` or `Authorization: ApiKey <key>`.
+      An API key is *not* accepted as a Bearer token: any `Bearer` value is
+      verified as a session token and rejected with 401 when invalid.
+
+    The authenticated user's access policy (account expiry, `allowed_ips`,
+    `allowed_protocols` must include `webui`) is re-checked on every request:
+    an expired account gets 401, other policy violations 403 with
+    `code: access_denied`.
+
+    **API key scopes.** Every API key carries scopes; each operation lists the
+    scope it needs in `x-required-scope`. Endpoints without a scope mapping
+    (account, TOTP) reject API keys with 403. Scopes:
+    `server:read`, `server:write`, `users:read`, `users:write`, `apikeys:read`,
+    `apikeys:write`, `sessions:read`, `sessions:write`, `files:read`,
+    `files:write`, `share:read`, `share:write`, `audit:read`, `transfers:read`.
+    Accepted shorthands when creating a key: `read-write` / `readwrite` / `write` / `*`
+    (all scopes), `read-only` / `readonly` / `read` (all `:read` scopes),
+    `<resource>:*` and `<resource>:rw` / `:readwrite` / `:read-write` / `:write-read`.
+    Presets returned by `GET /api/v1/apikeys`: `read-only`, `automation`
+    (files:read, files:write, share:read, share:write, transfers:read),
+    `operations` (server:read, sessions:read, sessions:write, audit:read,
+    transfers:read), `read-write` (all scopes). A scope never widens the
+    owner's rights: admin-only endpoints still require the key owner to be an admin.
+
+    **Errors** are JSON objects `{"error": "...", "code": "..."}` (`code` only
+    on some errors). Responses carry `X-Request-ID`, `Traceparent` and
+    `X-Trace-ID` headers. Requests from addresses blocked by
+    `security.allowed_ips` / `security.denied_ips` get a plain-text 403
+    (except `/health`).
+
+    **Legacy aliases.** Unversioned routes are still registered for backward
+    compatibility and are not documented separately: `/api/login`, `/api/ws`,
+    `/api/server/status`, `/api/users`, `/api/users/import`, `/api/users/export`,
+    `/api/groups`, `/api/apikeys`, `/api/sessions`, `/api/sessions/{id}`,
+    `/api/share`, `/api/share/{token}`, `/api/audit`, `/api/audit/export`,
+    `/api/transfers` (same handlers as their `/api/v1/...` counterparts) and the
+    file routes `/api/files/list|mkdir|delete|rename|upload|download`, which
+    always act on the caller's own files.
+servers:
+  - url: /
+tags:
+  - name: Auth
+  - name: Account
+  - name: Users
+  - name: Groups
+  - name: API keys
+  - name: Files
+  - name: Share links
+  - name: Sessions
+  - name: Transfers
+  - name: Audit
+  - name: Server
+  - name: Monitoring
+
+security:
+  - bearerAuth: []
+  - apiKeyHeader: []
+  - apiKeyAuthorization: []
+
+paths:
+  /health:
+    get:
+      tags: [Monitoring]
+      operationId: getHealth
+      summary: Health check
+      description: Public. Also reachable from addresses outside the IP allow list.
+      security: []
+      responses:
+        '200':
+          description: Health report (always 200; inspect `status`).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Health'}
+  /api/v1/health:
+    get:
+      tags: [Monitoring]
+      operationId: getHealthV1
+      summary: Health check (versioned alias)
+      description: Same handler as `/health`, but subject to the IP allow list.
+      security: []
+      responses:
+        '200':
+          description: Health report.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Health'}
+  /metrics:
+    get:
+      tags: [Monitoring]
+      operationId: getMetrics
+      summary: Prometheus metrics
+      description: Public. Prometheus text exposition format (`kervan_*` metrics).
+      security: []
+      responses:
+        '200':
+          description: Metrics.
+          content:
+            text/plain:
+              schema: {type: string}
+  /api/v1/metrics:
+    get:
+      tags: [Monitoring]
+      operationId: getMetricsV1
+      summary: Prometheus metrics (versioned alias)
+      security: []
+      responses:
+        '200':
+          description: Metrics.
+          content:
+            text/plain:
+              schema: {type: string}
+
+  /api/v1/auth/login:
+    post:
+      tags: [Auth]
+      operationId: login
+      summary: Sign in with username and password
+      description: |
+        Returns a session token for `Authorization: Bearer`. When two-factor
+        auth is enabled server-wide and for the user, `otp` is required;
+        a missing or wrong code returns 401 with `code: totp_required`.
+        Failed attempts are rate-limited per client IP (429 with `Retry-After`).
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                username: {type: string}
+                password: {type: string}
+                otp: {type: string, description: TOTP code}
+      responses:
+        '200':
+          description: Signed in.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/LoginResponse'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401':
+          description: 'Invalid credentials, or `code: totp_required`.'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '403':
+          description: 'User policy forbids WebUI sign-in from here (`code: access_denied`).'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '405': {$ref: '#/components/responses/MethodNotAllowed'}
+        '429':
+          description: Too many login attempts.
+          headers:
+            Retry-After:
+              schema: {type: integer}
+              description: Seconds (set by the login lockout; not by the IP ban).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /api/v1/auth/methods:
+    get:
+      tags: [Auth]
+      operationId: getAuthMethods
+      summary: Available sign-in methods
+      security: []
+      responses:
+        '200':
+          description: Sign-in options for the login screen.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [password, oidc]
+                properties:
+                  password: {type: boolean, const: true}
+                  oidc:
+                    type: object
+                    required: [enabled]
+                    properties:
+                      enabled: {type: boolean}
+                      label: {type: string}
+                      login_url: {type: string, const: /api/v1/auth/oidc/login}
+        '405': {$ref: '#/components/responses/MethodNotAllowed'}
+  /api/v1/auth/oidc/login:
+    get:
+      tags: [Auth]
+      operationId: oidcLogin
+      summary: Start OIDC sign-in
+      description: |
+        Browser redirect flow. Sets the `kervan_oidc` state cookie and redirects
+        to the identity provider. Any HTTP method is accepted. On failure the
+        browser is redirected to `/?oidc_error=<code>`.
+      security: []
+      responses:
+        '302':
+          description: Redirect to the provider (or to `/?oidc_error=...`).
+        '404':
+          description: OIDC is not configured (plain-text body).
+  /api/v1/auth/oidc/callback:
+    get:
+      tags: [Auth]
+      operationId: oidcCallback
+      summary: OIDC redirect target
+      description: |
+        Provider callback. On success redirects to `/?oidc_code=<one-time code>`
+        (valid for one minute) to be redeemed at `/api/v1/auth/oidc/exchange`.
+        On failure redirects to `/?oidc_error=<code>` where code is one of
+        `invalid_state`, `token_error`, `missing_username`, `not_allowed`,
+        `account_conflict`, `not_provisioned`, `account_disabled`,
+        `access_restricted`, `account_expired`, `server_error`,
+        `provider_unavailable`, or a sanitized provider error code.
+      security: []
+      parameters:
+        - {name: code, in: query, schema: {type: string}}
+        - {name: state, in: query, schema: {type: string}}
+        - {name: error, in: query, schema: {type: string}}
+        - {name: error_description, in: query, schema: {type: string}}
+      responses:
+        '302':
+          description: Redirect back to the WebUI.
+        '404':
+          description: OIDC is not configured (plain-text body).
+  /api/v1/auth/oidc/exchange:
+    post:
+      tags: [Auth]
+      operationId: oidcExchange
+      summary: Redeem an OIDC one-time code for a session token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: {type: string}
+      responses:
+        '200':
+          description: Signed in.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/LoginResponse'}
+        '400':
+          description: Invalid JSON, or the code is invalid or expired.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '405': {$ref: '#/components/responses/MethodNotAllowed'}
+  /api/v1/auth/totp:
+    get:
+      tags: [Auth]
+      operationId: getTOTPStatus
+      summary: Caller's two-factor status
+      description: |
+        When two-factor auth is disabled server-wide returns
+        `{"enabled": false, "pending": false}`. API keys are rejected (no scope mapping).
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Status.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TOTPStatus'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '500': {$ref: '#/components/responses/InternalError'}
+    delete:
+      tags: [Auth]
+      operationId: disableTOTP
+      summary: Disable two-factor auth for the caller
+      description: |
+        When TOTP is active a valid current `code` is required. Returns 400 when
+        two-factor auth is disabled server-wide.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                code: {type: string}
+      responses:
+        '200':
+          description: Disabled.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  disabled: {type: boolean, const: true}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '405': {$ref: '#/components/responses/MethodNotAllowed'}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /api/v1/auth/totp/setup:
+    post:
+      tags: [Auth]
+      operationId: setupTOTP
+      summary: Generate a new (pending) TOTP secret
+      description: |
+        Stores a new secret and leaves TOTP disabled until `/totp/enable`.
+        If TOTP is already active, the body must carry the current `code`.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                code: {type: string, description: Current code; required when TOTP is already enabled.}
+      responses:
+        '200':
+          description: Pending secret.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  enabled: {type: boolean, const: false}
+                  pending: {type: boolean, const: true}
+                  secret: {type: string}
+                  otpauth_url: {type: string}
+                  username: {type: string}
+                  issuer: {type: string, const: Kervan}
+                  generated_at: {type: string, format: date-time}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404':
+          description: Two-factor auth is disabled server-wide.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '405': {$ref: '#/components/responses/MethodNotAllowed'}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /api/v1/auth/totp/enable:
+    post:
+      tags: [Auth]
+      operationId: enableTOTP
+      summary: Confirm the pending TOTP secret
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code: {type: string}
+      responses:
+        '200':
+          description: Enabled.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TOTPStatus'}
+        '400':
+          description: Invalid JSON, no pending setup, or invalid code.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '404':
+          description: Two-factor auth is disabled server-wide.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '405': {$ref: '#/components/responses/MethodNotAllowed'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /api/v1/account:
+    get:
+      tags: [Account]
+      operationId: getAccount
+      summary: Caller's own profile
+      description: Requires a session token; API keys get 403.
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Profile.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Account'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '405': {$ref: '#/components/responses/MethodNotAllowed'}
+  /api/v1/account/password:
+    post:
+      tags: [Account]
+      operationId: changeAccountPassword
+      summary: Change the caller's password
+      description: |
+        Revokes all older WebUI/API sessions of the user and returns a fresh
+        token for this one. Fails with 400 for externally managed (OIDC) accounts.
+        Requires a session token; API keys get 403.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [current_password, new_password]
+              properties:
+                current_password: {type: string}
+                new_password: {type: string}
+      responses:
+        '200':
+          description: Changed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: {type: string, const: password changed}
+                  token: {type: string}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '405': {$ref: '#/components/responses/MethodNotAllowed'}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /api/v1/account/keys:
+    put:
+      tags: [Account]
+      operationId: replaceAccountKeys
+      summary: Replace the caller's SSH authorized keys
+      description: Requires a session token; API keys get 403.
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [authorized_keys]
+              properties:
+                authorized_keys:
+                  type: array
+                  items: {type: string, description: authorized_keys line}
+      responses:
+        '200':
+          description: Updated profile.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Account'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '405': {$ref: '#/components/responses/MethodNotAllowed'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /api/v1/users:
+    get:
+      tags: [Users]
+      operationId: listUsers
+      summary: List users
+      description: Admin only (`isAdminUser`).
+      x-required-scope: users:read
+      responses:
+        '200':
+          description: Users.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  users:
+                    type: array
+                    items: {$ref: '#/components/schemas/User'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '500': {$ref: '#/components/responses/InternalError'}
+    post:
+      tags: [Users]
+      operationId: createUser
+      summary: Create a local user
+      description: Admin only. `home_dir` defaults to `/`.
+      x-required-scope: users:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/UserCreateRequest'}
+      responses:
+        '201':
+          description: Created.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/User'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+    put:
+      tags: [Users]
+      operationId: updateUser
+      summary: Update a user
+      description: |
+        Admin only. Only the fields present are changed. Setting `password`
+        (local accounts only) or `enabled: false` terminates the user's
+        protocol sessions; a password reset also revokes the user's WebUI/API sessions.
+      x-required-scope: users:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/UserUpdateRequest'}
+      responses:
+        '200':
+          description: Updated.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/User'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
+    delete:
+      tags: [Users]
+      operationId: deleteUser
+      summary: Delete a user
+      description: Admin only. Terminates the user's protocol sessions.
+      x-required-scope: users:write
+      parameters:
+        - {name: id, in: query, required: true, schema: {type: string}, description: User ID}
+      responses:
+        '200':
+          description: Deleted.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/StatusDeleted'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /api/v1/users/import:
+    post:
+      tags: [Users]
+      operationId: importUsers
+      summary: Bulk-create users from JSON or CSV
+      description: |
+        Admin only. Body limit 10 MiB. The format is taken from the
+        Content-Type: `multipart/form-data` (field `file`; format from `format`
+        or the file extension), `application/json` (array of records),
+        `text/csv` / `application/csv` (header row with the record field names).
+        Any other Content-Type needs `format=json|csv`. Each record needs
+        `password` or `password_hash`; failing records are skipped and reported.
+      x-required-scope: users:write
+      parameters:
+        - name: format
+          in: query
+          schema: {type: string, enum: [json, csv, auto]}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: array
+              items: {$ref: '#/components/schemas/UserImportRecord'}
+          text/csv:
+            schema: {type: string}
+          multipart/form-data:
+            schema:
+              type: object
+              required: [file]
+              properties:
+                file: {type: string, format: binary}
+      responses:
+        '200':
+          description: Import report.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/UserImportReport'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '405': {$ref: '#/components/responses/MethodNotAllowed'}
+  /api/v1/users/export:
+    get:
+      tags: [Users]
+      operationId: exportUsers
+      summary: Export users
+      description: Admin only. Served as an attachment `users.json` / `users.csv`.
+      x-required-scope: users:read
+      parameters:
+        - name: format
+          in: query
+          schema: {type: string, enum: [json, csv], default: json}
+        - name: include_password_hashes
+          in: query
+          description: >-
+            Truthy values `1`, `true`, `yes`, `y`, `on`. Only honoured for a
+            signed-in admin session; with an API key the request is refused
+            with 403. Every export is audited as `admin.user.export`.
+          schema: {type: string}
+      responses:
+        '200':
+          description: Exported users.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/UserExportRecord'}
+            text/csv:
+              schema:
+                type: string
+                description: Columns username,email,role,type,home_dir,enabled,primary_group,max_storage[,password_hash].
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '405': {$ref: '#/components/responses/MethodNotAllowed'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /api/v1/groups:
+    get:
+      tags: [Groups]
+      operationId: listGroups
+      summary: List groups
+      description: Admin only.
+      x-required-scope: users:read
+      responses:
+        '200':
+          description: Groups.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  groups:
+                    type: array
+                    items: {$ref: '#/components/schemas/Group'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '500': {$ref: '#/components/responses/InternalError'}
+    post:
+      tags: [Groups]
+      operationId: createGroup
+      summary: Create a group
+      description: |
+        Admin only. `permissions` defaults to the standard user permissions
+        (everything except chmod). Quotas: 0 falls back to the server default,
+        -1 is unlimited. The response has `member_count: 0`.
+      x-required-scope: users:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: {type: string}
+                description: {type: string}
+                permissions: {$ref: '#/components/schemas/UserPermissions'}
+                max_storage: {type: integer, format: int64, minimum: -1}
+                max_bandwidth: {type: integer, format: int64, minimum: -1}
+                max_files: {type: integer, format: int64, minimum: -1}
+      responses:
+        '201':
+          description: Created.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Group'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+    put:
+      tags: [Groups]
+      operationId: updateGroup
+      summary: Update a group
+      description: Admin only. Only the fields present are changed; renaming updates member references.
+      x-required-scope: users:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id]
+              properties:
+                id: {type: string}
+                name: {type: string}
+                description: {type: string}
+                permissions: {$ref: '#/components/schemas/UserPermissions'}
+                max_storage: {type: integer, format: int64, minimum: -1}
+                max_bandwidth: {type: integer, format: int64, minimum: -1}
+                max_files: {type: integer, format: int64, minimum: -1}
+      responses:
+        '200':
+          description: Updated.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Group'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '500': {$ref: '#/components/responses/InternalError'}
+    delete:
+      tags: [Groups]
+      operationId: deleteGroup
+      summary: Delete a group
+      description: Admin only. Without `force=true`, a group that still has members is refused with 409.
+      x-required-scope: users:write
+      parameters:
+        - {name: id, in: query, required: true, schema: {type: string}}
+        - {name: force, in: query, schema: {type: string, enum: ['true']}}
+      responses:
+        '200':
+          description: Deleted.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/StatusDeleted'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /api/v1/apikeys:
+    get:
+      tags: [API keys]
+      operationId: listAPIKeys
+      summary: List the caller's API keys
+      description: Lists only keys owned by the caller, plus the scope catalogue and presets.
+      x-required-scope: apikeys:read
+      responses:
+        '200':
+          description: Keys.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  keys:
+                    type: array
+                    items: {$ref: '#/components/schemas/APIKey'}
+                  supported_scopes:
+                    type: array
+                    items: {$ref: '#/components/schemas/APIKeyScopeInfo'}
+                  presets:
+                    type: array
+                    items: {$ref: '#/components/schemas/APIKeyPreset'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '501': {$ref: '#/components/responses/NotImplemented'}
+    post:
+      tags: [API keys]
+      operationId: createAPIKey
+      summary: Create an API key for the caller
+      description: |
+        `permissions` is a comma/space separated list of scopes or shorthands
+        (see the API description); empty means `read-write`. It is stored
+        normalized (`read-write`, `read-only`, or an ordered scope list).
+        The raw key is returned only once.
+      x-required-scope: apikeys:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name: {type: string}
+                permissions: {type: string, examples: ['files:read,files:write', read-only]}
+      responses:
+        '201':
+          description: Created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: {type: string}
+                  name: {type: string}
+                  permissions: {type: string}
+                  prefix: {type: string}
+                  created_at: {type: string, format: date-time}
+                  key: {type: string, description: 'Raw key, `kervan_` + 32 base64url chars.'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '501': {$ref: '#/components/responses/NotImplemented'}
+    delete:
+      tags: [API keys]
+      operationId: deleteAPIKey
+      summary: Revoke one of the caller's API keys
+      description: An unknown ID, or a key of another user, returns 404.
+      x-required-scope: apikeys:write
+      parameters:
+        - {name: id, in: query, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: Revoked.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  deleted: {type: boolean, const: true}
+                  id: {type: string}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '501': {$ref: '#/components/responses/NotImplemented'}
+
+  /api/v1/sessions:
+    get:
+      tags: [Sessions]
+      operationId: listSessions
+      summary: List live protocol sessions
+      description: Admins see all sessions (optionally filtered by `username`); other users see only their own.
+      x-required-scope: sessions:read
+      parameters:
+        - {name: username, in: query, schema: {type: string}, description: Admin only; ignored for other users.}
+        - {name: protocol, in: query, schema: {type: string}, description: Exact match (case-insensitive).}
+        - {name: ip, in: query, schema: {type: string}, description: Substring of the remote address.}
+        - {name: q, in: query, schema: {type: string}, description: 'Substring of id, username, protocol or remote address.'}
+      responses:
+        '200':
+          description: Sessions.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessions:
+                    type: array
+                    items: {$ref: '#/components/schemas/Session'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '405': {$ref: '#/components/responses/MethodNotAllowed'}
+  /api/v1/sessions/{id}:
+    parameters:
+      - {name: id, in: path, required: true, schema: {type: string}}
+    get:
+      tags: [Sessions]
+      operationId: getSession
+      summary: Get a session
+      description: Admins may read any session; other users only their own. Another user's session returns 404, like a missing one.
+      x-required-scope: sessions:read
+      responses:
+        '200':
+          description: Session.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Session'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    delete:
+      tags: [Sessions]
+      operationId: killSession
+      summary: Terminate a session
+      description: Admins may terminate any session; other users only their own. Another user's session returns 404, like a missing one.
+      x-required-scope: sessions:write
+      responses:
+        '200':
+          description: Terminated.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  killed: {type: boolean, const: true}
+                  id: {type: string}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '405': {$ref: '#/components/responses/MethodNotAllowed'}
+
+  /api/v1/files/{user}/ls:
+    parameters:
+      - $ref: '#/components/parameters/FilesUser'
+    get:
+      tags: [Files]
+      operationId: listFiles
+      summary: List a directory
+      description: Directories first, then case-insensitive by name.
+      x-required-scope: files:read
+      parameters:
+        - name: path
+          in: query
+          schema: {type: string, default: /}
+      responses:
+        '200':
+          description: Directory listing.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  path: {type: string}
+                  entries:
+                    type: array
+                    items: {$ref: '#/components/schemas/FileEntry'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '405': {$ref: '#/components/responses/MethodNotAllowed'}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /api/v1/files/{user}/stat:
+    parameters:
+      - $ref: '#/components/parameters/FilesUser'
+    get:
+      tags: [Files]
+      operationId: statFile
+      summary: Stat a file or directory
+      x-required-scope: files:read
+      parameters:
+        - $ref: '#/components/parameters/RequiredPath'
+      responses:
+        '200':
+          description: File info.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  path: {type: string}
+                  name: {type: string}
+                  size: {type: integer, format: int64}
+                  mode: {type: integer, description: Go fs.FileMode bits}
+                  is_dir: {type: boolean}
+                  mod_time: {type: string, format: date-time}
+                  timestamp: {type: string, format: date-time}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '405': {$ref: '#/components/responses/MethodNotAllowed'}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /api/v1/files/{user}/download:
+    parameters:
+      - $ref: '#/components/parameters/FilesUser'
+    get:
+      tags: [Files]
+      operationId: downloadFile
+      summary: Download a file
+      x-required-scope: files:read
+      parameters:
+        - $ref: '#/components/parameters/RequiredPath'
+      responses:
+        '200':
+          description: 'File contents (`Content-Disposition: attachment`).'
+          content:
+            application/octet-stream:
+              schema: {type: string, format: binary}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '405': {$ref: '#/components/responses/MethodNotAllowed'}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /api/v1/files/{user}/mkdir:
+    parameters:
+      - $ref: '#/components/parameters/FilesUser'
+    post:
+      tags: [Files]
+      operationId: makeDirectory
+      summary: Create a directory (with parents)
+      description: The path comes from the JSON body, or from `?path=` when the request has no body.
+      x-required-scope: files:write
+      parameters:
+        - {name: path, in: query, schema: {type: string}, description: Used only when the body is empty.}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                path: {type: string}
+      responses:
+        '201':
+          description: Created.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  path: {type: string}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '405': {$ref: '#/components/responses/MethodNotAllowed'}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /api/v1/files/{user}/rename:
+    parameters:
+      - $ref: '#/components/parameters/FilesUser'
+    post:
+      tags: [Files]
+      operationId: renameFile
+      summary: Rename or move a file or directory
+      description: Uses `?from=&to=` when both are given, otherwise the JSON body.
+      x-required-scope: files:write
+      parameters:
+        - {name: from, in: query, schema: {type: string}}
+        - {name: to, in: query, schema: {type: string}}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                from: {type: string}
+                to: {type: string}
+      responses:
+        '200':
+          description: Renamed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  from: {type: string}
+                  to: {type: string}
+                  renamed_at: {type: string, format: date-time}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '405': {$ref: '#/components/responses/MethodNotAllowed'}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /api/v1/files/{user}/upload:
+    parameters:
+      - $ref: '#/components/parameters/FilesUser'
+    post:
+      tags: [Files]
+      operationId: uploadFile
+      summary: Upload a file
+      description: The raw request body becomes the file content; an existing file is truncated and overwritten.
+      x-required-scope: files:write
+      parameters:
+        - $ref: '#/components/parameters/RequiredPath'
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema: {type: string, format: binary}
+      responses:
+        '200':
+          description: Stored.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  path: {type: string}
+                  bytes: {type: integer, format: int64}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '405': {$ref: '#/components/responses/MethodNotAllowed'}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /api/v1/files/{user}/rm:
+    parameters:
+      - $ref: '#/components/parameters/FilesUser'
+    delete:
+      tags: [Files]
+      operationId: removeFile
+      summary: Delete a file or directory
+      x-required-scope: files:write
+      parameters:
+        - $ref: '#/components/parameters/RequiredPath'
+        - name: recursive
+          in: query
+          description: '`true` removes a directory tree.'
+          schema: {type: string, enum: ['true', 'false']}
+      responses:
+        '200':
+          description: Deleted.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/StatusDeleted'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '405': {$ref: '#/components/responses/MethodNotAllowed'}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /api/v1/files/{user}/share:
+    parameters:
+      - $ref: '#/components/parameters/FilesUser'
+    post:
+      tags: [Files, Share links]
+      operationId: createShareLink
+      summary: Create a public share link for a file
+      description: |
+        Parameters may come from the query string or the JSON body (query
+        wins); `password` is accepted only in the body. Directories cannot be
+        shared. The link belongs to `{user}`.
+      x-required-scope: share:write
+      parameters:
+        - {name: path, in: query, schema: {type: string}}
+        - {name: ttl, in: query, schema: {type: string}, description: 'Go duration (e.g. `12h`) or `<n>d`; default `24h`.'}
+        - {name: max_downloads, in: query, schema: {type: integer, minimum: 0}}
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                path: {type: string}
+                ttl: {type: string, description: 'Go duration (e.g. `12h`) or `<n>d`; default `24h`.'}
+                max_downloads: {type: integer, minimum: 0, description: 0 is unlimited.}
+                password: {type: string, minLength: 6, description: Optional; protects the link.}
+      responses:
+        '201':
+          description: Created.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ShareLink'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '405': {$ref: '#/components/responses/MethodNotAllowed'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '501': {$ref: '#/components/responses/NotImplemented'}
+
+  /api/v1/share:
+    get:
+      tags: [Share links]
+      operationId: listShareLinks
+      summary: List share links
+      description: Lists the caller's links; admins may pass `user` to list another user's links.
+      x-required-scope: share:read
+      parameters:
+        - {name: user, in: query, schema: {type: string}, description: Admin only; ignored for other users.}
+      responses:
+        '200':
+          description: Links.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  links:
+                    type: array
+                    items: {$ref: '#/components/schemas/ShareLink'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '500': {$ref: '#/components/responses/InternalError'}
+        '501': {$ref: '#/components/responses/NotImplemented'}
+    delete:
+      tags: [Share links]
+      operationId: revokeShareLink
+      summary: Revoke a share link
+      description: Owners may revoke their own links; admins any link. Another user's link returns 404, like a missing one.
+      x-required-scope: share:write
+      parameters:
+        - {name: token, in: query, required: true, schema: {type: string}}
+      responses:
+        '200':
+          description: Revoked.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  revoked: {type: boolean, const: true}
+                  token: {type: string}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '405': {$ref: '#/components/responses/MethodNotAllowed'}
+        '501': {$ref: '#/components/responses/NotImplemented'}
+  /api/v1/share/{token}:
+    parameters:
+      - $ref: '#/components/parameters/ShareToken'
+    get:
+      tags: [Share links]
+      operationId: downloadShare
+      summary: Download a shared file
+      description: |
+        Public. Password-protected links need the `X-Share-Password` header.
+        Each successful download counts toward `max_downloads`. Wrong passwords
+        count toward the per-IP login ban (429 `throttled`). Error codes:
+        `not_found`, `password_required`, `throttled`, `expired`, `exhausted`,
+        `unavailable`, `server_error`. Responses carry `Cache-Control: no-store`.
+      security: []
+      parameters:
+        - name: X-Share-Password
+          in: header
+          schema: {type: string}
+      responses:
+        '200':
+          description: File contents.
+          content:
+            application/octet-stream:
+              schema: {type: string, format: binary}
+        '400':
+          description: Shared target is a directory (`unavailable`).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '401':
+          description: Password missing or wrong (`password_required`).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '404':
+          description: Unknown link (`not_found`) or file gone (`unavailable`).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '405': {$ref: '#/components/responses/MethodNotAllowed'}
+        '410':
+          description: Link expired (`expired`) or download limit reached (`exhausted`).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '429':
+          description: Client IP is banned after failed attempts (`throttled`).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '500':
+          description: Server error (`server_error`).
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+    post:
+      tags: [Share links]
+      operationId: downloadShareForm
+      summary: Download a shared file via HTML form
+      description: |
+        Public. Browser form variant: the password is read from the
+        form-encoded body (max 4 KiB). Any failure redirects (303) to the
+        landing page `/s/{token}?error=<code>` instead of returning JSON.
+      security: []
+      requestBody:
+        required: false
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              properties:
+                password: {type: string}
+      responses:
+        '200':
+          description: File contents.
+          content:
+            application/octet-stream:
+              schema: {type: string, format: binary}
+        '303':
+          description: Failure; redirect to `/s/{token}?error=<code>` (codes as for GET).
+          headers:
+            Location:
+              schema: {type: string}
+  /api/v1/share/{token}/info:
+    parameters:
+      - $ref: '#/components/parameters/ShareToken'
+    get:
+      tags: [Share links]
+      operationId: getShareInfo
+      summary: Public metadata for a share link
+      description: Public. Does not consume a download; reveals only the file name and size.
+      security: []
+      responses:
+        '200':
+          description: Link metadata.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ShareInfo'}
+        '404':
+          description: 'Unknown link (`code: not_found`).'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '405': {$ref: '#/components/responses/MethodNotAllowed'}
+
+  /api/v1/audit/events:
+    get:
+      tags: [Audit]
+      operationId: listAuditEvents
+      summary: Query audit events
+      description: |
+        Newest first. Admins see all events; other users only events with their
+        own username (the `username` filter is ignored for them). When no audit
+        log is configured the response is `{"events": []}` without `pagination`.
+      x-required-scope: audit:read
+      parameters:
+        - {name: page, in: query, schema: {type: integer, minimum: 1, default: 1}}
+        - {name: limit, in: query, description: Clamped to 1..1000., schema: {type: integer, minimum: 1, maximum: 1000, default: 100}}
+        - $ref: '#/components/parameters/AuditUsername'
+        - $ref: '#/components/parameters/AuditProtocol'
+        - $ref: '#/components/parameters/AuditType'
+        - $ref: '#/components/parameters/AuditStatus'
+        - $ref: '#/components/parameters/AuditQ'
+        - $ref: '#/components/parameters/AuditFrom'
+        - $ref: '#/components/parameters/AuditTo'
+      responses:
+        '200':
+          description: Events page.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [events]
+                properties:
+                  events:
+                    type: array
+                    items: {$ref: '#/components/schemas/AuditEvent'}
+                  pagination: {$ref: '#/components/schemas/Pagination'}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '405': {$ref: '#/components/responses/MethodNotAllowed'}
+        '500': {$ref: '#/components/responses/InternalError'}
+  /api/v1/audit/export:
+    get:
+      tags: [Audit]
+      operationId: exportAuditEvents
+      summary: Export audit events
+      description: |
+        Same filters and visibility rules as `/audit/events`, without paging;
+        newest first. Served as attachment `audit-export.json` / `audit-export.csv`.
+        When no audit log is configured returns an empty JSON array.
+      x-required-scope: audit:read
+      parameters:
+        - name: format
+          in: query
+          schema: {type: string, enum: [json, csv], default: json}
+        - $ref: '#/components/parameters/AuditUsername'
+        - $ref: '#/components/parameters/AuditProtocol'
+        - $ref: '#/components/parameters/AuditType'
+        - $ref: '#/components/parameters/AuditStatus'
+        - $ref: '#/components/parameters/AuditQ'
+        - $ref: '#/components/parameters/AuditFrom'
+        - $ref: '#/components/parameters/AuditTo'
+      responses:
+        '200':
+          description: Exported events.
+          content:
+            application/json:
+              schema:
+                type: array
+                items: {$ref: '#/components/schemas/AuditEvent'}
+            text/csv:
+              schema:
+                type: string
+                description: Columns timestamp,type,username,protocol,status,path,ip,message.
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '405': {$ref: '#/components/responses/MethodNotAllowed'}
+        '500': {$ref: '#/components/responses/InternalError'}
+
+  /api/v1/transfers:
+    get:
+      tags: [Transfers]
+      operationId: listTransfers
+      summary: Active and recent transfers
+      description: |
+        Admins see all transfers (optionally filtered by `username`); other
+        users only their own, with `stats` computed over their transfers.
+        Paging applies to `recent` (scanned from the last 5000 transfers).
+        When transfer tracking is unavailable returns empty `active`/`recent`,
+        `stats: {}` and no `pagination`.
+      x-required-scope: transfers:read
+      parameters:
+        - {name: page, in: query, schema: {type: integer, minimum: 1, default: 1}}
+        - {name: limit, in: query, description: Clamped to 1..500., schema: {type: integer, minimum: 1, maximum: 500, default: 50}}
+        - {name: username, in: query, schema: {type: string}, description: Admin only.}
+        - {name: protocol, in: query, schema: {type: string}}
+        - {name: status, in: query, schema: {type: string, enum: [active, completed, failed]}}
+        - {name: direction, in: query, schema: {type: string, enum: [upload, download]}}
+        - {name: q, in: query, schema: {type: string}, description: Free-text substring filter.}
+      responses:
+        '200':
+          description: Transfers.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  active:
+                    type: array
+                    items: {$ref: '#/components/schemas/Transfer'}
+                  recent:
+                    type: array
+                    items: {$ref: '#/components/schemas/Transfer'}
+                  stats: {$ref: '#/components/schemas/TransferStats'}
+                  pagination: {$ref: '#/components/schemas/Pagination'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '405': {$ref: '#/components/responses/MethodNotAllowed'}
+
+  /api/v1/server/status:
+    get:
+      tags: [Server]
+      operationId: getServerStatus
+      summary: Runtime status snapshot
+      description: Admin only.
+      x-required-scope: server:read
+      responses:
+        '200':
+          description: Status.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ServerStatus'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+  /api/v1/server/config:
+    get:
+      tags: [Server]
+      operationId: getServerConfig
+      summary: Current configuration
+      description: |
+        Admin only. The config file is re-read; keys containing `password`,
+        `secret`, `token`, `private_key` or `access_key` are replaced with
+        `***REDACTED***`.
+      x-required-scope: server:read
+      responses:
+        '200':
+          description: Config.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  config: {$ref: '#/components/schemas/ConfigDocument'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '501': {$ref: '#/components/responses/NotImplemented'}
+    put:
+      tags: [Server]
+      operationId: updateServerConfig
+      summary: Patch and persist the configuration
+      description: |
+        Admin only. The body is a partial config object deep-merged into the
+        config file, then validated, written and applied. Rules: every key must
+        already exist in the config; objects must be patched with objects;
+        paths containing `password`, `secret`, `token` or `private_key` are
+        refused, as is the literal `***REDACTED***`. Non-object values
+        (including arrays) replace the old value. Settings that cannot be
+        applied live are listed in `restart_paths`.
+      x-required-scope: server:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ConfigPatch'}
+      responses:
+        '200':
+          description: Updated.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ConfigChangeResult'
+                  - type: object
+                    properties:
+                      updated: {type: boolean, const: true}
+                      message: {type: string}
+                      updated_at: {type: string, format: date-time}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '405': {$ref: '#/components/responses/MethodNotAllowed'}
+        '501': {$ref: '#/components/responses/NotImplemented'}
+  /api/v1/server/config/validate:
+    post:
+      tags: [Server]
+      operationId: validateServerConfig
+      summary: Dry-run a config patch
+      description: Admin only. Same patch rules as `PUT /server/config`, without writing or applying.
+      x-required-scope: server:write
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ConfigPatch'}
+      responses:
+        '200':
+          description: Patch is valid.
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/ConfigChangeResult'
+                  - type: object
+                    properties:
+                      validated: {type: boolean, const: true}
+                      validated_at: {type: string, format: date-time}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '405': {$ref: '#/components/responses/MethodNotAllowed'}
+        '501': {$ref: '#/components/responses/NotImplemented'}
+  /api/v1/server/reload:
+    post:
+      tags: [Server]
+      operationId: reloadServerConfig
+      summary: Reload the config file
+      description: |
+        Admin only. Re-reads the config file and applies runtime-changeable
+        settings. Without a config path returns `validated: false`,
+        `requires_restart: true` and a message only.
+      x-required-scope: server:write
+      responses:
+        '200':
+          description: Reloaded.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  validated: {type: boolean}
+                  requires_restart: {type: boolean}
+                  applied_paths: {type: array, items: {type: string}}
+                  restart_paths: {type: array, items: {type: string}}
+                  message: {type: string}
+                  config: {$ref: '#/components/schemas/ConfigDocument'}
+                  requested_at: {type: string, format: date-time}
+        '400': {$ref: '#/components/responses/BadRequest'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '405': {$ref: '#/components/responses/MethodNotAllowed'}
+        '501': {$ref: '#/components/responses/NotImplemented'}
+
+  /api/v1/ws:
+    get:
+      tags: [Monitoring]
+      operationId: openWebSocket
+      summary: Live dashboard snapshots (WebSocket)
+      description: |
+        WebSocket upgrade (RFC 6455). Authenticate with
+        `Authorization: Bearer <token>` or, from browsers, with
+        `Sec-WebSocket-Protocol: kervan.v1, auth.<token>` (only `kervan.v1` is
+        echoed back). Only session tokens are accepted, not API keys. The
+        `Origin` must be an allowed CORS origin or the request's own host.
+
+        The server pushes text frames containing a JSON `WebSocketSnapshot`
+        immediately, after relevant changes (debounced 200 ms) and every 15 s
+        (every 2 s when no event broker is configured). Client frames other
+        than ping/close are ignored. Non-admins only receive their own
+        sessions, transfers and audit events; `server` is sent to admins only.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: types
+          in: query
+          description: Comma-separated subset of `server`, `sessions`, `transfers`, `audit`; unknown names are ignored, empty means all.
+          schema: {type: string}
+        - name: Sec-WebSocket-Protocol
+          in: header
+          schema: {type: string, examples: ['kervan.v1, auth.<token>']}
+      responses:
+        '101':
+          description: Switching protocols; frames carry `WebSocketSnapshot` JSON.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/WebSocketSnapshot'}
+        '400':
+          description: Not a WebSocket upgrade, or missing key.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '401':
+          description: Missing or invalid token.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '403':
+          description: Origin not allowed.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '405': {$ref: '#/components/responses/MethodNotAllowed'}
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: WebUI session token (HS256) from `/api/v1/auth/login` or `/api/v1/auth/oidc/exchange`. Lifetime is the WebUI session timeout.
+    apiKeyHeader:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: API key (`kervan_...`). Checked against the key's scopes.
+    apiKeyAuthorization:
+      type: apiKey
+      in: header
+      name: Authorization
+      description: 'API key as `Authorization: ApiKey <key>`.'
+
+  parameters:
+    FilesUser:
+      name: user
+      in: path
+      required: true
+      description: |
+        Whose files to act on: `me` or `self` (the caller) or a username.
+        Non-admins may only name themselves (403 otherwise); admins may name
+        any existing user (404 for an unknown one). Audit events for an
+        admin acting on another user's files name the admin as the actor
+        and the owner in `meta.target_user`.
+      schema: {type: string}
+    RequiredPath:
+      name: path
+      in: query
+      required: true
+      description: Path inside the user's virtual filesystem; normalized to an absolute, cleaned path.
+      schema: {type: string}
+    ShareToken:
+      name: token
+      in: path
+      required: true
+      schema: {type: string}
+    AuditUsername:
+      name: username
+      in: query
+      description: Exact match (case-insensitive). Admin only; non-admins are always scoped to themselves.
+      schema: {type: string}
+    AuditProtocol:
+      name: protocol
+      in: query
+      description: Exact match, e.g. `ftp`, `sftp`, `webui`, `api`, `share`.
+      schema: {type: string}
+    AuditType:
+      name: type
+      in: query
+      description: Exact event type (see `AuditEvent.type`).
+      schema: {type: string}
+    AuditStatus:
+      name: status
+      in: query
+      description: Exact status, e.g. `ok`, `failed`.
+      schema: {type: string}
+    AuditQ:
+      name: q
+      in: query
+      description: Case-insensitive substring over username, protocol, type, status, message and path.
+      schema: {type: string}
+    AuditFrom:
+      name: from
+      in: query
+      description: Inclusive lower bound; RFC 3339 time or `YYYY-MM-DD` (UTC midnight). Must be before `to`.
+      schema: {type: string}
+    AuditTo:
+      name: to
+      in: query
+      description: Exclusive upper bound; RFC 3339 time, or `YYYY-MM-DD` which includes that whole day (UTC).
+      schema: {type: string}
+
+  responses:
+    BadRequest:
+      description: Invalid input.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+    Unauthorized:
+      description: Missing, invalid or revoked credentials, or expired account.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+    Forbidden:
+      description: 'Not allowed (admin required, not the owner, API key scope, or user access policy with `code: access_denied`).'
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+    NotFound:
+      description: Not found.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+    MethodNotAllowed:
+      description: Method not allowed.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+    Conflict:
+      description: Conflict.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+    InternalError:
+      description: Internal error.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+    NotImplemented:
+      description: Feature not configured on this server.
+      content:
+        application/json:
+          schema: {$ref: '#/components/schemas/Error'}
+
+  schemas:
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error: {type: string}
+        code:
+          type: string
+          description: Machine-readable code where provided, e.g. `totp_required`, `access_denied`, `not_found`, `password_required`, `expired`, `exhausted`.
+        request_id: {type: string, description: Only on recovered panics.}
+        trace_id: {type: string, description: Only on recovered panics.}
+    StatusDeleted:
+      type: object
+      properties:
+        status: {type: string, const: deleted}
+    Pagination:
+      type: object
+      properties:
+        page: {type: integer}
+        page_size: {type: integer}
+        total: {type: integer, description: Total number of matching items.}
+    LoginResponse:
+      type: object
+      required: [token, user]
+      properties:
+        token: {type: string}
+        user:
+          type: object
+          properties:
+            id: {type: string}
+            username: {type: string}
+            type: {type: string, enum: [admin, virtual]}
+    TOTPStatus:
+      type: object
+      properties:
+        enabled: {type: boolean}
+        pending: {type: boolean, description: A secret was generated but not yet confirmed.}
+
+    UserPermissions:
+      type: object
+      properties:
+        upload: {type: boolean}
+        download: {type: boolean}
+        delete: {type: boolean}
+        rename: {type: boolean}
+        create_dir: {type: boolean}
+        list_dir: {type: boolean}
+        chmod: {type: boolean}
+        max_file_size: {type: integer, format: int64, description: Bytes; omitted/0 means no limit.}
+        allowed_ext: {type: array, items: {type: string}}
+        denied_ext: {type: array, items: {type: string}}
+    KeyInfo:
+      type: object
+      properties:
+        type: {type: string}
+        fingerprint: {type: string}
+        comment: {type: string}
+        line: {type: string}
+    UserPolicyFields:
+      type: object
+      description: Optional policy fields shared by user create and update. Omitted fields are left unchanged.
+      properties:
+        primary_group: {type: string, description: Must name an existing group; empty clears.}
+        secondary_groups:
+          type: array
+          items: {type: string}
+          description: Each must name an existing group; duplicates are dropped.
+        max_storage: {type: integer, format: int64, minimum: -1, description: 'Bytes. 0 inherits (group, then quota.default_max_storage), -1 unlimited.'}
+        max_bandwidth: {type: integer, format: int64, minimum: -1, description: 'Bytes/s. 0 inherits (group, then bandwidth.default_user_rate), -1 unlimited.'}
+        max_files: {type: integer, format: int64, minimum: -1, description: 'File count. 0 inherits (group, then quota.default_max_files), -1 unlimited.'}
+        custom_permissions: {type: boolean, description: Make `permissions` authoritative over the primary group's template.}
+        permissions: {$ref: '#/components/schemas/UserPermissions'}
+        expires_at: {type: string, description: 'RFC 3339 time after which sign-in is refused on every protocol; empty string clears.'}
+        allowed_ips:
+          type: array
+          items: {type: string}
+          description: IP addresses or CIDR ranges; empty allows any address.
+        allowed_protocols:
+          type: array
+          items: {type: string, enum: [ftp, ftps, sftp, scp, webui]}
+          description: Empty allows all protocols.
+        max_sessions: {type: integer, minimum: 0, description: Concurrent FTP/SFTP/SCP connections; 0 is unlimited.}
+    UserCreateRequest:
+      allOf:
+        - type: object
+          required: [username, password]
+          properties:
+            username: {type: string}
+            password: {type: string}
+            home_dir: {type: string, default: /}
+            admin: {type: boolean, default: false}
+        - $ref: '#/components/schemas/UserPolicyFields'
+    UserUpdateRequest:
+      allOf:
+        - type: object
+          required: [id]
+          properties:
+            id: {type: string}
+            home_dir: {type: string, description: Ignored when empty.}
+            enabled: {type: boolean}
+            admin: {type: boolean, description: true makes the user an admin; false a regular (virtual) user.}
+            password: {type: string, description: New password (local accounts only); ignored when empty.}
+            authorized_keys:
+              type: array
+              items: {type: string}
+              description: Replaces the SSH authorized keys.
+        - $ref: '#/components/schemas/UserPolicyFields'
+    EffectivePolicy:
+      type: object
+      description: Policy actually enforced after group and server defaults are applied. Quotas are 0 when quotas are disabled or for admins.
+      properties:
+        permissions: {$ref: '#/components/schemas/UserPermissions'}
+        max_storage: {type: integer, format: int64, description: Bytes; 0 is unlimited.}
+        max_bandwidth: {type: integer, format: int64, description: Bytes/s; 0 is unlimited.}
+        max_files: {type: integer, format: int64, description: 0 is unlimited.}
+        group: {type: string, description: Group whose template applies; omitted when none.}
+    User:
+      type: object
+      properties:
+        id: {type: string}
+        username: {type: string}
+        type: {type: string, enum: [admin, virtual]}
+        auth_provider: {type: string, description: '`local`, `oidc` or empty (local).'}
+        enabled: {type: boolean}
+        home_dir: {type: string}
+        updated_at: {type: string, format: date-time}
+        primary_group: {type: string}
+        secondary_groups: {type: array, items: {type: string}}
+        max_storage: {type: integer, format: int64, description: 'Stored value; 0 inherit, -1 unlimited.'}
+        max_bandwidth: {type: integer, format: int64, description: 'Stored value; 0 inherit, -1 unlimited.'}
+        max_files: {type: integer, format: int64, description: 'Stored value; 0 inherit, -1 unlimited.'}
+        custom_permissions: {type: boolean}
+        permissions: {$ref: '#/components/schemas/UserPermissions'}
+        effective: {$ref: '#/components/schemas/EffectivePolicy'}
+        authorized_keys:
+          type: array
+          items: {$ref: '#/components/schemas/KeyInfo'}
+        expires_at: {type: [string, 'null'], format: date-time}
+        expired: {type: boolean}
+        allowed_ips: {type: array, items: {type: string}}
+        allowed_protocols: {type: array, items: {type: string}}
+        max_sessions: {type: integer}
+    Account:
+      allOf:
+        - $ref: '#/components/schemas/User'
+        - type: object
+          properties:
+            email: {type: string, description: Omitted when empty.}
+            password_changeable: {type: boolean, description: False for externally managed (OIDC) accounts.}
+    UserImportRecord:
+      type: object
+      required: [username]
+      properties:
+        username: {type: string}
+        password: {type: string}
+        password_hash: {type: string, description: Pre-hashed password; used instead of `password` when set.}
+        email: {type: string}
+        role: {type: string, enum: [user, virtual, admin], description: Takes precedence over `type`.}
+        type: {type: string, enum: [user, virtual, admin]}
+        home_dir: {type: string, default: /}
+        enabled: {type: boolean, description: 'CSV accepts 1/0, true/false, yes/no, y/n.'}
+        primary_group: {type: string}
+        max_storage: {type: integer, format: int64}
+    UserImportReport:
+      type: object
+      properties:
+        format: {type: string, enum: [json, csv]}
+        total: {type: integer}
+        created: {type: integer}
+        skipped: {type: integer}
+        usernames: {type: array, items: {type: string}}
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              row: {type: integer}
+              username: {type: string}
+              error: {type: string}
+    UserExportRecord:
+      type: object
+      properties:
+        username: {type: string}
+        email: {type: string}
+        role: {type: string, enum: [user, admin]}
+        type: {type: string, enum: [admin, virtual]}
+        home_dir: {type: string}
+        enabled: {type: boolean}
+        primary_group: {type: string}
+        max_storage: {type: integer, format: int64}
+        password_hash: {type: string, description: Only with include_password_hashes.}
+
+    Group:
+      type: object
+      properties:
+        id: {type: string}
+        name: {type: string}
+        description: {type: string}
+        permissions: {$ref: '#/components/schemas/UserPermissions'}
+        max_storage: {type: integer, format: int64, description: 0 falls back to quota.default_max_storage; -1 unlimited. Omitted when 0.}
+        max_bandwidth: {type: integer, format: int64, description: 0 falls back to bandwidth.default_user_rate; -1 unlimited. Omitted when 0.}
+        max_files: {type: integer, format: int64, description: 0 falls back to quota.default_max_files; -1 unlimited. Omitted when 0.}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        member_count: {type: integer}
+
+    APIKey:
+      type: object
+      properties:
+        id: {type: string}
+        name: {type: string}
+        permissions: {type: string, description: '`read-write`, `read-only`, or comma-separated scopes.'}
+        prefix: {type: string, description: First 12 characters of the key.}
+        created_at: {type: string, format: date-time}
+        last_used: {type: [string, 'null'], format: date-time}
+    APIKeyScopeInfo:
+      type: object
+      properties:
+        name:
+          type: string
+          enum: ['server:read', 'server:write', 'users:read', 'users:write', 'apikeys:read', 'apikeys:write', 'sessions:read', 'sessions:write', 'files:read', 'files:write', 'share:read', 'share:write', 'audit:read', 'transfers:read']
+        resource: {type: string}
+        access: {type: string, enum: [read, write]}
+        description: {type: string}
+    APIKeyPreset:
+      type: object
+      properties:
+        id: {type: string, enum: [read-only, automation, operations, read-write]}
+        label: {type: string}
+        description: {type: string}
+        scopes: {type: array, items: {type: string}}
+
+    Session:
+      type: object
+      properties:
+        id: {type: string}
+        username: {type: string}
+        protocol: {type: string}
+        remote_addr: {type: string}
+        started_at: {type: string, format: date-time}
+        last_seen_at: {type: string, format: date-time}
+
+    FileEntry:
+      type: object
+      properties:
+        name: {type: string}
+        path: {type: string}
+        is_dir: {type: boolean}
+        size: {type: integer, format: int64}
+        mode: {type: integer, description: Go fs.FileMode bits}
+        mod_time: {type: string, format: date-time}
+
+    ShareLink:
+      type: object
+      properties:
+        token: {type: string, description: Bearer secret of the link.}
+        username: {type: string, description: Owner.}
+        path: {type: string}
+        created_at: {type: string, format: date-time}
+        expires_at: {type: string, format: date-time}
+        download_count: {type: integer}
+        max_downloads: {type: integer, description: 0 is unlimited.}
+        password_protected: {type: boolean}
+        share_url: {type: string, description: 'Public landing page, `/s/{token}`.'}
+        download_url: {type: string, description: 'Direct download, `/api/v1/share/{token}`.'}
+    ShareInfo:
+      type: object
+      properties:
+        name: {type: string, description: Base name of the shared file.}
+        expires_at: {type: string, format: date-time}
+        password_protected: {type: boolean}
+        expired: {type: boolean}
+        exhausted: {type: boolean}
+        downloads_remaining: {type: integer, description: Only when max_downloads > 0.}
+        size: {type: integer, format: int64, description: Present when the file is available.}
+        unavailable: {type: boolean, description: Present (true) when the file is missing or a directory.}
+
+    AuditEvent:
+      type: object
+      description: One audit log record (JSON line). Unknown fields may appear in older or newer logs.
+      properties:
+        id: {type: string}
+        timestamp: {type: string, format: date-time}
+        type:
+          type: string
+          description: |
+            Event type. Known values: `auth.success`, `auth.failure`,
+            `auth.password_change`, `file.read`, `file.write`, `file.delete`,
+            `file.rename`, `dir.create`, `dir.delete`, `connection.rejected`,
+            `session.revoked`, `admin.user.create`, `admin.user.update`,
+            `admin.user.delete`, `admin.group.create`, `admin.group.update`,
+            `admin.group.delete`, `admin.apikey.create`, `admin.apikey.delete`,
+            `admin.config.update`, `admin.config.reload`, `admin.session.kill`,
+            `share.create`, `share.revoke`, `share.download`. Other values may appear.
+        username: {type: string}
+        protocol: {type: string, description: 'e.g. ftp, ftps, sftp, scp, webui, api, share.'}
+        path: {type: string}
+        ip: {type: string}
+        status: {type: string, description: 'e.g. ok, failed, incomplete.'}
+        message: {type: string}
+        meta:
+          type: object
+          additionalProperties: {type: string}
+
+    Transfer:
+      type: object
+      properties:
+        id: {type: string}
+        username: {type: string}
+        protocol: {type: string}
+        path: {type: string}
+        direction: {type: string, enum: [upload, download]}
+        status: {type: string, enum: [active, completed, failed]}
+        bytes_done: {type: integer, format: int64}
+        bytes_total: {type: integer, format: int64}
+        started_at: {type: string, format: date-time}
+        completed_at: {type: string, format: date-time, description: Zero time while active.}
+        error_message: {type: string}
+    TransferStats:
+      type: object
+      properties:
+        active_transfers: {type: integer, format: int64}
+        total_transfers: {type: integer, format: int64}
+        completed: {type: integer, format: int64}
+        failed: {type: integer, format: int64}
+        upload_bytes: {type: integer, format: int64}
+        download_bytes: {type: integer, format: int64}
+
+    HealthCheck:
+      type: object
+      required: [status]
+      properties:
+        status: {type: string, enum: [up, down, degraded, disabled]}
+        message: {type: string}
+      additionalProperties: true
+    Health:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [healthy, degraded, unhealthy]
+          description: unhealthy when auth, user_repository, store or filesystem is down.
+        checked_at: {type: string, format: date-time}
+        checks:
+          type: object
+          description: Keys auth, user_repository, store, filesystem, audit, storage, tls_certificate, ftp, ftps, sftp, scp, webui, debug.
+          additionalProperties: {$ref: '#/components/schemas/HealthCheck'}
+        name: {type: string}
+        version: {type: string}
+        started_at: {type: string, format: date-time}
+        uptime_seconds: {type: integer, format: int64}
+        transfers: {$ref: '#/components/schemas/TransferStats'}
+    ServerStatus:
+      type: object
+      additionalProperties: true
+      properties:
+        time: {type: string, format: date-time}
+        name: {type: string}
+        version: {type: string}
+        started_at: {type: string, format: date-time}
+        uptime_seconds: {type: integer, format: int64}
+        active_sessions: {type: integer}
+        active_transfers: {type: integer, format: int64}
+        upload_bytes: {type: integer, format: int64}
+        download_bytes: {type: integer, format: int64}
+        ftp_enabled: {type: boolean}
+        ftp_port: {type: integer}
+        ftps_enabled: {type: boolean}
+        ftps_mode: {type: string}
+        ftps_explicit_enabled: {type: boolean}
+        ftps_implicit_enabled: {type: boolean}
+        ftps_implicit_port: {type: integer}
+        sftp_enabled: {type: boolean}
+        sftp_port: {type: integer}
+        scp_enabled: {type: boolean}
+        webui_enabled: {type: boolean}
+        webui_port: {type: integer}
+        debug_enabled: {type: boolean}
+        debug_port: {type: integer}
+        data_dir: {type: string}
+        store_path: {type: string}
+        storage_backend: {type: string}
+        storage_root: {type: string}
+        audit_log_path: {type: string}
+        tls_certificate: {type: object, additionalProperties: true}
+
+    ConfigDocument:
+      type: object
+      description: Full configuration as a nested object (same keys as the YAML config file), with secrets redacted.
+      additionalProperties: true
+    ConfigPatch:
+      type: object
+      description: 'Partial nested config object, e.g. `{"webui": {"session_timeout": "2h"}}`.'
+      additionalProperties: true
+    ConfigChangeResult:
+      type: object
+      properties:
+        requires_restart: {type: boolean}
+        applied_paths:
+          type: array
+          items: {type: string}
+          description: Dotted config paths applied at runtime.
+        restart_paths:
+          type: array
+          items: {type: string}
+          description: Dotted config paths that need a restart to take effect.
+        changed_paths:
+          type: array
+          items: {type: string}
+          description: Dotted config paths whose value the patch changed.
+        config: {$ref: '#/components/schemas/ConfigDocument'}
+
+    WebSocketSnapshot:
+      type: object
+      required: [type, timestamp, viewer]
+      properties:
+        type: {type: string, const: snapshot}
+        timestamp: {type: string, format: date-time}
+        server: {$ref: '#/components/schemas/ServerStatus'}
+        sessions:
+          type: array
+          items: {$ref: '#/components/schemas/Session'}
+        transfers:
+          type: object
+          properties:
+            active:
+              type: array
+              items: {$ref: '#/components/schemas/Transfer'}
+            recent:
+              type: array
+              items: {$ref: '#/components/schemas/Transfer'}
+              description: Up to 50 most recent.
+            stats: {$ref: '#/components/schemas/TransferStats'}
+        audit:
+          type: object
+          properties:
+            events:
+              type: array
+              items: {$ref: '#/components/schemas/AuditEvent'}
+              description: Up to 50 most recent (newest first).
+        viewer:
+          type: object
+          properties:
+            username: {type: string}
+            types: {type: array, items: {type: string}}
