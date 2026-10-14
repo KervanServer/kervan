@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **License: MIT.** Added `LICENSE`. It ships in the release archives and
+  in the container image (`/usr/share/licenses/kervan/LICENSE`, with the
+  `org.opencontainers.image.licenses` label).
+
 ## v0.9.0 (2026-10-14)
 
 ### Security

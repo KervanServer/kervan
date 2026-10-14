@@ -98,7 +98,7 @@ GUI clients, so checking them needs a manual session.
 - [x] Load test with authenticated SFTP sessions and S3 storage (see the
       table above). It found an unbounded Argon2 memory use under
       concurrent sign-ins, which is now fixed.
-- [ ] Decide the license (spec §0 still says "MIT or Apache 2.0").
+- [x] License: MIT (`LICENSE`).
 
 ## After v1.0
 

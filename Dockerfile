@@ -38,6 +38,7 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
     -o /out/kervan ./cmd/kervan
 
 FROM alpine:${ALPINE_VERSION}
+LABEL org.opencontainers.image.licenses="MIT"
 
 RUN apk add --no-cache ca-certificates tzdata
 RUN addgroup -S -g 10001 kervan && adduser -S -D -H -u 10001 -G kervan kervan
@@ -47,6 +48,7 @@ WORKDIR /var/lib/kervan
 COPY --from=go-build /out/kervan /usr/local/bin/kervan
 COPY --chmod=755 scripts/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 COPY kervan.example.yaml /var/lib/kervan/kervan.yaml
+COPY LICENSE /usr/share/licenses/kervan/LICENSE
 
 RUN mkdir -p /var/lib/kervan/data/files /var/lib/kervan/data/host_keys && \
     chown -R kervan:kervan /var/lib/kervan

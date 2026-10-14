@@ -10,7 +10,7 @@
 
 **Language:** Go 1.23+
 
-**License:** Open Source (MIT or Apache 2.0)
+**License:** MIT
 
 **Domain:** kervanserver.com
 

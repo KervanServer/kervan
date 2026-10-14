@@ -949,4 +949,4 @@ Later (see [.project/SPECIFICATION.md](.project/SPECIFICATION.md)):
 
 ## License
 
-Open source — MIT or Apache 2.0 (to be finalized per Spec §0).
+Kervan is released under the [MIT License](LICENSE).
