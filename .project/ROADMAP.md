@@ -93,8 +93,8 @@ GUI clients, so checking them needs a manual session.
 ## Before v1.0
 
 - [ ] Manual check with FileZilla and WinSCP (FTP, FTPS, SFTP).
-- [ ] Longer fuzzing campaign (hours, not minutes) on the FTP and SFTP
-      targets.
+- [x] Longer fuzzing campaign: 90 minutes, ~230 million executions across
+      the five FTP/SFTP/SCP targets, no crashes or hangs (2026-10-14).
 - [x] Load test with authenticated SFTP sessions and S3 storage (see the
       table above). It found an unbounded Argon2 memory use under
       concurrent sign-ins, which is now fixed.
