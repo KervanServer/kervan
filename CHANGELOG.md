@@ -4,6 +4,13 @@
 
 ### Security
 
+- **Go 1.26.9 and `golang.org/x/net` v0.60.0.** `govulncheck` reported ten
+  standard-library vulnerabilities reachable from Kervan's code: HTTP/2 and
+  HTTP/1 desynchronisation and DoS issues in `net/http`, unbounded Range
+  header parsing, MIME header memory limits, and malformed TLS ECH
+  extensions. All are fixed by these versions; the container build uses
+  Go 1.26.9 too.
+
 - **Concurrent sign-ins could exhaust memory.** Every password check runs
   Argon2id with 64 MiB, and nothing limited how many ran at once. 300
   simultaneous wrong-password logins for a known username drove the server
