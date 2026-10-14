@@ -521,11 +521,14 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleTOTP(w http.ResponseWriter, r *http.Request) {
 	cfg := s.currentConfig()
 	if !cfg.TOTPEnabled {
-		if r.Method == http.MethodGet {
+		switch r.Method {
+		case http.MethodGet:
 			writeJSON(w, http.StatusOK, map[string]any{"enabled": false, "pending": false})
-			return
+		case http.MethodDelete:
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "two-factor auth is disabled"})
+		default:
+			writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
 		}
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "two-factor auth is disabled"})
 		return
 	}
 	user, err := s.users.GetByUsername(currentUser(r))
@@ -1816,7 +1819,10 @@ func (s *Server) handleAudit(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if s.auditLogPath == "" {
-		writeJSON(w, http.StatusOK, map[string]any{"events": []any{}})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"events":     []any{},
+			"pagination": map[string]any{"page": 1, "page_size": 0, "total": 0},
+		})
 		return
 	}
 	limit := parseInt(r.URL.Query().Get("limit"), 100)
@@ -1963,9 +1969,10 @@ func (s *Server) handleTransfers(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.transfers == nil {
 		writeJSON(w, http.StatusOK, map[string]any{
-			"active": []any{},
-			"recent": []any{},
-			"stats":  map[string]any{},
+			"active":     []any{},
+			"recent":     []any{},
+			"stats":      map[string]any{},
+			"pagination": map[string]any{"page": 1, "page_size": 0, "total": 0},
 		})
 		return
 	}

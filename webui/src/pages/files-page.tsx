@@ -1,11 +1,14 @@
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import { zodResolver } from "@hookform/resolvers/zod"
-import { Copy, FileText, FolderPlus, Loader2, Lock, Pencil, RefreshCw, Share2, Upload } from "lucide-react"
+import { Copy, Download, Eye, FileText, FolderPlus, Loader2, Lock, Pencil, RefreshCw, Share2, Upload } from "lucide-react"
 import { useForm } from "react-hook-form"
 import { toast } from "sonner"
 import { z } from "zod"
 
 import { ConfirmDialog } from "@/components/shared/confirm-dialog"
+import { FilePreviewDialog, previewKind } from "@/components/shared/file-preview"
+import { api } from "@/lib/api"
+import { formatBytes } from "@/lib/format"
 import { EmptyState } from "@/components/shared/empty-state"
 import { PageHeader } from "@/components/shared/page-header"
 import { StatusMessage } from "@/components/shared/status-message"
@@ -82,6 +85,9 @@ function toAbsoluteShareURL(shareURL: string): string {
 export function FilesPage({ token }: Props) {
   const [path, setPath] = useState("/")
   const [sharePreview, setSharePreview] = useState<SharePreview | null>(null)
+  const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null)
+  const [dragging, setDragging] = useState(false)
+  const [entryToPreview, setEntryToPreview] = useState<ApiFileEntry | null>(null)
   const [entryToDelete, setEntryToDelete] = useState<ApiFileEntry | null>(null)
   const [entryToRename, setEntryToRename] = useState<ApiFileEntry | null>(null)
   const [entryToShare, setEntryToShare] = useState<ApiFileEntry | null>(null)
@@ -164,13 +170,54 @@ export function FilesPage({ token }: Props) {
     resetFolderForm({ name: "" })
   }
 
-  const onUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0]
-    if (!file) {
+  // Uploads run one after another so the progress counter stays honest
+  // and a quota error stops the batch instead of failing every file.
+  const uploadFiles = async (files: File[]) => {
+    if (files.length === 0) {
       return
     }
-    await uploadFileMutation.mutateAsync({ targetPath: joinPath(path, file.name), file })
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i]!
+      setUploadProgress({ done: i, total: files.length })
+      try {
+        await uploadFileMutation.mutateAsync({ targetPath: joinPath(path, file.name), file })
+      } catch {
+        break
+      }
+    }
+    setUploadProgress(null)
+  }
+
+  const onUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(event.target.files ?? [])
     event.target.value = ""
+    await uploadFiles(files)
+  }
+
+  const onDrop = async (event: React.DragEvent) => {
+    event.preventDefault()
+    setDragging(false)
+    // Directories show up as zero-size entries without a type; skip them.
+    const files = Array.from(event.dataTransfer.files).filter((f) => f.type !== "" || f.size > 0)
+    await uploadFiles(files)
+  }
+
+  const loadFile = useCallback(async (entry: ApiFileEntry) => (await api.downloadFile(token, entry.path)).blob, [token])
+
+  const onDownload = async (entry: ApiFileEntry) => {
+    try {
+      const blob = await loadFile(entry)
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement("a")
+      link.href = url
+      link.download = entry.name
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      URL.revokeObjectURL(url)
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Unable to download the file")
+    }
   }
 
   const onConfirmDelete = async () => {
@@ -260,7 +307,28 @@ export function FilesPage({ token }: Props) {
           <CardTitle>File Browser</CardTitle>
           <CardDescription>Responsive VFS browser for the authenticated user.</CardDescription>
         </CardHeader>
-        <CardContent className="space-y-4">
+        <CardContent
+          className={`relative space-y-4 ${dragging ? "outline-dashed outline-2 outline-offset-[-4px] outline-[var(--primary)]" : ""}`}
+          onDragOver={(event) => {
+            if (event.dataTransfer.types.includes("Files")) {
+              event.preventDefault()
+              setDragging(true)
+            }
+          }}
+          onDragLeave={(event) => {
+            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragging(false)
+          }}
+          onDrop={(event) => void onDrop(event)}
+          aria-describedby="files-drop-hint"
+        >
+          <p id="files-drop-hint" className="sr-only">
+            You can also drop files here to upload them into the current folder.
+          </p>
+          {dragging ? (
+            <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center rounded-xl bg-[var(--background)]/80 text-sm font-medium">
+              Drop files to upload to {path}
+            </div>
+          ) : null}
           <div className="flex flex-wrap items-center gap-2 rounded-xl bg-[var(--muted)] p-2 text-sm">
             <Button size="sm" variant="ghost" onClick={() => onNavigate("/")} aria-label="Go to root directory">
               /
@@ -299,13 +367,14 @@ export function FilesPage({ token }: Props) {
 
             <label className="inline-flex min-h-11 cursor-pointer items-center justify-center rounded-xl border border-[var(--border)] bg-[var(--card)] px-3 text-sm transition hover:bg-[var(--muted)]">
               <Upload className="mr-2 h-4 w-4" />
-              {uploadFileMutation.isPending ? "Uploading..." : "Upload"}
+              {uploadProgress ? `Uploading ${uploadProgress.done + 1}/${uploadProgress.total}...` : "Upload"}
               <input
                 type="file"
+                multiple
                 className="hidden"
-                onChange={onUpload}
-                disabled={uploadFileMutation.isPending}
-                aria-label="Upload file"
+                onChange={(event) => void onUpload(event)}
+                disabled={uploadProgress !== null}
+                aria-label="Upload files"
               />
             </label>
           </div>
@@ -356,6 +425,7 @@ export function FilesPage({ token }: Props) {
                     <TableHead>Name</TableHead>
                     <TableHead>Type</TableHead>
                     <TableHead>Size</TableHead>
+                    <TableHead>Modified</TableHead>
                     <TableHead className="text-right">Action</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -376,9 +446,26 @@ export function FilesPage({ token }: Props) {
                         )}
                       </TableCell>
                       <TableCell>{entry.is_dir ? "Directory" : "File"}</TableCell>
-                      <TableCell>{entry.size}</TableCell>
+                      <TableCell>{entry.is_dir ? "-" : formatBytes(entry.size)}</TableCell>
+                      <TableCell className="whitespace-nowrap text-xs text-[var(--text-secondary)]">
+                        {entry.mod_time ? new Date(entry.mod_time).toLocaleString() : "-"}
+                      </TableCell>
                       <TableCell className="text-right">
                         <div className="flex justify-end gap-2">
+                          {previewKind(entry) ? (
+                            <Tooltip content={`Preview ${entry.name}`}>
+                              <Button variant="outline" size="sm" onClick={() => setEntryToPreview(entry)} aria-label={`Preview ${entry.name}`}>
+                                <Eye className="h-3.5 w-3.5" />
+                              </Button>
+                            </Tooltip>
+                          ) : null}
+                          {!entry.is_dir ? (
+                            <Tooltip content={`Download ${entry.name}`}>
+                              <Button variant="outline" size="sm" onClick={() => void onDownload(entry)} aria-label={`Download ${entry.name}`}>
+                                <Download className="h-3.5 w-3.5" />
+                              </Button>
+                            </Tooltip>
+                          ) : null}
                           {!entry.is_dir ? (
                             <Tooltip content={`Share ${entry.name}`}>
                               <Button
@@ -603,6 +690,12 @@ export function FilesPage({ token }: Props) {
             setShareLinkToRevoke(null)
           }
         }}
+      />
+      <FilePreviewDialog
+        entry={entryToPreview}
+        load={loadFile}
+        onDownload={(entry) => void onDownload(entry)}
+        onClose={() => setEntryToPreview(null)}
       />
     </section>
   )

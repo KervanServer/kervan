@@ -1,8 +1,8 @@
-import { Suspense, lazy, useEffect } from "react"
+import { Suspense, lazy, useEffect, type ReactElement } from "react"
 import { ErrorBoundary } from "react-error-boundary"
 import { Navigate, Route, Routes, useLocation } from "react-router-dom"
 
-import { AppShell } from "@/components/app-shell"
+import { ADMIN_ROUTES, AppShell } from "@/components/app-shell"
 import { PageSkeleton } from "@/components/shared/page-skeleton"
 import { RouteErrorBoundary } from "@/components/shared/route-error-boundary"
 import { RouteAnnouncer } from "@/components/shared/route-announcer"
@@ -59,6 +59,11 @@ export function App() {
     return <LoginForm onSubmit={login} loading={authLoading} error={authError} requiresOTP={requiresOTP} />
   }
 
+  // Regular users never see admin pages: those routes, including the
+  // dashboard at "/", redirect to their files.
+  const isAdmin = auth.user.type === "admin"
+  const guard = (path: string, page: ReactElement) => (isAdmin || !ADMIN_ROUTES.has(path) ? page : <Navigate to="/files" replace />)
+
   return (
     <Suspense fallback={<div className="min-h-screen bg-[var(--background)] p-4 sm:p-6 lg:p-8"><PageSkeleton /></div>}>
       <RouteAnnouncer />
@@ -68,18 +73,18 @@ export function App() {
             <ErrorBoundary FallbackComponent={RouteErrorBoundary}>
               <Suspense fallback={<PageSkeleton />}>
                 <Routes>
-                  <Route path="/" element={<DashboardPage token={auth.token} />} />
-                  <Route path="/users" element={<UsersPage token={auth.token} />} />
-                  <Route path="/groups" element={<GroupsPage token={auth.token} />} />
-                  <Route path="/sessions" element={<SessionsPage token={auth.token} />} />
-                  <Route path="/files" element={<FilesPage token={auth.token} />} />
-                  <Route path="/transfers" element={<TransfersPage token={auth.token} />} />
-                  <Route path="/audit" element={<AuditPage token={auth.token} />} />
-                  <Route path="/configuration" element={<ConfigurationPage token={auth.token} />} />
-                  <Route path="/monitoring" element={<MonitoringPage token={auth.token} />} />
-                  <Route path="/apikeys" element={<ApiKeysPage token={auth.token} />} />
-                  <Route path="/account" element={<AccountPage token={auth.token} />} />
-                  <Route path="*" element={<Navigate to="/" replace />} />
+                  <Route path="/" element={guard("/", <DashboardPage token={auth.token} />)} />
+                  <Route path="/users" element={guard("/users", <UsersPage token={auth.token} />)} />
+                  <Route path="/groups" element={guard("/groups", <GroupsPage token={auth.token} />)} />
+                  <Route path="/sessions" element={guard("/sessions", <SessionsPage token={auth.token} />)} />
+                  <Route path="/files" element={guard("/files", <FilesPage token={auth.token} />)} />
+                  <Route path="/transfers" element={guard("/transfers", <TransfersPage token={auth.token} />)} />
+                  <Route path="/audit" element={guard("/audit", <AuditPage token={auth.token} />)} />
+                  <Route path="/configuration" element={guard("/configuration", <ConfigurationPage token={auth.token} />)} />
+                  <Route path="/monitoring" element={guard("/monitoring", <MonitoringPage token={auth.token} />)} />
+                  <Route path="/apikeys" element={guard("/apikeys", <ApiKeysPage token={auth.token} />)} />
+                  <Route path="/account" element={guard("/account", <AccountPage token={auth.token} />)} />
+                  <Route path="*" element={<Navigate to={isAdmin ? "/" : "/files"} replace />} />
                 </Routes>
               </Suspense>
             </ErrorBoundary>

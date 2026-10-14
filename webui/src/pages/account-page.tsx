@@ -7,6 +7,7 @@ import { EmptyState } from "@/components/shared/empty-state"
 import { PageHeader } from "@/components/shared/page-header"
 import { permissionSummary } from "@/components/shared/policy-fields"
 import { StatusMessage } from "@/components/shared/status-message"
+import { TwoFactorCard } from "@/components/shared/two-factor-card"
 import { api } from "@/lib/api"
 import { describeEffectiveQuota, describeEffectiveRate } from "@/lib/format"
 import { useAuthStore } from "@/stores/auth-store"
@@ -168,6 +169,14 @@ export function AccountPage({ token }: Props) {
           ) : null}
         </CardContent>
       </Card>
+
+      {account && (account.auth_provider ?? "local") === "local" ? (
+        // Two-factor applies to password sign-in; SSO users rely on their
+        // identity provider.
+        <div className="xl:col-span-2">
+          <TwoFactorCard token={token} />
+        </div>
+      ) : null}
 
       <Card className="xl:col-span-2">
         <CardHeader>

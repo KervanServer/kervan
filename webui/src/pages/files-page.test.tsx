@@ -16,6 +16,7 @@ vi.mock("@/lib/api", () => ({
     rename: vi.fn(),
     createShareLink: vi.fn(),
     revokeShareLink: vi.fn(),
+    downloadFile: vi.fn(),
   },
 }))
 
@@ -179,5 +180,52 @@ describe("FilesPage", () => {
     expect(screen.getByText((content) => content.includes("/s/share-2"))).toBeInTheDocument()
     expect(screen.getByText((content) => content.includes("Password protected"))).toBeInTheDocument()
     expect(screen.getByText("/notes.txt")).toBeInTheDocument()
+  })
+
+  it("uploads several files, by picker and by drop", async () => {
+    const user = userEvent.setup()
+    mockedAPI.files.mockResolvedValue({ path: "/", entries: [] })
+    mockedAPI.shareLinks.mockResolvedValue({ links: [] })
+    mockedAPI.upload.mockResolvedValue(undefined)
+    renderWithProviders(<FilesPage token="t" />)
+    await screen.findByText("No files in this folder")
+
+    await user.upload(screen.getByLabelText("Upload files"), [
+      new File(["a"], "a.txt", { type: "text/plain" }),
+      new File(["b"], "b.txt", { type: "text/plain" }),
+    ])
+    await waitFor(() => expect(mockedAPI.upload).toHaveBeenCalledTimes(2))
+    expect(mockedAPI.upload.mock.calls.map((c) => c[1])).toEqual(["/a.txt", "/b.txt"])
+
+    const dropZone = screen.getByText("File Browser").closest("div")!.parentElement!.querySelector("[aria-describedby='files-drop-hint']")!
+    const dropped = new File(["c"], "c.log", { type: "text/plain" })
+    const { fireEvent } = await import("@testing-library/react")
+    fireEvent.drop(dropZone, { dataTransfer: { files: [dropped], types: ["Files"] } })
+    await waitFor(() => expect(mockedAPI.upload).toHaveBeenCalledTimes(3))
+    expect(mockedAPI.upload.mock.calls[2]?.[1]).toBe("/c.log")
+  })
+
+  it("previews text files and offers downloads", async () => {
+    const user = userEvent.setup()
+    mockedAPI.files.mockResolvedValue({
+      path: "/",
+      entries: [
+        { name: "readme.md", path: "/readme.md", is_dir: false, size: 1536, mode: 420, mod_time: "2026-04-12T10:00:00Z" },
+        { name: "archive.zip", path: "/archive.zip", is_dir: false, size: 99, mode: 420, mod_time: "2026-04-12T10:00:00Z" },
+      ],
+    })
+    mockedAPI.shareLinks.mockResolvedValue({ links: [] })
+    // jsdom's Blob lacks text(); browsers have it.
+    const blob = Object.assign(new Blob(["# Hello Kervan"]), { text: async () => "# Hello Kervan" })
+    mockedAPI.downloadFile.mockResolvedValue({ blob, filename: null })
+    renderWithProviders(<FilesPage token="t" />)
+
+    expect(await screen.findByText("1.5 KB")).toBeInTheDocument()
+    expect(screen.queryByRole("button", { name: "Preview archive.zip" })).toBeNull()
+    expect(screen.getByRole("button", { name: "Download archive.zip" })).toBeInTheDocument()
+
+    await user.click(screen.getByRole("button", { name: "Preview readme.md" }))
+    expect(await screen.findByText("# Hello Kervan")).toBeInTheDocument()
+    expect(mockedAPI.downloadFile).toHaveBeenCalledWith("t", "/readme.md")
   })
 })

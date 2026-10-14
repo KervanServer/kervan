@@ -97,7 +97,11 @@ func hashArgon2ID(password string) (string, error) {
 	timeCost := uint32(2)
 	parallelism := uint8(1)
 	keyLen := uint32(32)
+	if !argon2Budget.acquire(uint64(memory), hashWaitTimeout) {
+		return "", errors.New("password hashing is busy, try again")
+	}
 	hash := argon2.IDKey([]byte(password), salt, timeCost, memory, parallelism, keyLen)
+	argon2Budget.release(uint64(memory))
 	return fmt.Sprintf(
 		"$argon2id$v=19$m=%d,t=%d,p=%d$%s$%s",
 		memory,
@@ -121,7 +125,12 @@ func verifyArgon2ID(password, encoded string) bool {
 	}
 	// #nosec G115 -- len(sum) is bounded to uint32 range above.
 	keyLen := uint32(len(sum))
+	if !argon2Budget.acquire(uint64(mem), hashWaitTimeout) {
+		// Overloaded (likely a sign-in flood): fail closed.
+		return false
+	}
 	calc := argon2.IDKey([]byte(password), salt, tc, mem, p, keyLen)
+	argon2Budget.release(uint64(mem))
 	return subtle.ConstantTimeCompare(calc, sum) == 1
 }
 

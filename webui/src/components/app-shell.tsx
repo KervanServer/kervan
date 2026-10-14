@@ -23,22 +23,26 @@ import { prefetchRoute, type AppRoutePath } from "@/lib/route-modules"
 import { Button } from "@/components/ui/button"
 import { Tooltip } from "@/components/ui/tooltip"
 import { cn } from "@/lib/utils"
+import { useAuthStore } from "@/stores/auth-store"
 
-type NavItem = { to: AppRoutePath; icon: LucideIcon; label: string }
+type NavItem = { to: AppRoutePath; icon: LucideIcon; label: string; adminOnly?: boolean }
 
 const items: NavItem[] = [
-  { to: "/", icon: House, label: "Dashboard" },
-  { to: "/users", icon: UsersRound, label: "Users" },
-  { to: "/groups", icon: Layers, label: "Groups" },
+  { to: "/", icon: House, label: "Dashboard", adminOnly: true },
+  { to: "/users", icon: UsersRound, label: "Users", adminOnly: true },
+  { to: "/groups", icon: Layers, label: "Groups", adminOnly: true },
   { to: "/sessions", icon: ServerCog, label: "Sessions" },
   { to: "/files", icon: FolderKanban, label: "Files" },
   { to: "/transfers", icon: ArrowLeftRight, label: "Transfers" },
   { to: "/audit", icon: ScrollText, label: "Audit" },
-  { to: "/monitoring", icon: Activity, label: "Monitoring" },
+  { to: "/monitoring", icon: Activity, label: "Monitoring", adminOnly: true },
   { to: "/apikeys", icon: KeyRound, label: "API Keys" },
-  { to: "/configuration", icon: Settings2, label: "Configuration" },
+  { to: "/configuration", icon: Settings2, label: "Configuration", adminOnly: true },
   { to: "/account", icon: UserRound, label: "My Account" },
 ]
+
+/** Routes only administrators can use; others are redirected to Files. */
+export const ADMIN_ROUTES = new Set<string>(items.filter((item) => item.adminOnly).map((item) => item.to))
 
 type Props = {
   currentUser: string
@@ -81,9 +85,10 @@ function NavItemEntry({ item, onClick, compact }: { item: NavItem; onClick?: () 
 }
 
 function NavItems({ onClick, compact = false }: { onClick?: () => void; compact?: boolean }) {
+  const isAdmin = useAuthStore((state) => state.auth?.user.type === "admin")
   return (
     <>
-      {items.map((item) => (
+      {items.filter((item) => isAdmin || !item.adminOnly).map((item) => (
         <NavItemEntry key={item.to} item={item} onClick={onClick} compact={compact} />
       ))}
     </>

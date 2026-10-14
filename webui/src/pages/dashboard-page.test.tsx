@@ -1,5 +1,4 @@
-import { screen, waitFor } from "@testing-library/react"
-import userEvent from "@testing-library/user-event"
+import { screen } from "@testing-library/react"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import { DashboardPage } from "@/pages/dashboard-page"
@@ -69,20 +68,4 @@ describe("DashboardPage", () => {
     expect(screen.getByText(/"download_bytes": 4096/)).toBeInTheDocument()
   })
 
-  it("prepares and enables totp setup", async () => {
-    const user = userEvent.setup()
-    renderWithProviders(<DashboardPage token="token-123" />)
-
-    await screen.findByRole("button", { name: "Prepare TOTP setup" })
-    await user.click(screen.getByRole("button", { name: "Prepare TOTP setup" }))
-
-    expect(await screen.findByText("totp-secret")).toBeInTheDocument()
-
-    const codeInput = screen.getByPlaceholderText("Enter code to enable")
-    await user.type(codeInput, "123456")
-    await user.click(screen.getByRole("button", { name: "Enable TOTP" }))
-
-    await waitFor(() => expect(mockedAPI.totpEnable).toHaveBeenCalledWith("token-123", "123456"))
-    expect(await screen.findByText(/Status: Enabled/)).toBeInTheDocument()
-  })
 })

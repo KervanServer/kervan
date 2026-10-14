@@ -898,6 +898,12 @@ All listeners (FTP, FTPS, SFTP/SCP and the WebUI/API) share these controls:
   ban is shared by FTP, SFTP and the API, so failures on one protocol lock the
   address out of all of them; IPv6 clients are grouped per /64.
   `whitelist_ips` exempts addresses from the ban.
+- **Bounded password hashing** — Argon2id needs 64 MiB per check, so at
+  most 256 MiB of hashing runs at once and further sign-ins queue (up to
+  30 s, then fail). A burst of 300 simultaneous wrong-password logins
+  peaks at about 540 MB of memory instead of growing without bound. On
+  small hosts also set `GOMEMLIMIT` (e.g. `GOMEMLIMIT=400MiB`) so the Go
+  runtime returns that memory sooner.
 - **Password policy** — `auth.min_password_length` and
   `auth.require_special_char` apply to the API, the WebUI and the CLI.
 - **HTTP hardening** — strict `Content-Security-Policy` (no inline scripts

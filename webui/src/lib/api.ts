@@ -402,6 +402,10 @@ export const api = {
     return request<{ events: AuditEvent[]; pagination: AuditPagination }>(`/api/v1/audit/events?${params}`, token)
   },
 
+  downloadFile(token: string, targetPath: string): Promise<{ blob: Blob; filename: string | null }> {
+    return requestBlob(`/api/v1/files/me/download?path=${encodeURIComponent(targetPath)}`, token)
+  },
+
   exportAudit(token: string, format: "json" | "csv", filters: AuditFilters = {}): Promise<{ blob: Blob; filename: string | null }> {
     const params = auditParams(filters)
     params.set("format", format)

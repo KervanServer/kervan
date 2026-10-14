@@ -19,7 +19,10 @@ single host (loopback, local storage):
 | Startup time | < 500 ms | 13 ms to a healthy `/health` |
 | Binary size | < 30 MB | 12 MB |
 | WebUI bundle (gzip) | < 2 MB | ~200 KB |
-| Throughput | near wire speed | FTP 1.4 GB/s up, 2.3 GB/s down; SFTP ~340 MB/s (cipher-bound) |
+| Throughput | near wire speed | FTP 1.4 GB/s up, 2.3 GB/s down; SFTP ~340 MB/s per stream (cipher-bound), 580 MiB/s across 16 streams |
+| Authenticated SFTP sessions | — | 2,000 sessions in 2.4 s, ~71 KB each |
+| S3 storage (SeaweedFS) | limited by S3 | SFTP 260 MiB/s across 8 streams; FTP 171 MiB/s up, 320 MiB/s down; server RSS ≤ 151 MB |
+| Sign-in flood | — | 300 simultaneous wrong-password logins: ~540 MB peak (Argon2 budget) |
 
 ## Original plan: done
 
@@ -92,8 +95,9 @@ GUI clients, so checking them needs a manual session.
 - [ ] Manual check with FileZilla and WinSCP (FTP, FTPS, SFTP).
 - [ ] Longer fuzzing campaign (hours, not minutes) on the FTP and SFTP
       targets.
-- [ ] Load test with authenticated SFTP sessions and S3 storage; only idle
-      FTP connections and loopback throughput are measured so far.
+- [x] Load test with authenticated SFTP sessions and S3 storage (see the
+      table above). It found an unbounded Argon2 memory use under
+      concurrent sign-ins, which is now fixed.
 - [ ] Decide the license (spec §0 still says "MIT or Apache 2.0").
 
 ## After v1.0

@@ -1,5 +1,40 @@
 # Changelog
 
+## Unreleased
+
+### Security
+
+- **Concurrent sign-ins could exhaust memory.** Every password check runs
+  Argon2id with 64 MiB, and nothing limited how many ran at once. 300
+  simultaneous wrong-password logins for a known username drove the server
+  to 13.7 GB before any lockout or IP ban reacted. Argon2 work now runs
+  within a 256 MiB budget; further checks wait up to 30 s, then fail. The
+  same flood now peaks at about 540 MB (about 410 MB with
+  `GOMEMLIMIT=400MiB`).
+
+### Added
+
+- **File browser.** Download and preview buttons: text and code files up
+  to 1 MiB, images up to 20 MiB. Several files can be uploaded at once by
+  picker or by dropping them on the browser, with a progress counter.
+  Sizes are human-readable and a Modified column was added.
+
+### Fixed
+
+- **Regular users got a broken WebUI.** Their landing page was the admin
+  dashboard, which stayed on loading placeholders, and the menu offered
+  admin pages (Users, Groups, Monitoring, Configuration) that could only
+  fail. Non-admins now land on Files, see only the pages they can use, and
+  are redirected from admin routes. Two-factor setup moved from the
+  dashboard to **My Account**, so every password user can reach it.
+
+### Changed
+
+- `/api/v1/audit/events` and `/api/v1/transfers` include `pagination` even
+  when auditing or transfer tracking is off.
+- `/api/v1/auth/totp` answers 405 for methods it does not support while
+  two-factor auth is disabled (it returned 400).
+
 ## v0.8.0 (2026-10-13)
 
 ### Added

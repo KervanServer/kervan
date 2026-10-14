@@ -1,9 +1,10 @@
 import { MemoryRouter } from "react-router-dom"
 import { screen, within } from "@testing-library/react"
-import { describe, expect, it, vi } from "vitest"
+import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import { AppShell } from "@/components/app-shell"
 import { renderWithProviders } from "@/test-utils"
+import { useAuthStore } from "@/stores/auth-store"
 
 vi.mock("@/components/theme-toggle", () => ({
   ThemeToggle: () => <div>Theme toggle</div>,
@@ -17,6 +18,10 @@ vi.mock("@/lib/route-modules", () => ({
 // Tooltip trigger (asChild), whose Slot once stringified NavLink's className
 // callback into the class attribute.
 describe("AppShell layout", () => {
+  beforeEach(() => {
+    useAuthStore.setState({ auth: { token: "t", user: { id: "1", username: "alice", type: "admin" } } })
+  })
+
   it("renders plain class names and marks the active route", () => {
     renderWithProviders(
       <MemoryRouter initialEntries={["/users"]}>
