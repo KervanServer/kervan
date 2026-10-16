@@ -48,7 +48,7 @@ marks aspirational items from the spec as *planned*.
 
 ## Requirements
 
-- **Go 1.26.1+** (toolchain pinned to `go1.26.8` in [go.mod](go.mod))
+- **Go 1.26.1+** (toolchain pinned to `go1.26.9` in [go.mod](go.mod))
 - Linux, macOS or Windows (tested on Windows 11, Linux amd64/arm64)
 
 ---
@@ -425,8 +425,17 @@ All protocols share a common VFS layer ([internal/vfs](internal/vfs)):
 - **Backends shipped:**
   - `local` — filesystem directory rooted at `storage.backends.local.options.root`.
   - `memory` — in-process backend used for tests and ephemeral workloads.
-- **Planned backends:** S3-compatible (AWS / MinIO / R2) with SigV4, multipart
-  upload, directory emulation and metadata sidecar (Spec §4.4.2).
+  - `s3` — S3-compatible object storage (AWS, MinIO, R2, …) through Kervan's
+    own SigV4 client. Options: `endpoint`, `region`, `bucket`, `prefix`,
+    `access_key`, `secret_key`, `force_path_style`, `disable_ssl`. Each
+    user's home directory becomes a key prefix, and directories are
+    emulated with empty marker objects.
+- **S3 limits:** an object is downloaded to a temporary file when opened and
+  uploaded in one `PutObject` when a written file is closed, so large files
+  need local temporary space and are limited by S3's single-PUT maximum
+  (5 GB); multipart upload is not implemented. Permissions and times are not
+  stored, and symlinks are unsupported. The metadata sidecar from Spec
+  §4.4.2 is not implemented.
 
 ---
 
@@ -957,19 +966,23 @@ Shipped: FTP/FTPS/SFTP/SCP, local, LDAP and OIDC sign-in with TOTP and SSH
 keys, per-user sign-in restrictions, groups, storage/file-count quotas,
 bandwidth limits, local/memory/S3 storage, password-protected share links,
 API keys, a tamper-evident audit log with file/HTTP/syslog sinks, backup and
-restore, migrations, the WebUI with live updates, Prometheus metrics, and the
-`stdio` MCP server.
+restore, migrations, the WebUI with live updates, Prometheus metrics, the
+`stdio` MCP server, an OpenAPI reference ([docs/openapi.yaml](docs/openapi.yaml)),
+a contributor guide, and fuzz targets for the FTP, SFTP and SCP parsers
+(see [CONTRIBUTING.md](CONTRIBUTING.md#fuzzing)).
 
 Before v1.0:
 
-- An OpenAPI reference for the REST API and a contributor guide.
 - Interop checks with more clients (FileZilla, WinSCP, lftp, Cyberduck).
-- Fuzz tests for the FTP and SFTP parsers.
+- Multipart uploads for the S3 backend.
 
 Later (see [.project/SPECIFICATION.md](.project/SPECIFICATION.md)):
 
 - A queryable audit store and a database-backed metadata store for large
-  installations.
+  installations. Every write to today's JSON store rewrites the whole file,
+  so writes slow down as the number of users grows (about 34 ms at 1,000
+  users and 110 ms at 10,000 on SSD). [.project/STORE-DESIGN.md](.project/STORE-DESIGN.md)
+  measures this and recommends embedded SQLite.
 
 ---
 
