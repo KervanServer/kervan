@@ -205,17 +205,19 @@ func (r *UserRepository) Mutate(id string, fn func(*User) error) (*User, error) 
 }
 
 func (r *UserRepository) Delete(id string) error {
-	user, err := r.GetByID(id)
-	if err != nil {
-		return err
-	}
-	if user == nil {
+	// The record and its index entries go together: a crash or a concurrent
+	// rename between separate deletes left a dangling index entry.
+	return r.store.Update(func(tx *store.Tx) error {
+		user, err := userByIDTx(tx, id)
+		if err != nil || user == nil {
+			return err
+		}
+		for _, key := range usernameIndexKeys(user.Username) {
+			tx.Delete(collUserByName, key)
+		}
+		tx.Delete(collUsers, id)
 		return nil
-	}
-	for _, key := range usernameIndexKeys(user.Username) {
-		_ = r.store.Delete(collUserByName, key)
-	}
-	return r.store.Delete(collUsers, id)
+	})
 }
 
 func (r *UserRepository) List() ([]*User, error) {

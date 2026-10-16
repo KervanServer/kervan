@@ -316,7 +316,11 @@ func (s *Server) createImportedUser(record userImportRecord) (*auth.User, error)
 	if record.MaxStorage != 0 {
 		policy.MaxStorage = &record.MaxStorage
 	}
-	if err := s.applyUserPolicyPatch(&auth.User{}, policy); err != nil {
+	policy, err = s.resolveUserPolicyGroups(policy)
+	if err == nil {
+		err = applyResolvedUserPolicy(&auth.User{}, policy)
+	}
+	if err != nil {
 		return nil, err
 	}
 
@@ -347,35 +351,32 @@ func (s *Server) createImportedUser(record userImportRecord) (*auth.User, error)
 		return nil, errors.New("password or password_hash is required")
 	}
 
-	needsUpdate := false
-	if user.Email != strings.TrimSpace(record.Email) {
-		user.Email = strings.TrimSpace(record.Email)
-		needsUpdate = true
+	email := strings.TrimSpace(record.Email)
+	needsUpdate := user.Email != email || user.Type != userType ||
+		(record.Enabled != nil && user.Enabled != *record.Enabled) ||
+		user.HomeDir != homeDir || policy.set()
+	if !needsUpdate {
+		return user, nil
 	}
-	if user.Type != userType {
-		user.Type = userType
-		needsUpdate = true
-	}
-	if record.Enabled != nil && user.Enabled != *record.Enabled {
-		user.Enabled = *record.Enabled
-		needsUpdate = true
-	}
-	if user.HomeDir != homeDir {
-		user.HomeDir = homeDir
-		needsUpdate = true
-	}
-	if policy.set() {
-		if err := s.applyUserPolicyPatch(user, policy); err != nil {
-			return nil, err
+	saved, err := s.users.Mutate(user.ID, func(u *auth.User) error {
+		u.Email = email
+		u.Type = userType
+		if record.Enabled != nil {
+			u.Enabled = *record.Enabled
 		}
-		needsUpdate = true
-	}
-	if needsUpdate {
-		if err := s.users.Update(user); err != nil {
-			return nil, err
+		u.HomeDir = homeDir
+		if policy.set() {
+			return applyResolvedUserPolicy(u, policy)
 		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
-	return user, nil
+	if saved == nil {
+		return nil, errors.New("user not found")
+	}
+	return saved, nil
 }
 
 func normalizeUserDataFormat(formatHint, fileName string) (string, error) {

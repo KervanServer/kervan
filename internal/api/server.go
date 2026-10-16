@@ -518,6 +518,47 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// userEditError marks a validation failure raised inside a
+// UserRepository.Mutate callback, so handlers answer 400 rather than 500.
+type userEditError struct{ err error }
+
+func (e userEditError) Error() string { return e.err.Error() }
+func (e userEditError) Unwrap() error { return e.err }
+
+func userEditStatus(err error) int {
+	var editErr userEditError
+	if errors.As(err, &editErr) {
+		return http.StatusBadRequest
+	}
+	return http.StatusInternalServerError
+}
+
+var errTOTPChanged = errors.New("two-factor settings changed during the request; retry")
+
+// mutateTOTP applies change to the stored user only while its two-factor
+// state still matches seen, the copy the request's code was validated
+// against. It writes the error response and reports false on failure.
+func (s *Server) mutateTOTP(w http.ResponseWriter, seen *auth.User, change func(*auth.User)) bool {
+	saved, err := s.users.Mutate(seen.ID, func(u *auth.User) error {
+		if u.TOTPEnabled != seen.TOTPEnabled || u.TOTPSecret != seen.TOTPSecret {
+			return errTOTPChanged
+		}
+		change(u)
+		return nil
+	})
+	switch {
+	case errors.Is(err, errTOTPChanged):
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+	case err != nil:
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	case saved == nil:
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "user not found"})
+	default:
+		return true
+	}
+	return false
+}
+
 func (s *Server) handleTOTP(w http.ResponseWriter, r *http.Request) {
 	cfg := s.currentConfig()
 	if !cfg.TOTPEnabled {
@@ -561,10 +602,10 @@ func (s *Server) handleTOTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		user.TOTPEnabled = false
-		user.TOTPSecret = ""
-		if err := s.users.Update(user); err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		if !s.mutateTOTP(w, user, func(u *auth.User) {
+			u.TOTPEnabled = false
+			u.TOTPSecret = ""
+		}) {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"disabled": true})
@@ -611,10 +652,10 @@ func (s *Server) handleTOTPSetup(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to generate secret"})
 		return
 	}
-	user.TOTPSecret = secret
-	user.TOTPEnabled = false
-	if err := s.users.Update(user); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	if !s.mutateTOTP(w, user, func(u *auth.User) {
+		u.TOTPSecret = secret
+		u.TOTPEnabled = false
+	}) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -663,9 +704,8 @@ func (s *Server) handleTOTPEnable(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid two-factor code"})
 		return
 	}
-	user.TOTPEnabled = true
-	if err := s.users.Update(user); err != nil {
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	// Enable only the secret the code was just checked against.
+	if !s.mutateTOTP(w, user, func(u *auth.User) { u.TOTPEnabled = true }) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -825,8 +865,13 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 		if req.HomeDir == "" {
 			req.HomeDir = "/"
 		}
-		probe := &auth.User{}
-		if err := s.applyUserPolicyPatch(probe, req.userPolicyPatch); err != nil {
+		// Resolve groups and validate before creating anything; the
+		// transaction below must not read the store itself.
+		policy, err := s.resolveUserPolicyGroups(req.userPolicyPatch)
+		if err == nil {
+			err = applyResolvedUserPolicy(&auth.User{}, policy)
+		}
+		if err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
@@ -835,15 +880,18 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
-		if req.userPolicyPatch.set() {
-			err := s.applyUserPolicyPatch(user, req.userPolicyPatch)
-			if err == nil {
-				err = s.users.Update(user)
+		if policy.set() {
+			saved, err := s.users.Mutate(user.ID, func(u *auth.User) error {
+				return applyResolvedUserPolicy(u, policy)
+			})
+			if err == nil && saved == nil {
+				err = errors.New("user not found")
 			}
 			if err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 				return
 			}
+			user = saved
 		}
 		s.emitAudit(r, audit.EventAdminUserCreate, "", "ok", "user created", map[string]string{"target_user": user.Username, "admin": strconv.FormatBool(req.Admin)})
 		writeJSON(w, http.StatusCreated, s.userResponse(user))
@@ -865,48 +913,76 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "id is required"})
 			return
 		}
-		user, err := s.users.GetByID(strings.TrimSpace(req.ID))
+		// Validate everything that needs no user record (or reads the store)
+		// up front; the edits are then applied to the latest stored record in
+		// one transaction, so fields this request does not touch keep any
+		// concurrent change (a login, a lockout, another admin's edit).
+		var (
+			homeDir string
+			err     error
+		)
+		if strings.TrimSpace(req.HomeDir) != "" {
+			homeDir, err = auth.NormalizeHomeDir(req.HomeDir)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+		}
+		var keys []string
+		if req.AuthorizedKeys != nil {
+			keys, err = auth.NormalizeAuthorizedKeys(*req.AuthorizedKeys)
+			if err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+		}
+		policy, err := s.resolveUserPolicyGroups(req.userPolicyPatch)
 		if err != nil {
-			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		if req.Password != "" {
+			// Reject a weak password before saving any of the other edits.
+			if err := s.auth.ValidatePassword(req.Password); err != nil {
+				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+				return
+			}
+		}
+		user, err := s.users.Mutate(strings.TrimSpace(req.ID), func(u *auth.User) error {
+			if req.Password != "" && !passwordManaged(u) {
+				return userEditError{auth.ErrPasswordNotManaged}
+			}
+			if homeDir != "" {
+				u.HomeDir = homeDir
+			}
+			if req.Enabled != nil {
+				u.Enabled = *req.Enabled
+			}
+			if err := applyResolvedUserPolicy(u, policy); err != nil {
+				return userEditError{err}
+			}
+			if req.AuthorizedKeys != nil {
+				u.AuthorizedKeys = keys
+			}
+			if req.Admin != nil {
+				if *req.Admin {
+					u.Type = auth.UserTypeAdmin
+				} else {
+					u.Type = auth.UserTypeVirtual
+				}
+			}
+			return nil
+		})
+		if err != nil {
+			writeJSON(w, userEditStatus(err), map[string]string{"error": err.Error()})
 			return
 		}
 		if user == nil {
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "user not found"})
 			return
 		}
-		if strings.TrimSpace(req.HomeDir) != "" {
-			homeDir, err := auth.NormalizeHomeDir(req.HomeDir)
-			if err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-				return
-			}
-			user.HomeDir = homeDir
-		}
-		if req.Enabled != nil {
-			user.Enabled = *req.Enabled
-		}
-		if err := s.applyUserPolicyPatch(user, req.userPolicyPatch); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-			return
-		}
-		if req.AuthorizedKeys != nil {
-			keys, err := auth.NormalizeAuthorizedKeys(*req.AuthorizedKeys)
-			if err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-				return
-			}
-			user.AuthorizedKeys = keys
-		}
 		if req.Password != "" {
-			if !passwordManaged(user) {
-				writeJSON(w, http.StatusBadRequest, map[string]string{"error": auth.ErrPasswordNotManaged.Error()})
-				return
-			}
-			// Save the other edits first: ResetPassword reloads the user.
-			if err := s.users.Update(user); err != nil {
-				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-				return
-			}
+			// ResetPassword is its own transaction touching only credentials.
 			if err := s.auth.ResetPassword(user.Username, req.Password); err != nil {
 				writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 				return
@@ -919,17 +995,6 @@ func (s *Server) handleUsers(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			user = reloaded
-		}
-		if req.Admin != nil {
-			if *req.Admin {
-				user.Type = auth.UserTypeAdmin
-			} else {
-				user.Type = auth.UserTypeVirtual
-			}
-		}
-		if err := s.users.Update(user); err != nil {
-			writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-			return
 		}
 		if req.Enabled != nil && !*req.Enabled {
 			s.terminateUserSessions(user.Username)

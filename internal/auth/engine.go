@@ -236,13 +236,24 @@ func (e *Engine) ResetPassword(username, password string) error {
 	if err != nil {
 		return err
 	}
-	u.PasswordHash = hash
-	u.FailedLogins = 0
-	u.LockedUntil = nil
-	// Sessions created with the old password stop working.
-	now := time.Now().UTC().Truncate(time.Second)
-	u.SessionsValidAfter = &now
-	return e.repo.Update(u)
+	// Hash outside the transaction; Mutate then touches only the credential
+	// fields, so a concurrent admin edit to the account is kept.
+	saved, err := e.repo.Mutate(u.ID, func(u *User) error {
+		u.PasswordHash = hash
+		u.FailedLogins = 0
+		u.LockedUntil = nil
+		// Sessions created with the old password stop working.
+		now := time.Now().UTC().Truncate(time.Second)
+		u.SessionsValidAfter = &now
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	if saved == nil {
+		return ErrInvalidCredentials
+	}
+	return nil
 }
 
 // ErrPasswordNotManaged means the account's password lives elsewhere (LDAP
@@ -340,7 +351,16 @@ func (e *Engine) authenticateLDAPUser(ctx context.Context, shadow *User, usernam
 		_ = e.registerFailedLogin(shadow)
 		return nil, err
 	}
-	return e.syncLDAPUser(identity, shadow)
+	user, err := e.syncLDAPUser(identity, shadow)
+	if err != nil {
+		return nil, err
+	}
+	// The pre-bind check used a copy read before the bind; refuse an account
+	// disabled or locked while the directory was being consulted.
+	if err := e.ensureLoginAllowed(user); err != nil {
+		return nil, err
+	}
+	return user, nil
 }
 
 func (e *Engine) syncLDAPUser(identity *LDAPIdentity, shadow *User) (*User, error) {
@@ -369,22 +389,31 @@ func (e *Engine) syncLDAPUser(identity *LDAPIdentity, shadow *User) (*User, erro
 		return e.repo.GetByUsername(identity.Username)
 	}
 
-	shadow.AuthProvider = AuthProviderLDAP
-	shadow.Email = identity.Email
-	shadow.Type = identity.Type
-	if strings.TrimSpace(shadow.HomeDir) == "" {
-		shadow.HomeDir = identity.HomeDir
-	}
-	shadow.PrimaryGroup = firstGroup(identity.Groups)
-	if len(identity.Groups) > 1 {
-		shadow.SecondaryGrps = append(shadow.SecondaryGrps[:0], identity.Groups[1:]...)
-	} else {
-		shadow.SecondaryGrps = nil
-	}
-	if err := e.repo.Update(shadow); err != nil {
+	// Apply the directory's view to the latest stored record, not the copy
+	// read before the LDAP bind, so local edits made meanwhile (an admin
+	// disable, new keys) survive the sync.
+	saved, err := e.repo.Mutate(shadow.ID, func(u *User) error {
+		u.AuthProvider = AuthProviderLDAP
+		u.Email = identity.Email
+		u.Type = identity.Type
+		if strings.TrimSpace(u.HomeDir) == "" {
+			u.HomeDir = identity.HomeDir
+		}
+		u.PrimaryGroup = firstGroup(identity.Groups)
+		if len(identity.Groups) > 1 {
+			u.SecondaryGrps = append([]string(nil), identity.Groups[1:]...)
+		} else {
+			u.SecondaryGrps = nil
+		}
+		return nil
+	})
+	if err != nil {
 		return nil, err
 	}
-	return shadow, nil
+	if saved == nil {
+		return nil, ErrInvalidCredentials
+	}
+	return saved, nil
 }
 
 func (e *Engine) ensureLoginAllowed(user *User) error {

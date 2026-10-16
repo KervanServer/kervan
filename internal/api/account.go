@@ -127,11 +127,19 @@ func (s *Server) handleAccountKeys(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	user.AuthorizedKeys = keys
-	if err := s.users.Update(user); err != nil {
+	saved, err := s.users.Mutate(user.ID, func(u *auth.User) error {
+		u.AuthorizedKeys = keys
+		return nil
+	})
+	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
+	if saved == nil {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{"error": "user not found"})
+		return
+	}
+	user = saved
 	s.emitAudit(r, audit.EventAdminUserUpdate, "", "ok", "own ssh keys updated", map[string]string{"target_user": user.Username, "authorized_keys": strconv.Itoa(len(keys))})
 	writeJSON(w, http.StatusOK, s.accountResponse(user))
 }

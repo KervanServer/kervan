@@ -35,9 +35,15 @@ func (p userPolicyPatch) set() bool {
 		p.ExpiresAt != nil || p.AllowedIPs != nil || p.AllowedProtocols != nil || p.MaxSessions != nil
 }
 
-// applyUserPolicyPatch validates the patch and applies it to u. Group
-// references set through the API must name existing groups.
-func (s *Server) applyUserPolicyPatch(u *auth.User, p userPolicyPatch) error {
+// Applying a userPolicyPatch is two steps: resolveUserPolicyGroups, then
+// applyResolvedUserPolicy. Group references set through the API must name
+// existing groups.
+
+// resolveUserPolicyGroups replaces the patch's group references with the
+// canonical names of existing groups, deduplicating secondary groups. It
+// reads the store, so inside a user transaction it must run beforehand and
+// the result be applied with applyResolvedUserPolicy.
+func (s *Server) resolveUserPolicyGroups(p userPolicyPatch) (userPolicyPatch, error) {
 	resolve := func(name string) (string, error) {
 		name = strings.TrimSpace(name)
 		if name == "" {
@@ -55,9 +61,9 @@ func (s *Server) applyUserPolicyPatch(u *auth.User, p userPolicyPatch) error {
 	if p.PrimaryGroup != nil {
 		name, err := resolve(*p.PrimaryGroup)
 		if err != nil {
-			return err
+			return p, err
 		}
-		u.PrimaryGroup = name
+		p.PrimaryGroup = &name
 	}
 	if p.SecondaryGroups != nil {
 		out := make([]string, 0, len(*p.SecondaryGroups))
@@ -65,14 +71,27 @@ func (s *Server) applyUserPolicyPatch(u *auth.User, p userPolicyPatch) error {
 		for _, raw := range *p.SecondaryGroups {
 			name, err := resolve(raw)
 			if err != nil {
-				return err
+				return p, err
 			}
 			if name != "" && !seen[strings.ToLower(name)] {
 				seen[strings.ToLower(name)] = true
 				out = append(out, name)
 			}
 		}
-		u.SecondaryGrps = out
+		p.SecondaryGroups = &out
+	}
+	return p, nil
+}
+
+// applyResolvedUserPolicy validates and applies a patch whose groups were
+// resolved by resolveUserPolicyGroups. It does not touch the store, so it is
+// safe inside a UserRepository.Mutate callback.
+func applyResolvedUserPolicy(u *auth.User, p userPolicyPatch) error {
+	if p.PrimaryGroup != nil {
+		u.PrimaryGroup = *p.PrimaryGroup
+	}
+	if p.SecondaryGroups != nil {
+		u.SecondaryGrps = append([]string{}, *p.SecondaryGroups...)
 	}
 	if p.MaxStorage != nil {
 		if *p.MaxStorage < -1 {
