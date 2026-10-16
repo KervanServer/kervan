@@ -282,15 +282,19 @@ func (s *Server) ftpsImplicitEnabled() bool {
 }
 
 type connState struct {
-	username        string
-	user            *auth.User
-	session         *session.Session
-	cwd             string
-	fs              vfs.FileSystem
-	rnfr            string
-	passiveLn       net.Listener
-	activeAddr      string
-	restOffset      int64 // REST marker for the next RETR/STOR
+	username   string
+	user       *auth.User
+	session    *session.Session
+	cwd        string
+	fs         vfs.FileSystem
+	rnfr       string
+	passiveLn  net.Listener
+	activeAddr string
+	restOffset int64 // REST marker for the next RETR/STOR
+	// type is the current representation type (RFC 959 §4.1.3). It starts as
+	// "I": transfers are byte-exact, so binary is what the server actually
+	// performs and what a bare TYPE query reports.
+	ftpType         string
 	vhost           string
 	passiveIP       string
 	remoteAddr      string
@@ -336,6 +340,7 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, implicitTLS bool
 	setOOBInline(conn)
 	state := &connState{
 		cwd:             "/",
+		ftpType:         "I",
 		passiveIP:       s.cfg.PassiveIP,
 		remoteAddr:      conn.RemoteAddr().String(),
 		secureControl:   false,
@@ -523,11 +528,19 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, implicitTLS bool
 			}
 			writeReply(conn, 257, fmt.Sprintf("\"%s\" is current directory.", state.cwd))
 		case "TYPE":
-			if arg != "I" && arg != "A" {
+			// RFC 959 §4.1.3: a client may use TYPE with no argument to obtain
+			// the current type. Answering 504 to that query treated a valid
+			// command as an unsupported one, and the chosen type was never
+			// stored, so it could not be reported back.
+			switch arg {
+			case "":
+				writeReply(conn, 200, "Type set to "+state.ftpType+".")
+			case "I", "A":
+				state.ftpType = arg
+				writeReply(conn, 200, "Type set.")
+			default:
 				writeReply(conn, 504, "Type not supported.")
-				continue
 			}
-			writeReply(conn, 200, "Type set.")
 		case "CWD", "CDUP":
 			if !isAuthed(conn, state) {
 				continue
@@ -708,8 +721,8 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, implicitTLS bool
 				continue
 			}
 			target := state.cwd
-			if strings.TrimSpace(arg) != "" {
-				target = resolvePath(state.cwd, arg)
+			if pathArg := stripListFlags(arg); pathArg != "" {
+				target = resolvePath(state.cwd, pathArg)
 			}
 			dc, err := s.acceptDataConn(state)
 			if err != nil {
@@ -1340,6 +1353,21 @@ func resolvePath(cwd, arg string) string {
 		return path.Clean(arg)
 	}
 	return path.Join("/", cwd, arg)
+}
+
+// stripListFlags removes the leading RFC 959 §4.1.2 <FTP-flag> tokens from a
+// LIST/NLST argument, returning the remaining pathname (empty when the client
+// passed only flags). Without this the flags are joined into the path — "LIST
+// -la" resolved to "/-la" — so the server stat'd a non-existent object and
+// reported an empty directory instead of listing the current one.
+func stripListFlags(arg string) string {
+	fields := strings.Fields(arg)
+	for i, f := range fields {
+		if !strings.HasPrefix(f, "-") {
+			return strings.Join(fields[i:], " ")
+		}
+	}
+	return ""
 }
 
 func writeReply(conn net.Conn, code int, msg string) {

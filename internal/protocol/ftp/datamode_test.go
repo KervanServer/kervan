@@ -44,7 +44,7 @@ func TestValidateActiveTargetBlocksBounce(t *testing.T) {
 }
 
 func TestFTPEPSVAndActiveModeTransfers(t *testing.T) {
-	cc, r, _, _ := startFTPWithDataPlane(t)
+	cc, r, _, _ := startFTPWithDataPlane(t, defaultDataPlanePerms())
 	ftpCmd(t, cc, r, "USER alice")
 	if reply := ftpCmd(t, cc, r, "PASS pw12345"); !strings.HasPrefix(reply, "230") {
 		t.Fatalf("login: %q", reply)

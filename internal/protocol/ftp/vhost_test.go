@@ -2,52 +2,32 @@ package ftp
 
 import (
 	"bufio"
-	"context"
 	"crypto/tls"
 	"net"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/kervanserver/kervan/internal/auth"
-	"github.com/kervanserver/kervan/internal/session"
-	"github.com/kervanserver/kervan/internal/storage/memory"
-	"github.com/kervanserver/kervan/internal/store"
-	"github.com/kervanserver/kervan/internal/vfs"
 )
 
 func startVHostFTP(t *testing.T, vhosts map[string]VirtualHost, tlsCfg *tls.Config) (addr string, implicitAddr string) {
 	t.Helper()
-	st, err := store.Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = st.Close() })
-	repo := auth.NewUserRepository(st)
-	engine := auth.NewEngine(repo, "bcrypt", 100, time.Minute)
-	for name, group := range map[string]string{"acme-ann": "acme", "globex-bob": "globex"} {
-		u, err := engine.CreateUser(name, "StrongPass123!", "/", false)
-		if err != nil {
-			t.Fatal(err)
+	build := func(port, implicitPort int) *Server {
+		cfg := Config{
+			ListenAddr: "127.0.0.1", Port: port, Banner: "default banner", IdleTimeout: 30 * time.Second,
+			VirtualHosts: vhosts,
 		}
-		u.PrimaryGroup = group
-		_ = repo.Update(u)
+		if tlsCfg != nil {
+			cfg.TLSConfig, cfg.FTPSMode, cfg.FTPSImplicitPort = tlsCfg, "both", implicitPort
+		}
+		srv, _, _ := newTestServer(t, cfg, []testUser{
+			{name: "acme-ann", password: "StrongPass123!", primaryGroup: "acme"},
+			{name: "globex-bob", password: "StrongPass123!", primaryGroup: "globex"},
+		}, 100)
+		return srv
 	}
-	port, implicitPort := freeTCPPort(t), freeTCPPort(t)
-	cfg := Config{
-		ListenAddr: "127.0.0.1", Port: port, Banner: "default banner", IdleTimeout: 30 * time.Second,
-		VirtualHosts: vhosts,
-	}
-	if tlsCfg != nil {
-		cfg.TLSConfig, cfg.FTPSMode, cfg.FTPSImplicitPort = tlsCfg, "both", implicitPort
-	}
-	srv := NewServer(cfg, nil, engine, session.NewManager(), nil, func(*auth.User) (vfs.FileSystem, error) { return memory.New(), nil }, nil)
-	if err := srv.Start(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = srv.Stop() })
-	return net.JoinHostPort("127.0.0.1", strconv.Itoa(port)), net.JoinHostPort("127.0.0.1", strconv.Itoa(implicitPort))
+	// Without a TLS config there is no implicit-FTPS listener, so report no
+	// implicit address rather than a port nothing is bound to.
+	return startRealListeners(t, build, tlsCfg != nil)
 }
 
 type ftpClient struct {

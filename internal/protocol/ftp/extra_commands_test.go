@@ -37,7 +37,7 @@ func loginFTP(t *testing.T, cc net.Conn, r *bufio.Reader) {
 }
 
 func TestFTPAbortDuringUpload(t *testing.T) {
-	cc, r, fsys, _ := startFTPWithDataPlane(t)
+	cc, r, fsys, _ := startFTPWithDataPlane(t, defaultDataPlanePerms())
 	loginFTP(t, cc, r)
 
 	dc := enterFTPPassive(t, cc, r)
@@ -67,7 +67,7 @@ func TestFTPAbortDuringUpload(t *testing.T) {
 }
 
 func TestFTPAbortDuringDownload(t *testing.T) {
-	cc, r, fsys, _ := startFTPWithDataPlane(t)
+	cc, r, fsys, _ := startFTPWithDataPlane(t, defaultDataPlanePerms())
 	loginFTP(t, cc, r)
 	f, err := fsys.Open("/big.bin", os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
@@ -99,7 +99,7 @@ func TestFTPAbortDuringDownload(t *testing.T) {
 
 // A command sent during a transfer is not swallowed by the ABOR watcher.
 func TestFTPCommandPipelinedDuringTransfer(t *testing.T) {
-	cc, r, _, _ := startFTPWithDataPlane(t)
+	cc, r, _, _ := startFTPWithDataPlane(t, defaultDataPlanePerms())
 	loginFTP(t, cc, r)
 	dc := enterFTPPassive(t, cc, r)
 	if reply := ftpCmd(t, cc, r, "STOR /p.txt"); !strings.HasPrefix(reply, "150") {
@@ -120,7 +120,7 @@ func TestFTPCommandPipelinedDuringTransfer(t *testing.T) {
 }
 
 func TestFTPStoreUnique(t *testing.T) {
-	cc, r, fsys, _ := startFTPWithDataPlane(t)
+	cc, r, fsys, _ := startFTPWithDataPlane(t, defaultDataPlanePerms())
 	loginFTP(t, cc, r)
 	for i, want := range []string{"x.txt", "x.txt.1"} {
 		dc := enterFTPPassive(t, cc, r)
@@ -140,7 +140,7 @@ func TestFTPStoreUnique(t *testing.T) {
 }
 
 func TestFTPMiscCommands(t *testing.T) {
-	cc, r, fsys, _ := startFTPWithDataPlane(t)
+	cc, r, fsys, _ := startFTPWithDataPlane(t, defaultDataPlanePerms())
 	if lines := func() []string { _, _ = cc.Write([]byte("STAT\r\n")); return readFullReply(t, r) }(); lines[0] != "211-Kervan FTP server status:" || !strings.Contains(strings.Join(lines, "\n"), "Not logged in") {
 		t.Fatalf("STAT before login: %q", lines)
 	}

@@ -2,20 +2,14 @@ package ftp
 
 import (
 	"bufio"
-	"context"
 	"io"
 	"net"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/kervanserver/kervan/internal/auth"
 	"github.com/kervanserver/kervan/internal/netguard"
-	"github.com/kervanserver/kervan/internal/session"
-	"github.com/kervanserver/kervan/internal/storage/memory"
-	"github.com/kervanserver/kervan/internal/store"
-	"github.com/kervanserver/kervan/internal/vfs"
 )
 
 func freeTCPPort(t *testing.T) int {
@@ -30,19 +24,21 @@ func freeTCPPort(t *testing.T) int {
 
 func startAdmissionFTP(t *testing.T, filter *netguard.IPFilter, maxConns int) string {
 	t.Helper()
-	port := freeTCPPort(t)
-	srv := NewServer(Config{
-		ListenAddr:     "127.0.0.1",
-		Port:           port,
-		IdleTimeout:    30 * time.Second,
-		IPFilter:       filter,
-		MaxConnections: maxConns,
-	}, nil, nil, nil, nil, nil, nil)
-	if err := srv.Start(context.Background()); err != nil {
-		t.Fatal(err)
+	build := func(port, _ int) *Server {
+		cfg := Config{
+			ListenAddr:     "127.0.0.1",
+			Port:           port,
+			IdleTimeout:    30 * time.Second,
+			IPFilter:       filter,
+			MaxConnections: maxConns,
+		}
+		// No users are seeded: these tests exercise admission, which rejects
+		// before any authentication runs.
+		srv, _, _ := newTestServer(t, cfg, nil, 5)
+		return srv
 	}
-	t.Cleanup(func() { _ = srv.Stop() })
-	return net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+	addr, _ := startRealListeners(t, build, false)
+	return addr
 }
 
 func dialBanner(t *testing.T, addr string) (net.Conn, string) {
@@ -111,30 +107,18 @@ func TestFTPMaxConnectionsRejectsWith421(t *testing.T) {
 }
 
 func TestFTPRepeatedFailedLoginsBanAddress(t *testing.T) {
-	st, err := store.Open(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
+	build := func(port, _ int) *Server {
+		cfg := Config{ListenAddr: "127.0.0.1", Port: port, IdleTimeout: 30 * time.Second}
+		srv, engine, _ := newTestServer(t, cfg, []testUser{{name: "alice", password: "correct-horse"}}, 100)
+		throttle, err := auth.NewIPThrottle(auth.IPThrottleConfig{Enabled: true, Threshold: 2, Duration: time.Minute})
+		if err != nil {
+			t.Fatal(err)
+		}
+		engine.SetIPThrottle(throttle)
+		return srv
 	}
-	t.Cleanup(func() { _ = st.Close() })
-	engine := auth.NewEngine(auth.NewUserRepository(st), "bcrypt", 100, time.Minute)
-	if _, err := engine.CreateUser("alice", "correct-horse", "/", false); err != nil {
-		t.Fatal(err)
-	}
-	throttle, err := auth.NewIPThrottle(auth.IPThrottleConfig{Enabled: true, Threshold: 2, Duration: time.Minute})
-	if err != nil {
-		t.Fatal(err)
-	}
-	engine.SetIPThrottle(throttle)
 
-	port := freeTCPPort(t)
-	srv := NewServer(Config{ListenAddr: "127.0.0.1", Port: port, IdleTimeout: 30 * time.Second},
-		nil, engine, session.NewManager(), nil,
-		func(*auth.User) (vfs.FileSystem, error) { return memory.New(), nil }, nil)
-	if err := srv.Start(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = srv.Stop() })
-	addr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+	addr, _ := startRealListeners(t, build, false)
 
 	login := func(pass string) string {
 		c, err := net.DialTimeout("tcp", addr, 2*time.Second)
