@@ -62,10 +62,20 @@ func TestWebSocketPushesOnSessionChange(t *testing.T) {
 	if err != nil || resp.StatusCode != http.StatusSwitchingProtocols {
 		t.Fatalf("upgrade: %v %v", resp, err)
 	}
-	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	// readFrame gives each read its own deadline. A single absolute deadline
+	// armed before the first read made the burst read time out on a loaded
+	// runner even though the frame arrives promptly, because the
+	// initial-frame read had already spent the whole budget.
+	readFrame := func(what string, timeout time.Duration) []byte {
+		t.Helper()
+		if err := conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+			t.Fatalf("set read deadline for %s: %v", what, err)
+		}
+		return readServerFrame(t, r)
+	}
 
 	var first map[string]any
-	_ = json.Unmarshal(readServerFrame(t, r), &first)
+	_ = json.Unmarshal(readFrame("initial sessions frame", 5*time.Second), &first)
 	if got := first["sessions"].([]any); len(got) != 0 {
 		t.Fatalf("initial sessions = %v", got)
 	}
@@ -75,7 +85,7 @@ func TestWebSocketPushesOnSessionChange(t *testing.T) {
 	srv.sessions.Start("alice", "sftp", "10.0.0.1:2222")
 	srv.sessions.Start("alice", "ftp", "10.0.0.1:2121") // burst: one frame
 	var next map[string]any
-	_ = json.Unmarshal(readServerFrame(t, r), &next)
+	_ = json.Unmarshal(readFrame("session push frame", 5*time.Second), &next)
 	if elapsed := time.Since(started); elapsed > 2*time.Second {
 		t.Fatalf("push took %v; expected an event-driven update", elapsed)
 	}
