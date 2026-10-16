@@ -312,22 +312,24 @@ func runBackupRestoreCommand(stdout io.Writer, args []string) error {
 		}
 	}
 
+	// Check the required entry BEFORE writing anything. A restore that is
+	// going to be rejected must not leave recovered files behind, and the
+	// optional targets below (audit log, audit key, store .bak) are written
+	// during the same loop.
+	if _, ok := archiveEntries[backupStoreArchivePath]; !ok {
+		return fmt.Errorf("backup archive missing required entry %s", backupStoreArchivePath)
+	}
+
 	restored := make([]string, 0, len(targets))
-	seen := make(map[string]bool, len(targets))
 	for archivePath, target := range targets {
 		file, ok := archiveEntries[archivePath]
 		if !ok {
 			continue
 		}
-		seen[archivePath] = true
 		if err := restoreBackupFile(file, target.TargetPath, *force); err != nil {
 			return fmt.Errorf("restore %s to %s: %w", archivePath, target.TargetPath, err)
 		}
 		restored = append(restored, archivePath)
-	}
-
-	if !seen[backupStoreArchivePath] {
-		return fmt.Errorf("backup archive missing required entry %s", backupStoreArchivePath)
 	}
 
 	payload := map[string]any{
@@ -503,6 +505,7 @@ func verifyBackupManifest(entries map[string]*zip.File, manifest *backupManifest
 	if manifest == nil || manifest.Version < 2 {
 		return nil
 	}
+	covered := make(map[string]struct{}, len(manifest.Files))
 	for _, item := range manifest.Files {
 		if strings.TrimSpace(item.ArchivePath) == "" {
 			return errors.New("backup manifest contains empty archive_path")
@@ -522,6 +525,20 @@ func verifyBackupManifest(entries map[string]*zip.File, manifest *backupManifest
 			if checksum != want {
 				return fmt.Errorf("backup integrity check failed for %s: checksum mismatch", item.ArchivePath)
 			}
+		}
+		covered[item.ArchivePath] = struct{}{}
+	}
+	// The manifest is the integrity statement for the whole archive, so the
+	// coverage has to hold both ways. An entry the manifest does not list is
+	// checksum-verified by nothing, yet restore still writes it to disk and
+	// reports "verified" — anyone able to append to an archive could plant
+	// arbitrary files in server.data_dir that way.
+	for name := range entries {
+		if name == backupManifestPath {
+			continue
+		}
+		if _, ok := covered[name]; !ok {
+			return fmt.Errorf("backup archive contains entry not covered by the integrity manifest: %s", name)
 		}
 	}
 	return nil

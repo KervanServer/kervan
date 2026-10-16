@@ -136,7 +136,14 @@ func parseVSFTPDUserDB(filePath string) ([]vsftpdUserEntry, error) {
 	scanner := bufio.NewScanner(file)
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
+		if line == "" {
+			continue
+		}
+		// '#' introduces a comment only where a username may start. A
+		// password line is never a comment, and '#' is a legal password
+		// character — filtering it there dropped the line, left the file
+		// with an odd count and aborted the whole migration.
+		if len(lines)%2 == 0 && strings.HasPrefix(line, "#") {
 			continue
 		}
 		lines = append(lines, line)

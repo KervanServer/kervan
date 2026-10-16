@@ -586,6 +586,153 @@ func TestRunBackupRestoreCommandRejectsTamperedArchive(t *testing.T) {
 	}
 }
 
+// Contract: the integrity manifest is the archive's integrity statement, so
+// coverage must hold BOTH ways. An archive entry the manifest never records is
+// checksum-verified by nothing, yet restore still writes it into
+// server.data_dir while reporting "verified" — so an appended entry must be
+// refused rather than silently trusted.
+func TestRunBackupVerifyCommandRejectsUnmanifestedEntry(t *testing.T) {
+	baseDir := t.TempDir()
+	dataDir := filepath.Join(baseDir, "data")
+	auditLog := filepath.Join(dataDir, "audit.jsonl")
+	configPath := writeTestConfig(t, func(cfg *config.Config) {
+		cfg.Server.DataDir = dataDir
+		cfg.Audit.Outputs = []config.AuditOutput{{Type: "file", Path: auditLog}}
+	})
+	if err := runUserCreateCommand(io.Discard, []string{
+		"--config", configPath,
+		"--username", "alice",
+		"--password", "StrongPass123!",
+	}); err != nil {
+		t.Fatalf("create alice: %v", err)
+	}
+
+	backupFile := filepath.Join(baseDir, "backup.zip")
+	if err := runBackupCreateCommand(io.Discard, []string{
+		"--config", configPath,
+		"--output", backupFile,
+	}); err != nil {
+		t.Fatalf("create backup: %v", err)
+	}
+
+	// The audit log did not exist at creation time, so audit/audit.jsonl is
+	// absent from the manifest; appending it adds an uncovered entry.
+	unmanifested := filepath.Join(baseDir, "backup-unmanifested.zip")
+	if err := addUnmanifestedBackupEntry(backupFile, unmanifested, backupAuditArchivePath,
+		[]byte(`{"type":"auth.success","username":"attacker","seq":1}`+"\n")); err != nil {
+		t.Fatalf("append unmanifested entry: %v", err)
+	}
+
+	var jsonOut bytes.Buffer
+	verifyErr := runBackupVerifyCommand(&jsonOut, []string{"--input", unmanifested, "--json"})
+	// Refusing outright and reporting verified=false both satisfy the
+	// contract; reporting verified=true is the defect.
+	if verifyErr == nil {
+		var payload struct {
+			Verified bool `json:"verified"`
+		}
+		if err := json.Unmarshal(jsonOut.Bytes(), &payload); err != nil {
+			t.Fatalf("decode verify json: %v", err)
+		}
+		if payload.Verified {
+			t.Fatalf("verify reported verified=true for an archive containing an entry the manifest "+
+				"never records (%s)", backupAuditArchivePath)
+		}
+	}
+}
+
+func TestRunBackupRestoreCommandRejectsUnmanifestedEntry(t *testing.T) {
+	baseDir := t.TempDir()
+	dataDir := filepath.Join(baseDir, "data")
+	auditLog := filepath.Join(dataDir, "audit.jsonl")
+	configPath := writeTestConfig(t, func(cfg *config.Config) {
+		cfg.Server.DataDir = dataDir
+		cfg.Audit.Outputs = []config.AuditOutput{{Type: "file", Path: auditLog}}
+	})
+	if err := runUserCreateCommand(io.Discard, []string{
+		"--config", configPath,
+		"--username", "alice",
+		"--password", "StrongPass123!",
+	}); err != nil {
+		t.Fatalf("create alice: %v", err)
+	}
+
+	backupFile := filepath.Join(baseDir, "backup.zip")
+	if err := runBackupCreateCommand(io.Discard, []string{
+		"--config", configPath,
+		"--output", backupFile,
+	}); err != nil {
+		t.Fatalf("create backup: %v", err)
+	}
+
+	payload := []byte(`{"type":"auth.success","username":"attacker","seq":1}` + "\n")
+	unmanifested := filepath.Join(baseDir, "backup-unmanifested.zip")
+	if err := addUnmanifestedBackupEntry(backupFile, unmanifested, backupAuditArchivePath, payload); err != nil {
+		t.Fatalf("append unmanifested entry: %v", err)
+	}
+
+	_ = runBackupRestoreCommand(io.Discard, []string{
+		"--config", configPath,
+		"--input", unmanifested,
+		"--force",
+	})
+
+	// Whatever restore decided, the checksum-verified audit log must not end
+	// up holding bytes that no manifest ever covered.
+	if written, err := os.ReadFile(auditLog); err == nil && string(written) == string(payload) {
+		t.Fatalf("restore wrote the unmanifested entry %s to %s with no checksum verification: %q",
+			backupAuditArchivePath, auditLog, string(written))
+	}
+}
+
+// addUnmanifestedBackupEntry copies an archive verbatim and appends one entry
+// without recording it in manifest.json — the append an attacker with write
+// access to the archive can perform.
+func addUnmanifestedBackupEntry(srcPath, dstPath, archivePath string, content []byte) error {
+	reader, err := zip.OpenReader(srcPath)
+	if err != nil {
+		return err
+	}
+	defer reader.Close()
+
+	out, err := os.OpenFile(dstPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	writer := zip.NewWriter(out)
+	for _, file := range reader.File {
+		header := file.FileHeader
+		entry, err := writer.CreateHeader(&header)
+		if err != nil {
+			_ = writer.Close()
+			return err
+		}
+		rc, err := file.Open()
+		if err != nil {
+			_ = writer.Close()
+			return err
+		}
+		if _, err := io.Copy(entry, rc); err != nil {
+			_ = rc.Close()
+			_ = writer.Close()
+			return err
+		}
+		_ = rc.Close()
+	}
+	extra, err := writer.Create(archivePath)
+	if err != nil {
+		_ = writer.Close()
+		return err
+	}
+	if _, err := extra.Write(content); err != nil {
+		_ = writer.Close()
+		return err
+	}
+	return writer.Close()
+}
+
 func TestRunBackupVerifyCommand(t *testing.T) {
 	dataDir := filepath.Join(t.TempDir(), "data")
 	configPath := writeTestConfig(t, func(cfg *config.Config) {
@@ -1013,6 +1160,58 @@ func TestRunMigrateVSFTPDCommand(t *testing.T) {
 	}
 }
 
+// Contract: a vsftpd plain-text virtual user file is a list of alternating
+// username/password lines. '#' introduces a comment only where a username may
+// start — it is a legal password character, and filtering it out of a password
+// line left the file with an odd line count and aborted the whole migration.
+func TestParseVSFTPDUserDBPasswordStartingWithHash(t *testing.T) {
+	writeDB := func(content string) string {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), "virtual_users.txt")
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatalf("write vsftpd user db: %v", err)
+		}
+		return path
+	}
+
+	entries, err := parseVSFTPDUserDB(writeDB("alice\nsecret1\nbob\nsecret2\ncarol\n#carolpass\ndave\nsecret4\n"))
+	if err != nil {
+		t.Fatalf("valid user db rejected because a password starts with '#': %v", err)
+	}
+	want := map[string]string{"alice": "secret1", "bob": "secret2", "carol": "#carolpass", "dave": "secret4"}
+	if len(entries) != len(want) {
+		t.Fatalf("parsed %d entries, want %d: %+v", len(entries), len(want), entries)
+	}
+	for _, entry := range entries {
+		if want[entry.Username] != entry.Password {
+			t.Fatalf("entry %q password = %q, want %q", entry.Username, entry.Password, want[entry.Username])
+		}
+	}
+
+	// Control: comment lines in the username position are still skipped.
+	commented, err := parseVSFTPDUserDB(writeDB("# header\n# managed by ops\nalice\nsecret1\nbob\nsecret2\n"))
+	if err != nil {
+		t.Fatalf("comment-prefixed user db must parse: %v", err)
+	}
+	if len(commented) != 2 || commented[0].Username != "alice" || commented[1].Username != "bob" {
+		t.Fatalf("comment filtering changed: got %+v", commented)
+	}
+
+	// Control: an embedded '#' and surrounding spaces are unchanged.
+	plain, err := parseVSFTPDUserDB(writeDB("alice\nsec#ret1\nbob\n  spaced  \n"))
+	if err != nil {
+		t.Fatalf("plain user db must parse: %v", err)
+	}
+	if plain[0].Password != "sec#ret1" || plain[1].Password != "spaced" {
+		t.Fatalf("passwords altered: %q / %q", plain[0].Password, plain[1].Password)
+	}
+
+	// Control: a genuinely truncated (odd) file is still rejected.
+	if _, err := parseVSFTPDUserDB(writeDB("alice\nsecret1\nbob\n")); err == nil {
+		t.Fatal("a truncated user db must still be rejected")
+	}
+}
+
 func TestRunMigrateProFTPDCommand(t *testing.T) {
 	dataDir := filepath.Join(t.TempDir(), "data")
 	configPath := writeTestConfig(t, func(cfg *config.Config) {
@@ -1237,4 +1436,101 @@ func generateAuthorizedKey(t *testing.T) string {
 		t.Fatalf("new public key: %v", err)
 	}
 	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(publicKey)))
+}
+
+// backupRestoreFixture builds a config + data dir holding one user and an audit
+// log, then produces a complete backup archive over it.
+func backupRestoreFixture(t *testing.T) (cfgPath, dataDir, archive string) {
+	t.Helper()
+	baseDir := t.TempDir()
+	dataDir = filepath.Join(baseDir, "data")
+	cfgPath = writeTestConfig(t, func(cfg *config.Config) {
+		cfg.Server.DataDir = dataDir
+		cfg.Audit.Outputs = []config.AuditOutput{
+			{Type: "file", Path: filepath.Join(dataDir, "audit.jsonl")},
+		}
+	})
+	if err := runUserCreateCommand(io.Discard, []string{
+		"--config", cfgPath, "--username", "alice", "--password", "StrongPass123!",
+	}); err != nil {
+		t.Fatalf("create alice: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "audit.jsonl"), []byte("{\"type\":\"upload\"}\n"), 0o600); err != nil {
+		t.Fatalf("write audit log: %v", err)
+	}
+	archive = filepath.Join(baseDir, "backup.zip")
+	if err := runBackupCreateCommand(io.Discard, []string{
+		"--config", cfgPath, "--output", archive,
+	}); err != nil {
+		t.Fatalf("create backup: %v", err)
+	}
+	return cfgPath, dataDir, archive
+}
+
+func recoveredFilesIn(dataDir string) []string {
+	var out []string
+	for _, name := range []string{"audit.jsonl", "kervan-store.json.bak", "kervan-store.json"} {
+		if _, err := os.Stat(filepath.Join(dataDir, name)); err == nil {
+			out = append(out, name)
+		}
+	}
+	return out
+}
+
+// Control: a COMPLETE archive really does write recovered files. Without it the
+// test below could pass for the wrong reason — a harness that never restores.
+func TestRunBackupRestoreCommandWritesRecoveredFiles(t *testing.T) {
+	cfgPath, dataDir, archive := backupRestoreFixture(t)
+	if err := os.RemoveAll(dataDir); err != nil {
+		t.Fatalf("clear data dir: %v", err)
+	}
+	if err := runBackupRestoreCommand(io.Discard, []string{
+		"--config", cfgPath, "--input", archive, "--force",
+	}); err != nil {
+		t.Fatalf("restore of a complete archive failed: %v", err)
+	}
+	if got := recoveredFilesIn(dataDir); len(got) == 0 {
+		t.Fatal("control failed: restoring a complete archive wrote no recovered files, " +
+			"so the refused-restore test would be vacuous")
+	}
+}
+
+// Contract: a restore that is going to be refused must not mutate the data
+// directory. The required store entry is validated before anything is written,
+// not after the optional targets have already landed on disk.
+func TestRunBackupRestoreCommandRefusalLeavesDataDirUntouched(t *testing.T) {
+	cfgPath, dataDir, archive := backupRestoreFixture(t)
+
+	// Strip manifest.json FIRST, then the required store entry. Removing a
+	// manifest-listed entry alone makes loadBackupArchive reject the archive
+	// during integrity verification, which already refuses before any write.
+	// The case here is a MANIFESTLESS archive (hand-assembled, or written by an
+	// older version), which verification cannot pre-reject.
+	stripped := filepath.Join(t.TempDir(), "stripped.zip")
+	if err := removeBackupEntry(archive, stripped, backupManifestPath); err != nil {
+		t.Fatalf("strip manifest: %v", err)
+	}
+	broken := filepath.Join(t.TempDir(), "broken.zip")
+	if err := removeBackupEntry(stripped, broken, backupStoreArchivePath); err != nil {
+		t.Fatalf("strip required entry %s: %v", backupStoreArchivePath, err)
+	}
+	if err := os.RemoveAll(dataDir); err != nil {
+		t.Fatalf("clear data dir: %v", err)
+	}
+
+	err := runBackupRestoreCommand(io.Discard, []string{
+		"--config", cfgPath, "--input", broken, "--force",
+	})
+	if err == nil {
+		t.Fatalf("restore accepted an archive missing the required entry %s; it must refuse",
+			backupStoreArchivePath)
+	}
+	if !strings.Contains(err.Error(), backupStoreArchivePath) {
+		t.Fatalf("refusal should name the missing entry %s, got: %v", backupStoreArchivePath, err)
+	}
+	if leaked := recoveredFilesIn(dataDir); len(leaked) > 0 {
+		t.Fatalf("restore REFUSED with %q, yet it had already written %v into the data directory — "+
+			"a rejected restore must not mutate state before the archive is known complete",
+			err, leaked)
+	}
 }
