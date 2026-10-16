@@ -547,7 +547,9 @@ Groups are permission and storage-quota templates:
   `0` or a negative value also means `60s`) and none of the user's
   uploads, deletes or renames is in progress. An upload left unfinished
   by a dropped connection stops counting as in progress when that
-  connection ends. That picks up files changed outside Kervan. A changed
+  connection ends, and changes in progress never hold off a
+  re-measurement for more than ten intervals (at least 10 minutes).
+  That picks up files changed outside Kervan. A changed
   quota takes effect for open connections at the user's next sign-in or
   file request. Renaming an account keeps its usage; a deleted account
   re-created under the same name starts from a fresh measurement.

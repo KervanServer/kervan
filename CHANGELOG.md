@@ -23,8 +23,11 @@
   from storage at sign-in once the last measurement is older than this
   (default `60s`; `0` or a negative value also means `60s`, never
   "re-measure on every request"), and only while none of their uploads,
-  deletes or renames is in progress. The setting no longer triggers the
-  "no effect" startup warning.
+  deletes or renames is in progress. A user whose changes have been in
+  progress without a break for ten intervals (at least 10 minutes) is
+  re-measured anyway, so a change that is never ended cannot stop
+  re-measurement for good. The setting no longer triggers the "no
+  effect" startup warning.
 
 - **License: MIT.** Added `LICENSE`. It ships in the release archives and
   in the container image (`/usr/share/licenses/kervan/LICENSE`, with the

@@ -207,6 +207,136 @@ func TestRegistryPruneDropsRejectedKeys(t *testing.T) {
 	}
 }
 
+// A change that never ends (a write handle some code path dropped without
+// Close or Release) must not stop re-measurement for good: once the tracker
+// has been busy for StuckChangeFactor intervals, refresh walks anyway.
+func TestTrackerRemeasuresDespiteStuckChange(t *testing.T) {
+	const interval = time.Minute
+	fsys := memory.New()
+	tr, err := NewTracker(fsys, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr.BeginChange() // leaked: never ended
+	seedFile(t, fsys, "/outside", 7)
+
+	start := time.Now()
+	// Stale, but busy for less than the bound: the change is trusted.
+	if err := tr.refresh(fsys, interval, start.Add((StuckChangeFactor-1)*interval)); err != nil {
+		t.Fatal(err)
+	}
+	if got := tr.UsedBytes(); got != 0 {
+		t.Fatalf("re-measured while a change was in progress for under %d intervals: used = %d", StuckChangeFactor, got)
+	}
+
+	// Busy past the bound: re-measured.
+	if err := tr.refresh(fsys, interval, start.Add((StuckChangeFactor+1)*interval)); err != nil {
+		t.Fatal(err)
+	}
+	if got, files := tr.UsedBytes(), tr.UsedFiles(); got != 7 || files != 1 {
+		t.Fatalf("stuck change still blocks re-measurement: %d bytes / %d files, want 7 / 1", got, files)
+	}
+
+	// It keeps being re-measured once per interval, not on every call.
+	seedFile(t, fsys, "/more", 3)
+	if err := tr.refresh(fsys, interval, start.Add((StuckChangeFactor+1)*interval+time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if got := tr.UsedBytes(); got != 7 {
+		t.Fatalf("re-measured before the interval elapsed: used = %d", got)
+	}
+	if err := tr.refresh(fsys, interval, start.Add((StuckChangeFactor+2)*interval+time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if got := tr.UsedBytes(); got != 10 {
+		t.Fatalf("stuck tracker not re-measured on the next interval: used = %d, want 10", got)
+	}
+}
+
+// The bound counts from when the tracker last became busy, so ordinary
+// back-to-back uploads, each of which ends, never count as stuck, and with
+// maxAge <= 0 there is no bound at all.
+func TestTrackerStuckBoundResetsWhenIdle(t *testing.T) {
+	const interval = time.Minute
+	fsys := memory.New()
+	tr, err := NewTracker(fsys, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr.BeginChange()
+	tr.EndChange()
+	tr.BeginChange() // a new change, busy from now
+	seedFile(t, fsys, "/outside", 4)
+
+	tr.mu.Lock()
+	tr.busySince = time.Now()
+	tr.mu.Unlock()
+	if err := tr.refresh(fsys, interval, time.Now().Add(2*interval)); err != nil {
+		t.Fatal(err)
+	}
+	if got := tr.UsedBytes(); got != 0 {
+		t.Fatalf("a freshly begun change was treated as stuck: used = %d", got)
+	}
+	if err := tr.refresh(fsys, 0, time.Now().Add(1000*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if got := tr.UsedBytes(); got != 0 {
+		t.Fatalf("maxAge <= 0 must set no stuck bound: used = %d", got)
+	}
+	tr.EndChange()
+}
+
+// A stuck tracker whose change is genuinely active (bytes keep arriving)
+// still discards a walk that raced a write, so a long upload is never
+// overwritten by a partial view of it.
+func TestTrackerStuckWalkStillDiscardedOnRace(t *testing.T) {
+	const interval = time.Minute
+	fsys := memory.New()
+	tr, err := NewTracker(fsys, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr.BeginChange()
+	walk := &hookFS{FileSystem: fsys, onStat: func() {
+		_ = tr.OnGrow(5) // the long upload writes during the walk
+	}}
+	if err := tr.refresh(walk, interval, time.Now().Add((StuckChangeFactor+1)*interval)); err != nil {
+		t.Fatal(err)
+	}
+	if got := tr.UsedBytes(); got != 5 {
+		t.Fatalf("walk that raced an active upload overwrote it: used = %d, want 5", got)
+	}
+	tr.EndChange()
+}
+
+// A very short check_interval must not make ordinary uploads count as
+// stuck: the bound is never shorter than MinStuckAge.
+func TestTrackerStuckBoundHasFloor(t *testing.T) {
+	const interval = time.Second // 10 intervals = 10s, far below the floor
+	fsys := memory.New()
+	tr, err := NewTracker(fsys, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr.BeginChange()
+	seedFile(t, fsys, "/outside", 6)
+	start := time.Now()
+
+	if err := tr.refresh(fsys, interval, start.Add(MinStuckAge-time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if got := tr.UsedBytes(); got != 0 {
+		t.Fatalf("an upload in progress for under MinStuckAge was treated as stuck: used = %d", got)
+	}
+	if err := tr.refresh(fsys, interval, start.Add(MinStuckAge+time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if got := tr.UsedBytes(); got != 6 {
+		t.Fatalf("not re-measured once past MinStuckAge: used = %d, want 6", got)
+	}
+	tr.EndChange()
+}
+
 type hookFS struct {
 	vfs.FileSystem
 	onStat  func()

@@ -2,6 +2,7 @@ package quota
 
 import (
 	"errors"
+	"math"
 	"os"
 	"sync"
 	"time"
@@ -32,6 +33,11 @@ type Tracker struct {
 	// because a walk cannot see bytes that are reserved but not yet
 	// written, or a removal that is about to be released.
 	inflight int64
+	// busySince is when inflight last went from zero to non-zero. A tracker
+	// busy for much longer than the re-measure interval most likely holds a
+	// change that will never end (a code path that dropped a write handle
+	// without Close or Release), so refresh stops waiting for it.
+	busySince time.Time
 	// gen advances on every change, so a re-measurement that raced one is
 	// discarded instead of overwriting the incremental figures.
 	gen        uint64
@@ -68,6 +74,9 @@ func (t *Tracker) BeginChange() {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	if t.inflight == 0 {
+		t.busySince = time.Now()
+	}
 	t.inflight++
 	t.gen++
 }
@@ -80,7 +89,41 @@ func (t *Tracker) EndChange() {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.inflight = max(t.inflight-1, 0)
+	if t.inflight == 0 {
+		t.busySince = time.Time{}
+	}
 	t.gen++
+}
+
+// StuckChangeFactor bounds how long changes in progress may hold off a
+// re-measurement: once a tracker has been busy without a break for this many
+// re-measure intervals, refresh walks storage anyway. Every session ends the
+// changes it began (UserVFS.Release), so this only matters if some code path
+// leaks one; without the bound, one leak would stop re-measuring for that
+// user for the life of the process.
+const StuckChangeFactor = 10
+
+// MinStuckAge is the shortest time changes must be in progress before they
+// count as stuck, whatever the re-measure interval. Without it a very short
+// quota.check_interval would declare every ordinary upload stuck and let a
+// walk run under it.
+const MinStuckAge = 10 * time.Minute
+
+// stuckLocked reports whether changes have been in progress, without a
+// break, for longer than StuckChangeFactor re-measure intervals (and at
+// least MinStuckAge). maxAge <= 0 (re-measure whenever idle) sets no bound.
+// Callers hold t.mu.
+func (t *Tracker) stuckLocked(maxAge time.Duration, now time.Time) bool {
+	if t.inflight == 0 || maxAge <= 0 {
+		return false
+	}
+	bound := MinStuckAge
+	if maxAge <= math.MaxInt64/StuckChangeFactor {
+		bound = max(bound, maxAge*StuckChangeFactor)
+	} else {
+		return false // an interval this long never re-measures anyway
+	}
+	return now.Sub(t.busySince) >= bound
 }
 
 // refresh re-measures usage from fsys when the tracker has never been
@@ -89,12 +132,20 @@ func (t *Tracker) EndChange() {
 // files changed outside Kervan is the point; between refreshes usage is
 // tracked incrementally. A failed re-measurement keeps the incremental
 // figures; only a failed first measurement is an error.
+//
+// Changes in progress normally hold off the walk, because it cannot see
+// bytes reserved but not yet written. If they never stop (see
+// StuckChangeFactor), the walk runs anyway: usage may then briefly undercount
+// uploads that are genuinely in progress, which the next idle re-measurement
+// corrects, instead of never picking up outside changes again.
 func (t *Tracker) refresh(fsys vfs.FileSystem, maxAge time.Duration, now time.Time) error {
 	t.measureMu.Lock()
 	defer t.measureMu.Unlock()
 
 	t.mu.Lock()
-	if t.measured && (t.inflight > 0 || (maxAge > 0 && now.Sub(t.measuredAt) < maxAge)) {
+	stuck := t.stuckLocked(maxAge, now)
+	busy := t.inflight > 0 && !stuck
+	if t.measured && (busy || (maxAge > 0 && now.Sub(t.measuredAt) < maxAge)) {
 		t.mu.Unlock()
 		return nil
 	}
@@ -111,7 +162,7 @@ func (t *Tracker) refresh(fsys vfs.FileSystem, maxAge time.Duration, now time.Ti
 
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.measured && (t.gen != gen || t.inflight > 0) {
+	if t.measured && (t.gen != gen || (t.inflight > 0 && !stuck)) {
 		// A change ran during the walk; the walk may have seen it only in
 		// part. Keep the incremental figures and re-measure next time.
 		return nil
