@@ -540,6 +540,17 @@ Groups are permission and storage-quota templates:
   `quota.default_max_files` as the default. Overwriting a file does not
   count as a new one. Quotas only apply when `quota.enabled` is
   true, and never to admins.
+- A user's quota is shared by all of their connections and WebUI/API
+  requests, so parallel uploads cannot together exceed it. Usage is
+  tracked on every write and re-measured from storage at sign-in once the
+  last measurement is older than `quota.check_interval` (default `60s`;
+  `0` or a negative value also means `60s`) and none of the user's
+  uploads, deletes or renames is in progress. An upload left unfinished
+  by a dropped connection stops counting as in progress when that
+  connection ends. That picks up files changed outside Kervan. A changed
+  quota takes effect for open connections at the user's next sign-in or
+  file request. Renaming an account keeps its usage; a deleted account
+  re-created under the same name starts from a fresh measurement.
 - **Secondary groups** record membership only.
 - Renaming a group updates its members. A group with members can only be
   deleted with `force`, which removes the memberships.
@@ -912,7 +923,7 @@ All listeners (FTP, FTPS, SFTP/SCP and the WebUI/API) share these controls:
 - **Settings without effect** — a few keys are accepted for compatibility but
   do nothing in this release (`ftp.ascii_transfer`,
   `sftp.host_key_algorithms`, `sftp.disable_shell`, `auth.default_provider`,
-  `auth.ldap.connection_pool_size`, `quota.check_interval`, `mcp.transport` other than `stdio`). The server logs
+  `auth.ldap.connection_pool_size`, `mcp.transport` other than `stdio`). The server logs
   a warning at startup when one of them is changed from its default.
 
 ---

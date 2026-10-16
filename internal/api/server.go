@@ -1214,6 +1214,7 @@ func (s *Server) handleFilesList(w http.ResponseWriter, r *http.Request) {
 	}
 	user := currentUser(r)
 	fsys, err := s.userFS(user)
+	defer vfs.ReleaseFS(fsys)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -1267,6 +1268,7 @@ func (s *Server) handleFilesMkdir(w http.ResponseWriter, r *http.Request) {
 	}
 	user := currentUser(r)
 	fsys, err := s.userFS(user)
+	defer vfs.ReleaseFS(fsys)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -1294,6 +1296,7 @@ func (s *Server) handleFilesDelete(w http.ResponseWriter, r *http.Request) {
 	}
 	user := currentUser(r)
 	fsys, err := s.userFS(user)
+	defer vfs.ReleaseFS(fsys)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -1325,6 +1328,7 @@ func (s *Server) handleFilesRename(w http.ResponseWriter, r *http.Request) {
 	}
 	user := currentUser(r)
 	fsys, err := s.userFS(user)
+	defer vfs.ReleaseFS(fsys)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -1414,6 +1418,7 @@ func (s *Server) handleFilesShare(w http.ResponseWriter, r *http.Request) {
 
 	user := currentUser(r)
 	fsys, err := s.userFS(user)
+	defer vfs.ReleaseFS(fsys)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -1453,6 +1458,7 @@ func (s *Server) handleFilesUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	user := currentUser(r)
 	fsys, err := s.userFS(user)
+	defer vfs.ReleaseFS(fsys)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -1506,6 +1512,7 @@ func (s *Server) handleFilesDownload(w http.ResponseWriter, r *http.Request) {
 	}
 	user := currentUser(r)
 	fsys, err := s.userFS(user)
+	defer vfs.ReleaseFS(fsys)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -1617,6 +1624,7 @@ func (s *Server) handleFilesStat(w http.ResponseWriter, r *http.Request) {
 	}
 	user := currentUser(r)
 	fsys, err := s.userFS(user)
+	defer vfs.ReleaseFS(fsys)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
@@ -1838,6 +1846,7 @@ func (s *Server) handleShareDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	fsys, err := s.fsBuilder(link.Username)
+	defer vfs.ReleaseFS(fsys)
 	if err != nil {
 		fail(http.StatusInternalServerError, "server_error", "unable to open shared file")
 		return

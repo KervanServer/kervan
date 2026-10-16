@@ -3,7 +3,6 @@ package config
 import (
 	"slices"
 	"strings"
-	"time"
 )
 
 // UnsupportedSettingWarnings lists settings that are accepted for forward
@@ -31,9 +30,6 @@ func UnsupportedSettingWarnings(c *Config) []string {
 	}
 	if c.Auth.LDAP.Enabled && c.Auth.LDAP.PoolSize > 0 && c.Auth.LDAP.PoolSize != 4 {
 		add("auth.ldap.connection_pool_size", "ignored; LDAP binds use one connection per authentication")
-	}
-	if c.Quota.CheckInterval > 0 && c.Quota.CheckInterval != 60*time.Second {
-		add("quota.check_interval", "ignored; usage is measured at login and tracked on every write")
 	}
 	if t := strings.ToLower(strings.TrimSpace(c.MCP.Transport)); t != "" && t != "stdio" {
 		add("mcp.transport", "only stdio is supported (kervan mcp)")

@@ -2,7 +2,29 @@
 
 ## Unreleased
 
+### Fixed
+
+- **Quotas are shared by all of a user's sessions.** Every FTP/SFTP/SCP
+  connection and every WebUI/API file request used to get its own quota
+  tracker, each measured from storage when it was created. Parallel
+  sessions could therefore together store more than the quota, and every
+  API file request walked the user's whole directory tree. One tracker per
+  user is now shared (`quota.Registry`). A changed quota reaches open
+  sessions at the user's next sign-in or request. Trackers follow the
+  account's ID, so a rename keeps the usage and a deleted account
+  re-created under the same name starts fresh. Trackers of deleted
+  accounts are dropped by the 30-second access sweep. When an FTP/SFTP/SCP
+  connection or an API request ends, uploads it left open stop counting
+  as in progress, so one dropped upload cannot block re-measurement.
+
 ### Changed
+
+- **`quota.check_interval` takes effect.** A user's usage is re-measured
+  from storage at sign-in once the last measurement is older than this
+  (default `60s`; `0` or a negative value also means `60s`, never
+  "re-measure on every request"), and only while none of their uploads,
+  deletes or renames is in progress. The setting no longer triggers the
+  "no effect" startup warning.
 
 - **License: MIT.** Added `LICENSE`. It ships in the release archives and
   in the container image (`/usr/share/licenses/kervan/LICENSE`, with the

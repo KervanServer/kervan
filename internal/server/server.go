@@ -71,6 +71,9 @@ type App struct {
 	cfgMu      sync.RWMutex // guards runtime-reloadable cfg fields read per connection
 	userRates  *throttle.Registry
 	totalRate  *throttle.Limiter
+	// quotas hands out one quota tracker per user, shared by all of that
+	// user's sessions and API requests.
+	quotas *quota.Registry
 
 	cancel context.CancelFunc
 	start  time.Time
@@ -147,6 +150,7 @@ func New(cfg *config.Config, configPath string, logger *slog.Logger) (*App, erro
 		groups:    auth.NewGroupRepository(st, repo),
 		userRates: throttle.NewRegistry(),
 		totalRate: throttle.NewAdjustable(cfg.Bandwidth.MaxTotal),
+		quotas:    quota.NewRegistry(),
 		cfg:       cfg,
 		logger:    logger,
 		store:     st,
@@ -772,7 +776,12 @@ func (a *App) buildUserFS(user *auth.User) (vfs.FileSystem, error) {
 
 	var quotaTracker vfs.QuotaTracker
 	if a.cfg.Quota.Enabled && user.Type != auth.UserTypeAdmin && rootFS != nil {
-		tracker, err := quota.NewTracker(rootFS, policy.MaxStorage, policy.MaxFiles)
+		// One tracker per user, shared by every connection and API request:
+		// per-call trackers each started from the same measurement, so
+		// parallel sessions could together exceed the quota. The scope ties
+		// the tracker to the storage it measured.
+		scope := backendName + "\x00" + backendType + "\x00" + normalizedHomeDir
+		tracker, err := a.quotas.ForUser(quotaKey(user), scope, rootFS, policy.MaxStorage, policy.MaxFiles, a.quotaCheckInterval())
 		if err != nil {
 			return nil, err
 		}
@@ -796,6 +805,54 @@ func (a *App) buildUserFS(user *auth.User) (vfs.FileSystem, error) {
 	// limiter by everyone.
 	userVFS.SetRateLimiters(a.userRates.ForUser(user.Username, policy.MaxBandwidth), a.totalRate)
 	return userVFS, nil
+}
+
+// defaultQuotaCheckInterval applies when quota.check_interval is unset, zero
+// or negative. "Re-measure on every use" is not offered: buildUserFS runs for
+// every connection and every API file request, and each re-measurement walks
+// the user's whole tree.
+const defaultQuotaCheckInterval = 60 * time.Second
+
+func (a *App) quotaCheckInterval() time.Duration {
+	if d := a.cfg.Quota.CheckInterval; d > 0 {
+		return d
+	}
+	return defaultQuotaCheckInterval
+}
+
+// quotaKey identifies a user's tracker in the quota registry. The user ID is
+// stable across renames and never reused, so a deleted account re-created
+// under the same name starts from a fresh measurement. Records without an ID
+// (only built in tests) fall back to the username.
+func quotaKey(user *auth.User) string {
+	if id := strings.TrimSpace(user.ID); id != "" {
+		return "id:" + id
+	}
+	return "name:" + user.Username
+}
+
+// pruneQuotaTrackers drops quota trackers of accounts that no longer exist.
+// A store error keeps the tracker: dropping it costs only a re-measurement,
+// but there is no reason to pay that over a transient failure.
+func (a *App) pruneQuotaTrackers() int {
+	if a.quotas == nil || a.authRepo == nil {
+		return 0
+	}
+	return a.quotas.Prune(func(key string) bool {
+		var (
+			user *auth.User
+			err  error
+		)
+		switch {
+		case strings.HasPrefix(key, "id:"):
+			user, err = a.authRepo.GetByID(strings.TrimPrefix(key, "id:"))
+		case strings.HasPrefix(key, "name:"):
+			user, err = a.authRepo.GetByUsername(strings.TrimPrefix(key, "name:"))
+		default:
+			return false
+		}
+		return err != nil || user != nil
+	})
 }
 
 func (a *App) policyDefaults() auth.PolicyDefaults {
