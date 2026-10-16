@@ -832,26 +832,60 @@ func quotaKey(user *auth.User) string {
 }
 
 // pruneQuotaTrackers drops quota trackers of accounts that no longer exist.
-// A store error keeps the tracker: dropping it costs only a re-measurement,
-// but there is no reason to pay that over a transient failure.
+// It reads the user list once per sweep and checks every tracker key against
+// it, rather than one store lookup per tracked user.
+//
+// The list is read lazily, on the first key Prune checks, which is after
+// Prune has snapshotted the registry. Any tracker in that snapshot was
+// created for an account that existed before the list was read, so an
+// account created during the sweep is never mistaken for a deleted one.
+// An empty registry costs no store read at all. A store error keeps every
+// tracker: dropping one costs only a re-measurement, but there is no reason
+// to pay that over a transient failure.
 func (a *App) pruneQuotaTrackers() int {
 	if a.quotas == nil || a.authRepo == nil {
 		return 0
 	}
-	return a.quotas.Prune(func(key string) bool {
-		var (
-			user *auth.User
-			err  error
-		)
-		switch {
-		case strings.HasPrefix(key, "id:"):
-			user, err = a.authRepo.GetByID(strings.TrimPrefix(key, "id:"))
-		case strings.HasPrefix(key, "name:"):
-			user, err = a.authRepo.GetByUsername(strings.TrimPrefix(key, "name:"))
-		default:
-			return false
+	var (
+		loaded bool
+		live   map[string]struct{} // quota keys of existing accounts
+		failed bool
+	)
+	load := func() {
+		loaded = true
+		users, err := a.authRepo.List()
+		if err != nil {
+			failed = true
+			if a.logger != nil {
+				a.logger.Warn("quota tracker sweep skipped: listing users failed", "error", err)
+			}
+			return
 		}
-		return err != nil || user != nil
+		live = make(map[string]struct{}, 2*len(users))
+		for _, u := range users {
+			if u == nil {
+				continue
+			}
+			if id := strings.TrimSpace(u.ID); id != "" {
+				live["id:"+id] = struct{}{}
+			}
+			// Username keys only exist for records without an ID; usernames
+			// are case-insensitive, like the repository's name index.
+			live["name:"+strings.ToLower(strings.TrimSpace(u.Username))] = struct{}{}
+		}
+	}
+	return a.quotas.Prune(func(key string) bool {
+		if !loaded {
+			load()
+		}
+		if failed {
+			return true
+		}
+		if name, ok := strings.CutPrefix(key, "name:"); ok {
+			key = "name:" + strings.ToLower(strings.TrimSpace(name))
+		}
+		_, ok := live[key]
+		return ok
 	})
 }
 

@@ -233,3 +233,59 @@ func TestPruneQuotaTrackersDropsDeletedUsers(t *testing.T) {
 		t.Fatalf("registry holds %d trackers after pruning, want 1", n)
 	}
 }
+
+// The sweep compares registry keys against one user listing: trackers of
+// accounts without an ID are keyed by username, matched case-insensitively,
+// and keys of no known form are dropped.
+func TestPruneQuotaTrackersMatchesUsernameKeys(t *testing.T) {
+	app, repo := appWithRepoQuota(t, 10)
+	kept := newCappedUser(t, repo, "Hana")
+	if _, err := app.quotas.ForUser("name:hana", "s", memory.New(), 0, 0, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.quotas.ForUser("name:ghost", "s", memory.New(), 0, 0, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.quotas.ForUser("bogus", "s", memory.New(), 0, 0, time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.buildUserFS(kept); err != nil { // "id:" key
+		t.Fatal(err)
+	}
+	if dropped := app.pruneQuotaTrackers(); dropped != 2 {
+		t.Fatalf("pruned %d trackers, want 2 (name:ghost and bogus)", dropped)
+	}
+	if n := app.quotas.Len(); n != 2 {
+		t.Fatalf("registry holds %d trackers after pruning, want 2", n)
+	}
+	if empty := (&App{quotas: quota.NewRegistry(), authRepo: repo}).pruneQuotaTrackers(); empty != 0 {
+		t.Fatalf("empty registry pruned %d", empty)
+	}
+}
+
+// When the user list cannot be read, the sweep keeps every tracker: a
+// transient store failure must not throw away usage figures.
+func TestPruneQuotaTrackersKeepsAllWhenListingFails(t *testing.T) {
+	app, _ := appWithSharedQuota(t, 10)
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	// A users row that does not decode as a user makes List fail.
+	if err := st.Put("users", "broken", "not a user record"); err != nil {
+		t.Fatal(err)
+	}
+	app.authRepo = auth.NewUserRepository(st)
+	if _, err := app.authRepo.List(); err == nil {
+		t.Fatal("test setup: listing users should fail")
+	}
+	for _, key := range []string{"id:1", "name:x"} {
+		if _, err := app.quotas.ForUser(key, "s", memory.New(), 0, 0, time.Hour); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if dropped := app.pruneQuotaTrackers(); dropped != 0 || app.quotas.Len() != 2 {
+		t.Fatalf("a failed user listing dropped %d trackers (%d left), want none dropped", dropped, app.quotas.Len())
+	}
+}
