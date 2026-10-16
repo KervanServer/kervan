@@ -134,6 +134,8 @@ API key scopes currently include surfaces such as `server:read`,
 `files:read`, `files:write`, `share:write`, `audit:read`,
 `sessions:write`, and `transfers:read`. Presets (`read-only`,
 `automation`, `operations`, `read-write`) expand to curated scope sets.
+A key's "last used" time is updated at most once a minute, so frequent
+API calls do not each rewrite the store.
 
 ---
 

@@ -4,6 +4,13 @@
 
 ### Fixed
 
+- **API-key requests no longer rewrite the store on every call.** Each
+  request authenticated with an API key saved the key's last-used time,
+  which rewrote the whole JSON store file and its backup, turning read
+  traffic into one store write per request. The time is now saved at most
+  once a minute per key, inside a store transaction, so it also cannot
+  recreate a key deleted while a request through it was in flight.
+
 - **Audit events are no longer dropped when the queue fills up.** The audit
   engine discarded events once its 1024-event queue was full, and wrote to
   every output in turn, so one slow HTTP or syslog collector held up the

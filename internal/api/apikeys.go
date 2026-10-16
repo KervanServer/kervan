@@ -131,17 +131,55 @@ func (r *APIKeyRepository) GetByToken(token string) (*APIKeyRecord, error) {
 	return nil, nil
 }
 
+// apiKeyLastUsedResolution is how stale a key's stored last-used time may get
+// before a request through that key writes a newer one. Every store write
+// rewrites the whole store file (and its .bak), so persisting the timestamp
+// on every API-key request turned read traffic into a write per request.
+const apiKeyLastUsedResolution = time.Minute
+
+// errLastUsedFresh aborts the UpdateLastUsed transaction without writing.
+var errLastUsedFresh = errors.New("api key last-used time is already fresh")
+
+// UpdateLastUsed records that the key was used at usedAt, at most once per
+// apiKeyLastUsedResolution: if the stored time is already that recent (or
+// newer), nothing is written. A key deleted meanwhile is not brought back.
 func (r *APIKeyRepository) UpdateLastUsed(id string, usedAt time.Time) error {
 	if r == nil || r.store == nil {
 		return errors.New("api key repository is not configured")
 	}
-	var record APIKeyRecord
-	if err := r.store.Get(collAPIKeys, id, &record); err != nil {
+	usedAt = usedAt.UTC()
+	fresh := func(record *APIKeyRecord) bool {
+		return record.LastUsedAt != nil && usedAt.Sub(*record.LastUsedAt) < apiKeyLastUsedResolution
+	}
+
+	// The common case, a key used again within the window, costs one read
+	// and no write.
+	var current APIKeyRecord
+	if err := r.store.Get(collAPIKeys, id, &current); err != nil {
 		return err
 	}
-	usedAt = usedAt.UTC()
-	record.LastUsedAt = &usedAt
-	return r.store.Put(collAPIKeys, record.ID, &record)
+	if fresh(&current) {
+		return nil
+	}
+
+	// Write inside one transaction against the latest stored record, so a
+	// concurrent Delete is not undone and concurrent requests through the
+	// same key write once.
+	err := r.store.Update(func(tx *store.Tx) error {
+		var record APIKeyRecord
+		if err := tx.Get(collAPIKeys, id, &record); err != nil {
+			return err
+		}
+		if fresh(&record) {
+			return errLastUsedFresh
+		}
+		record.LastUsedAt = &usedAt
+		return tx.Put(collAPIKeys, record.ID, &record)
+	})
+	if errors.Is(err, errLastUsedFresh) {
+		return nil
+	}
+	return err
 }
 
 func generateAPIKeyToken() (string, error) {
