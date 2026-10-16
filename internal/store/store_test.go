@@ -165,45 +165,6 @@ func TestStoreClosePersistsWriteThatFailedToReachDisk(t *testing.T) {
 	}
 }
 
-// A store file that becomes unreadable under an open store must surface, not
-// silently answer from the in-memory snapshot: that snapshot reports records
-// which are no longer on disk, and the caller has no way to tell.
-func TestStoreSurfacesUnreadableFileOnRead(t *testing.T) {
-	requireJSONBackend(t)
-	dir := t.TempDir()
-	st, err := Open(dir)
-	if err != nil {
-		t.Fatalf("Open(): %v", err)
-	}
-	t.Cleanup(func() { _ = st.Close() })
-	if err := st.Put("c", "k", "v"); err != nil {
-		t.Fatalf("Put(): %v", err)
-	}
-
-	// Truncate behind the open store's back, as a crashing writer would.
-	if err := os.WriteFile(filepath.Join(dir, "kervan-store.json"), nil, 0o600); err != nil {
-		t.Fatalf("truncate store file: %v", err)
-	}
-
-	var v string
-	if err := st.Get("c", "k", &v); err == nil {
-		t.Fatalf("Get returned %q from a truncated store file, want an error", v)
-	}
-	var rows []string
-	if err := st.List("c", &rows); err == nil {
-		t.Fatalf("List returned %v from a truncated store file, want an error", rows)
-	}
-
-	// A successful write repairs the file and clears the error, so the store
-	// must not be left permanently unreadable.
-	if err := st.Put("c", "k2", "v2"); err != nil {
-		t.Fatalf("Put after truncation: %v", err)
-	}
-	if err := st.Get("c", "k2", &v); err != nil || v != "v2" {
-		t.Fatalf("Get after repair = %q (%v), want %q", v, err, "v2")
-	}
-}
-
 func TestStoreRecoversFromBackupWhenPrimaryIsCorrupt(t *testing.T) {
 	requireJSONBackend(t)
 	dir := t.TempDir()

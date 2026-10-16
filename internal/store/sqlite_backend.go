@@ -114,39 +114,18 @@ func openSQLiteBackend(dataDir string) (*sqliteBackend, error) {
 // they race on creating the file itself and SQLite answers SQLITE_BUSY after
 // microseconds, without ever consulting the busy handler. The lock makes a
 // loser wait for the winner's CREATE instead of failing the whole open.
-// initSchema creates the store tables. An already-initialised database is the
-// common case (every CLI command and every server restart), so it probes first
-// and only takes the cross-process lock when the schema is actually missing.
-// A probe failure also falls through to the lock: on a brand-new file the
-// probe is itself a create, and that is the contended case the lock exists for.
 func initSchema(db *sql.DB, path string) error {
-	if ready, err := schemaReady(db); err == nil && ready {
-		return nil
-	}
 	unlock, err := lockFile(path + ".lock")
 	if err != nil {
 		return fmt.Errorf("lock store database %s: %w", path, err)
 	}
 	defer unlock()
-	// Both statements are CREATE TABLE IF NOT EXISTS, so re-running under the
-	// lock after another process won the race is a no-op.
 	for _, ddl := range []string{sqliteSchema, sqliteMetaSchema} {
 		if _, err := db.Exec(ddl); err != nil {
 			return fmt.Errorf("initialise store database %s: %w", path, err)
 		}
 	}
 	return nil
-}
-
-// schemaReady reports whether both store tables already exist.
-func schemaReady(db *sql.DB) (bool, error) {
-	var n int
-	if err := db.QueryRow(
-		`SELECT count(*) FROM sqlite_master WHERE type='table' AND name IN ('kv','meta')`,
-	).Scan(&n); err != nil {
-		return false, err
-	}
-	return n == 2, nil
 }
 
 // importJSONStore copies kervan-store.json into the database the first time
