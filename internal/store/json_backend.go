@@ -57,6 +57,8 @@ func (s *jsonBackend) close() error {
 	return s.mutateLocked(func(map[string]json.RawMessage) {})
 }
 
+func (s *jsonBackend) filePath() string { return s.path }
+
 func (s *jsonBackend) put(collection, key string, raw json.RawMessage) error {
 	ck := composite(collection, key)
 	s.persistMu.Lock()
@@ -264,7 +266,12 @@ func loadStoreFile(path string) (map[string]json.RawMessage, []byte, error) {
 		return nil, nil, fmt.Errorf("read store file %s: %w", path, err)
 	}
 	if len(raw) == 0 {
-		return make(map[string]json.RawMessage), raw, nil
+		// The store is marshalled from a map, so the smallest file the
+		// backend can write is "{}". A zero-length file is a truncated
+		// write, never a store with no records. Reporting it as empty
+		// would load zero records and, worse, return before the .bak
+		// fallback that holds them.
+		return nil, nil, fmt.Errorf("store file %s is empty", path)
 	}
 	var decoded map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &decoded); err != nil {

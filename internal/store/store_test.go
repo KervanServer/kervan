@@ -104,6 +104,67 @@ func TestStoreDeletePersistsAcrossReopen(t *testing.T) {
 	}
 }
 
+// Store.Close retries a write that failed to reach disk. The store file is
+// made a directory so writeFileAtomically's rename fails regardless of
+// privilege (chmod is ignored by root): the pending record then exists ONLY
+// in memory, so clearing the obstruction and closing proves Close is what
+// persists it.
+//
+// Blocking only kervan-store.json.bak would NOT test this: flush writes the
+// primary first, so the record is already on disk before Close runs.
+func TestStoreClosePersistsWriteThatFailedToReachDisk(t *testing.T) {
+	requireJSONBackend(t)
+	dir := t.TempDir()
+
+	st, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open(): %v", err)
+	}
+	if err := st.Put("users", "before", "kept"); err != nil {
+		t.Fatalf("seed Put(): %v", err)
+	}
+
+	primary := filepath.Join(dir, "kervan-store.json")
+	if err := os.Remove(primary); err != nil {
+		t.Fatalf("remove store file: %v", err)
+	}
+	if err := os.Mkdir(primary, 0o700); err != nil {
+		t.Fatalf("mkdir over store file: %v", err)
+	}
+
+	if err := st.Put("users", "pending", "must-survive"); err == nil {
+		t.Fatal("setup broken: Put succeeded despite an unwritable store file")
+	}
+	var pending string
+	if err := st.Get("users", "pending", &pending); err != nil {
+		t.Fatalf("pending record must stay readable in memory: %v", err)
+	}
+
+	if err := os.Remove(primary); err != nil {
+		t.Fatalf("clear obstruction: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("Close() should retry the failed write: %v", err)
+	}
+
+	reopened, err := Open(dir)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+
+	var got string
+	if err := reopened.Get("users", "pending", &got); err != nil {
+		t.Fatalf("Close() did not persist the failed write: %v", err)
+	}
+	if got != pending {
+		t.Fatalf("persisted value = %q, want %q", got, pending)
+	}
+	if err := reopened.Get("users", "before", &got); err != nil || got != "kept" {
+		t.Fatalf("earlier record lost: %q (%v)", got, err)
+	}
+}
+
 func TestStoreRecoversFromBackupWhenPrimaryIsCorrupt(t *testing.T) {
 	requireJSONBackend(t)
 	dir := t.TempDir()
@@ -131,6 +192,71 @@ func TestStoreRecoversFromBackupWhenPrimaryIsCorrupt(t *testing.T) {
 	t.Cleanup(func() {
 		_ = recovered.Close()
 	})
+
+	var got map[string]any
+	if err := recovered.Get("users", "alice", &got); err != nil {
+		t.Fatalf("Get() after recovery: %v", err)
+	}
+	if got["username"] != "alice" {
+		t.Fatalf("unexpected recovered payload: %#v", got)
+	}
+}
+
+// A zero-length kervan-store.json is a truncated write, not a store with no
+// records: the store is marshalled from a map, so "{}" is the smallest file the
+// backend can ever write. Reading one as an empty store loaded zero records and,
+// worse, returned before the .bak fallback that holds them.
+func TestStoreRecoversFromBackupWhenPrimaryIsEmpty(t *testing.T) {
+	requireJSONBackend(t)
+	dir := t.TempDir()
+
+	seed := func(t *testing.T) {
+		t.Helper()
+		st, err := Open(dir)
+		if err != nil {
+			t.Fatalf("Open(): %v", err)
+		}
+		if err := st.Put("users", "alice", map[string]any{"username": "alice"}); err != nil {
+			_ = st.Close()
+			t.Fatalf("Put(): %v", err)
+		}
+		if err := st.Close(); err != nil {
+			t.Fatalf("Close(): %v", err)
+		}
+	}
+	seed(t)
+
+	// Premise: a store with no records is written as "{}", never as zero bytes.
+	emptied, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open() emptied: %v", err)
+	}
+	if err := emptied.Delete("users", "alice"); err != nil {
+		t.Fatalf("Delete(): %v", err)
+	}
+	if err := emptied.Close(); err != nil {
+		t.Fatalf("Close() emptied: %v", err)
+	}
+	if raw, err := os.ReadFile(filepath.Join(dir, "kervan-store.json")); err != nil {
+		t.Fatalf("ReadFile(emptied store): %v", err)
+	} else if len(raw) == 0 {
+		t.Fatal("premise broken: the backend wrote a zero-length store file")
+	}
+
+	// Truncate the primary, leaving the .bak holding the record.
+	seed(t)
+	if err := os.WriteFile(filepath.Join(dir, "kervan-store.json"), nil, 0o600); err != nil {
+		t.Fatalf("WriteFile(truncated): %v", err)
+	}
+	if bak, err := os.Stat(filepath.Join(dir, "kervan-store.json.bak")); err != nil || bak.Size() == 0 {
+		t.Fatalf("setup: .bak should hold the record, got %v (%v)", bak, err)
+	}
+
+	recovered, err := Open(dir)
+	if err != nil {
+		t.Fatalf("Open() recover: %v", err)
+	}
+	t.Cleanup(func() { _ = recovered.Close() })
 
 	var got map[string]any
 	if err := recovered.Get("users", "alice", &got); err != nil {

@@ -22,6 +22,10 @@ import (
 const (
 	backupStoreArchivePath    = "store/kervan-store.json"
 	backupStoreBakArchivePath = "store/kervan-store.json.bak"
+	// backupStoreDBArchivePath holds a consistent snapshot of the SQLite
+	// store (kervan-store.db). An archive carries either it or the JSON
+	// store entry, depending on the backend the installation runs.
+	backupStoreDBArchivePath  = "store/kervan-store.db"
 	backupAuditArchivePath    = "audit/audit.jsonl"
 	backupAuditKeyArchivePath = "audit/audit.key"
 	backupAuditRotatedPrefix  = "audit/rotated/"
@@ -100,16 +104,30 @@ func runBackupCreateCommand(stdout io.Writer, args []string) error {
 		return fmt.Errorf("load config %s: %w", *configPath, err)
 	}
 
-	files := []backupArchiveFile{
-		{
+	var files []backupArchiveFile
+	if store.ResolveBackend("") == store.BackendSQLite {
+		// The database is live (WAL, possibly other processes writing), so
+		// it is never copied as a file: a VACUUM INTO snapshot is taken
+		// instead and archived.
+		snapshot, cleanup, err := snapshotSQLiteStore(cfg.Server.DataDir)
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+		files = append(files, backupArchiveFile{
+			ArchivePath: backupStoreDBArchivePath,
+			SourcePath:  snapshot,
+			Required:    true,
+		})
+	} else {
+		files = append(files, backupArchiveFile{
 			ArchivePath: backupStoreArchivePath,
 			SourcePath:  filepath.Join(cfg.Server.DataDir, "kervan-store.json"),
 			Required:    true,
-		},
-		{
+		}, backupArchiveFile{
 			ArchivePath: backupStoreBakArchivePath,
 			SourcePath:  filepath.Join(cfg.Server.DataDir, "kervan-store.json.bak"),
-		},
+		})
 	}
 	if *includeAudit {
 		files = append(files, backupArchiveFile{
@@ -184,9 +202,13 @@ func runBackupCreateCommand(stdout io.Writer, args []string) error {
 			return fmt.Errorf("write archive entry %s: %w", file.ArchivePath, err)
 		}
 		included = append(included, file.ArchivePath)
+		sourcePath := file.SourcePath
+		if file.ArchivePath == backupStoreDBArchivePath {
+			sourcePath = filepath.Join(cfg.Server.DataDir, store.FileName(store.BackendSQLite))
+		}
 		manifest.Files = append(manifest.Files, backupManifestEntry{
 			ArchivePath: file.ArchivePath,
-			SourcePath:  file.SourcePath,
+			SourcePath:  sourcePath,
 			Size:        size,
 			SHA256:      hex.EncodeToString(digest.Sum(nil)),
 		})
@@ -268,16 +290,12 @@ func runBackupRestoreCommand(stdout io.Writer, args []string) error {
 		return fmt.Errorf("load backup archive %s: %w", *inputPath, err)
 	}
 
+	// The store entry decides how the store is restored. The other targets
+	// (audit log, key, rotated files, config) are plain files either way.
+	sqliteDeployment := store.ResolveBackend("") == store.BackendSQLite
+	_, hasJSONStore := archiveEntries[backupStoreArchivePath]
+	_, hasDBStore := archiveEntries[backupStoreDBArchivePath]
 	targets := map[string]backupRestoreEntry{
-		backupStoreArchivePath: {
-			ArchivePath: backupStoreArchivePath,
-			TargetPath:  filepath.Join(cfg.Server.DataDir, "kervan-store.json"),
-		},
-		backupStoreBakArchivePath: {
-			ArchivePath: backupStoreBakArchivePath,
-			TargetPath:  filepath.Join(cfg.Server.DataDir, "kervan-store.json.bak"),
-			Optional:    true,
-		},
 		backupAuditArchivePath: {
 			ArchivePath: backupAuditArchivePath,
 			TargetPath:  backupAuditPath(cfg),
@@ -312,15 +330,67 @@ func runBackupRestoreCommand(stdout io.Writer, args []string) error {
 		}
 	}
 
-	// Check the required entry BEFORE writing anything. A restore that is
-	// going to be rejected must not leave recovered files behind, and the
-	// optional targets below (audit log, audit key, store .bak) are written
-	// during the same loop.
-	if _, ok := archiveEntries[backupStoreArchivePath]; !ok {
-		return fmt.Errorf("backup archive missing required entry %s", backupStoreArchivePath)
+	// Check the store entry BEFORE writing anything. A restore that is going
+	// to be rejected must not leave recovered files behind, and the optional
+	// targets below (audit log, audit key, store .bak) are written during the
+	// same loop.
+	switch {
+	case hasJSONStore && hasDBStore:
+		return fmt.Errorf("backup archive holds both %s and %s; refusing an ambiguous store", backupStoreArchivePath, backupStoreDBArchivePath)
+	case !hasJSONStore && !hasDBStore:
+		return fmt.Errorf("backup archive missing required entry %s (or %s)", backupStoreArchivePath, backupStoreDBArchivePath)
+	case hasDBStore && !sqliteDeployment:
+		return fmt.Errorf("backup archive holds an SQLite store (%s), but this installation uses the JSON store; set KERVAN_STORE_BACKEND=sqlite to restore it", backupStoreDBArchivePath)
 	}
 
-	restored := make([]string, 0, len(targets))
+	// An SQLite store is restored as a whole database file. It is prepared
+	// and verified next to its target before anything is written: from the
+	// archived database, or by importing an archived JSON store (a backup
+	// taken before the installation moved to SQLite).
+	var preparedDB string
+	if sqliteDeployment {
+		dbTarget := filepath.Join(cfg.Server.DataDir, store.FileName(store.BackendSQLite))
+		if !*force {
+			if _, err := os.Stat(dbTarget); err == nil {
+				return fmt.Errorf("refusing to overwrite existing file %s without --force", dbTarget)
+			}
+		}
+		prepared, cleanup, err := prepareSQLiteRestore(archiveEntries, cfg.Server.DataDir, hasDBStore)
+		if err != nil {
+			return err
+		}
+		defer cleanup()
+		preparedDB = prepared
+	} else {
+		// Verify the store files can be opened BEFORE anything is written,
+		// as the SQLite branch does. Restoring an unreadable store succeeds
+		// and leaves an installation that cannot start.
+		if err := verifyArchivedJSONStore(archiveEntries); err != nil {
+			return err
+		}
+		targets[backupStoreArchivePath] = backupRestoreEntry{
+			ArchivePath: backupStoreArchivePath,
+			TargetPath:  filepath.Join(cfg.Server.DataDir, "kervan-store.json"),
+		}
+		targets[backupStoreBakArchivePath] = backupRestoreEntry{
+			ArchivePath: backupStoreBakArchivePath,
+			TargetPath:  filepath.Join(cfg.Server.DataDir, "kervan-store.json.bak"),
+			Optional:    true,
+		}
+	}
+
+	restored := make([]string, 0, len(targets)+1)
+	if preparedDB != "" {
+		dbTarget := filepath.Join(cfg.Server.DataDir, store.FileName(store.BackendSQLite))
+		if err := store.ReplaceSQLiteFile(preparedDB, dbTarget); err != nil {
+			return fmt.Errorf("restore store to %s: %w", dbTarget, err)
+		}
+		if hasDBStore {
+			restored = append(restored, backupStoreDBArchivePath)
+		} else {
+			restored = append(restored, backupStoreArchivePath)
+		}
+	}
 	for archivePath, target := range targets {
 		file, ok := archiveEntries[archivePath]
 		if !ok {
@@ -375,8 +445,25 @@ func runBackupVerifyCommand(stdout io.Writer, args []string) error {
 	if err != nil {
 		return fmt.Errorf("load backup archive %s: %w", *inputPath, err)
 	}
-	if _, ok := archiveEntries[backupStoreArchivePath]; !ok {
-		return fmt.Errorf("backup archive missing required entry %s", backupStoreArchivePath)
+	_, hasJSONStore := archiveEntries[backupStoreArchivePath]
+	dbEntry, hasDBStore := archiveEntries[backupStoreDBArchivePath]
+	switch {
+	case hasJSONStore && hasDBStore:
+		return fmt.Errorf("backup archive holds both %s and %s", backupStoreArchivePath, backupStoreDBArchivePath)
+	case !hasJSONStore && !hasDBStore:
+		return fmt.Errorf("backup archive missing required entry %s (or %s)", backupStoreArchivePath, backupStoreDBArchivePath)
+	case hasDBStore:
+		// Checksums say the bytes are the ones archived; this says they
+		// are a sound database.
+		if err := verifyArchivedSQLiteStore(dbEntry); err != nil {
+			return err
+		}
+	case hasJSONStore:
+		// The same contract on the JSON side: the manifest proves the bytes
+		// are the ones archived, this says a store can be opened from them.
+		if err := verifyArchivedJSONStore(archiveEntries); err != nil {
+			return err
+		}
 	}
 
 	entryCount := len(archiveEntries)
@@ -617,4 +704,115 @@ func backupAuditPath(cfg *config.Config) string {
 
 func defaultBackupArchiveName() string {
 	return fmt.Sprintf("kervan-backup-%s.zip", time.Now().UTC().Format("20060102-150405"))
+}
+
+// snapshotSQLiteStore takes a consistent VACUUM INTO snapshot of the SQLite
+// store in dataDir into a temporary directory, for archiving. Opening the
+// store first also imports a kervan-store.json that has not been imported
+// yet, so the backup holds the data the server will use.
+func snapshotSQLiteStore(dataDir string) (string, func(), error) {
+	st, err := store.OpenWithOptions(dataDir, store.Options{Backend: store.BackendSQLite})
+	if err != nil {
+		return "", nil, fmt.Errorf("open store: %w", err)
+	}
+	defer st.Close()
+	tmpDir, err := os.MkdirTemp("", "kervan-backup-store-*")
+	if err != nil {
+		return "", nil, fmt.Errorf("create snapshot directory: %w", err)
+	}
+	cleanup := func() { _ = os.RemoveAll(tmpDir) }
+	snapshot := filepath.Join(tmpDir, store.FileName(store.BackendSQLite))
+	if err := st.Snapshot(snapshot); err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("snapshot store: %w", err)
+	}
+	return snapshot, cleanup, nil
+}
+
+// prepareSQLiteRestore writes the database to restore into a temporary
+// directory inside dataDir (so the final move is a rename on the same file
+// system) and verifies it. fromDB selects the archived database; otherwise
+// the archived JSON store is imported into a new database.
+func prepareSQLiteRestore(entries map[string]*zip.File, dataDir string, fromDB bool) (string, func(), error) {
+	if err := os.MkdirAll(dataDir, 0o750); err != nil {
+		return "", nil, fmt.Errorf("create data directory %s: %w", dataDir, err)
+	}
+	tmpDir, err := os.MkdirTemp(dataDir, ".kervan-restore-*")
+	if err != nil {
+		return "", nil, fmt.Errorf("create restore directory: %w", err)
+	}
+	cleanup := func() { _ = os.RemoveAll(tmpDir) }
+	prepared := filepath.Join(tmpDir, store.FileName(store.BackendSQLite))
+	if fromDB {
+		if err := restoreBackupFile(entries[backupStoreDBArchivePath], prepared, false); err != nil {
+			cleanup()
+			return "", nil, fmt.Errorf("extract %s: %w", backupStoreDBArchivePath, err)
+		}
+	} else {
+		jsonCopy := filepath.Join(tmpDir, "kervan-store.json")
+		if err := restoreBackupFile(entries[backupStoreArchivePath], jsonCopy, false); err != nil {
+			cleanup()
+			return "", nil, fmt.Errorf("extract %s: %w", backupStoreArchivePath, err)
+		}
+		if err := store.BuildSQLiteFromJSON(jsonCopy, prepared); err != nil {
+			cleanup()
+			return "", nil, fmt.Errorf("import %s into an SQLite store: %w", backupStoreArchivePath, err)
+		}
+	}
+	if err := store.VerifySQLiteFile(prepared); err != nil {
+		cleanup()
+		return "", nil, fmt.Errorf("verify restored store: %w", err)
+	}
+	return prepared, cleanup, nil
+}
+
+// verifyArchivedJSONStore extracts the archived store files to a temporary
+// directory and checks that a store can actually be OPENED from them: the
+// primary, or the .bak the JSON backend falls back to.
+//
+// Checksums alone cannot say that. An archive whose store files are unreadable
+// passes the manifest, restores cleanly, and then the installation refuses to
+// start — which is the same failure verifyArchivedSQLiteStore exists to prevent
+// on the SQLite side.
+func verifyArchivedJSONStore(entries map[string]*zip.File) error {
+	tmpDir, err := os.MkdirTemp("", "kervan-verify-store-*")
+	if err != nil {
+		return fmt.Errorf("create verify directory: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+	for _, f := range []struct{ archivePath, name string }{
+		{backupStoreArchivePath, "kervan-store.json"},
+		{backupStoreBakArchivePath, "kervan-store.json.bak"},
+	} {
+		entry, ok := entries[f.archivePath]
+		if !ok {
+			continue
+		}
+		if err := restoreBackupFile(entry, filepath.Join(tmpDir, f.name), false); err != nil {
+			return fmt.Errorf("extract %s: %w", f.archivePath, err)
+		}
+	}
+	st, err := store.OpenWithOptions(tmpDir, store.Options{Backend: store.BackendJSON})
+	if err != nil {
+		return fmt.Errorf("verify %s: %w", backupStoreArchivePath, err)
+	}
+	return st.Close()
+}
+
+// verifyArchivedSQLiteStore extracts the archived database to a temporary
+// file and checks it with SQLite's integrity check.
+func verifyArchivedSQLiteStore(entry *zip.File) error {
+	tmpDir, err := os.MkdirTemp("", "kervan-verify-store-*")
+	if err != nil {
+		return fmt.Errorf("create verify directory: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+	path := filepath.Join(tmpDir, store.FileName(store.BackendSQLite))
+	if err := restoreBackupFile(entry, path, false); err != nil {
+		return fmt.Errorf("extract %s: %w", backupStoreDBArchivePath, err)
+	}
+	if err := store.VerifySQLiteFile(path); err != nil {
+		return fmt.Errorf("verify %s: %w", backupStoreDBArchivePath, err)
+	}
+	return nil
 }

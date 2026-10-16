@@ -75,13 +75,7 @@ func OpenWithOptions(dataDir string, opts Options) (*Store, error) {
 	if err := os.MkdirAll(dataDir, 0o750); err != nil {
 		return nil, fmt.Errorf("create data directory %s: %w", dataDir, err)
 	}
-	kind := strings.ToLower(strings.TrimSpace(opts.Backend))
-	if kind == "" {
-		kind = strings.ToLower(strings.TrimSpace(os.Getenv(backendEnv)))
-	}
-	if kind == "" {
-		kind = BackendJSON
-	}
+	kind := ResolveBackend(opts.Backend)
 	var (
 		b   backend
 		err error
@@ -100,8 +94,57 @@ func OpenWithOptions(dataDir string, opts Options) (*Store, error) {
 	return &Store{b: b, kind: kind}, nil
 }
 
+// ResolveBackend returns the backend Open would use for the given option:
+// the option itself, else KERVAN_STORE_BACKEND, else BackendJSON. The name
+// is normalised but not validated.
+func ResolveBackend(option string) string {
+	kind := strings.ToLower(strings.TrimSpace(option))
+	if kind == "" {
+		kind = strings.ToLower(strings.TrimSpace(os.Getenv(backendEnv)))
+	}
+	if kind == "" {
+		kind = BackendJSON
+	}
+	return kind
+}
+
+// FileName returns the name of the store's main file in the data directory
+// for a backend: kervan-store.json or kervan-store.db.
+func FileName(backend string) string {
+	if ResolveBackend(backend) == BackendSQLite {
+		return sqliteFileName
+	}
+	return "kervan-store.json"
+}
+
 // Backend reports which backend the store uses.
 func (s *Store) Backend() string { return s.kind }
+
+// Path returns the store's main file.
+func (s *Store) Path() string {
+	if p, ok := s.b.(interface{ filePath() string }); ok {
+		return p.filePath()
+	}
+	return ""
+}
+
+// ErrSnapshotUnsupported is returned by Snapshot for backends whose files
+// are copied directly instead (the JSON backend replaces its file
+// atomically on every write, so a plain copy is already consistent).
+var ErrSnapshotUnsupported = errors.New("store: backend does not take snapshots")
+
+// Snapshot writes a consistent copy of the whole store to dst, which must
+// not exist, while the store stays in use (other processes included).
+func (s *Store) Snapshot(dst string) error {
+	if err := s.checkNotInUpdate(); err != nil {
+		return err
+	}
+	sn, ok := s.b.(interface{ snapshot(string) error })
+	if !ok {
+		return ErrSnapshotUnsupported
+	}
+	return sn.snapshot(dst)
+}
 
 // Close releases the store. For the JSON backend it also persists a write
 // that previously failed to reach disk.

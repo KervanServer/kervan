@@ -19,6 +19,7 @@ import (
 
 	"github.com/kervanserver/kervan/internal/auth"
 	"github.com/kervanserver/kervan/internal/config"
+	"github.com/kervanserver/kervan/internal/store"
 	"golang.org/x/crypto/ssh"
 	"gopkg.in/yaml.v3"
 )
@@ -420,13 +421,11 @@ func TestRunBackupCreateCommand(t *testing.T) {
 			}
 		}
 	}
-	for _, required := range []string{
-		backupStoreArchivePath,
-		backupStoreBakArchivePath,
+	for _, required := range append(requiredStoreEntries(),
 		backupAuditArchivePath,
 		backupConfigArchivePath,
 		backupManifestPath,
-	} {
+	) {
 		if !entries[required] {
 			t.Fatalf("expected backup entry %q, got %#v", required, entries)
 		}
@@ -569,7 +568,7 @@ func TestRunBackupRestoreCommandRejectsTamperedArchive(t *testing.T) {
 	}
 
 	tamperedFile := filepath.Join(baseDir, "backup-tampered.zip")
-	if err := rewriteBackupEntry(backupFile, tamperedFile, backupStoreArchivePath, []byte(`{"users":[]}`)); err != nil {
+	if err := rewriteBackupEntry(backupFile, tamperedFile, storeArchiveEntry(), []byte(`{"users":[]}`)); err != nil {
 		t.Fatalf("tamper backup: %v", err)
 	}
 
@@ -778,6 +777,72 @@ func TestRunBackupVerifyCommand(t *testing.T) {
 	}
 	if !payload.Verified || !payload.ManifestPresent || payload.VerifiedFiles == 0 {
 		t.Fatalf("unexpected verify payload: %#v", payload)
+	}
+}
+
+// A manifest only proves the bytes are the ones archived. If neither the
+// archived store nor its .bak can be opened, "verified" is a false promise:
+// restore used to install it and the installation then refused to start.
+func TestRunBackupVerifyAndRestoreRejectUnopenableJSONStore(t *testing.T) {
+	t.Setenv("KERVAN_STORE_BACKEND", "json")
+	cfgPath, dataDir := sqliteBackupConfig(t)
+	createUser(t, cfgPath, "jane")
+	pristine := filepath.Join(t.TempDir(), "backup.zip")
+	if err := runBackupCreateCommand(io.Discard, []string{"--config", cfgPath, "--output", pristine}); err != nil {
+		t.Fatal(err)
+	}
+
+	// CONTROL: an untouched archive verifies and restores into a usable store.
+	var out bytes.Buffer
+	if err := runBackupVerifyCommand(&out, []string{"--input", pristine}); err != nil {
+		t.Fatalf("pristine archive rejected: %v", err)
+	}
+	if !strings.Contains(out.String(), "Backup verified:") {
+		t.Fatalf("pristine archive not reported as verified: %s", out.String())
+	}
+	if err := runBackupRestoreCommand(io.Discard, []string{"--config", cfgPath, "--input", pristine, "--force"}); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if !userExists(t, cfgPath, "jane") {
+		t.Fatal("restored store lost the backed-up user")
+	}
+
+	const garbage = "{not a store"
+
+	// CONTROL: a corrupt primary with an intact .bak is recoverable — the JSON
+	// backend falls back — so it must still verify and restore.
+	recoverable := filepath.Join(t.TempDir(), "recoverable.zip")
+	replaceArchiveEntryAndFixManifest(t, pristine, recoverable, backupStoreArchivePath, []byte(garbage))
+	if err := runBackupVerifyCommand(io.Discard, []string{"--input", recoverable}); err != nil {
+		t.Fatalf("recoverable archive rejected: %v", err)
+	}
+	if err := runBackupRestoreCommand(io.Discard, []string{"--config", cfgPath, "--input", recoverable, "--force"}); err != nil {
+		t.Fatalf("restore recoverable archive: %v", err)
+	}
+	if !userExists(t, cfgPath, "jane") {
+		t.Fatal("store did not recover from the intact .bak")
+	}
+
+	// With neither copy usable, both commands must refuse and the live store
+	// must be left intact.
+	step1 := filepath.Join(t.TempDir(), "step1.zip")
+	replaceArchiveEntryAndFixManifest(t, pristine, step1, backupStoreArchivePath, []byte(garbage))
+	bad := filepath.Join(t.TempDir(), "bad.zip")
+	replaceArchiveEntryAndFixManifest(t, step1, bad, backupStoreBakArchivePath, []byte(garbage))
+
+	if err := runBackupVerifyCommand(io.Discard, []string{"--input", bad}); err == nil {
+		t.Fatal("verify accepted an archive no store can be opened from")
+	}
+	if err := runBackupRestoreCommand(io.Discard, []string{"--config", cfgPath, "--input", bad, "--force"}); err == nil {
+		t.Fatal("restore accepted an archive no store can be opened from")
+	}
+	st, err := store.OpenWithOptions(dataDir, store.Options{Backend: store.BackendJSON})
+	if err != nil {
+		t.Fatalf("refused restore damaged the live store: %v", err)
+	}
+	defer st.Close()
+	if err := st.Put("probe", "k", "v"); err != nil {
+		t.Fatalf("refused restore left an unusable store: %v", err)
 	}
 }
 
@@ -1399,6 +1464,23 @@ func TestRunMigrateSSHKeysCommand(t *testing.T) {
 	}
 }
 
+// storeArchiveEntry is the archive entry that holds the store for the
+// backend the suite runs on (KERVAN_STORE_BACKEND), and the entries a
+// backup of that backend must contain.
+func storeArchiveEntry() string {
+	if store.ResolveBackend("") == store.BackendSQLite {
+		return backupStoreDBArchivePath
+	}
+	return backupStoreArchivePath
+}
+
+func requiredStoreEntries() []string {
+	if store.ResolveBackend("") == store.BackendSQLite {
+		return []string{backupStoreDBArchivePath}
+	}
+	return []string{backupStoreArchivePath, backupStoreBakArchivePath}
+}
+
 func writeTestConfig(t *testing.T, mutate func(*config.Config)) string {
 	t.Helper()
 	cfg := config.DefaultConfig()
@@ -1469,7 +1551,7 @@ func backupRestoreFixture(t *testing.T) (cfgPath, dataDir, archive string) {
 
 func recoveredFilesIn(dataDir string) []string {
 	var out []string
-	for _, name := range []string{"audit.jsonl", "kervan-store.json.bak", "kervan-store.json"} {
+	for _, name := range []string{"audit.jsonl", "kervan-store.json.bak", "kervan-store.json", "kervan-store.db"} {
 		if _, err := os.Stat(filepath.Join(dataDir, name)); err == nil {
 			out = append(out, name)
 		}
@@ -1511,8 +1593,8 @@ func TestRunBackupRestoreCommandRefusalLeavesDataDirUntouched(t *testing.T) {
 		t.Fatalf("strip manifest: %v", err)
 	}
 	broken := filepath.Join(t.TempDir(), "broken.zip")
-	if err := removeBackupEntry(stripped, broken, backupStoreArchivePath); err != nil {
-		t.Fatalf("strip required entry %s: %v", backupStoreArchivePath, err)
+	if err := removeBackupEntry(stripped, broken, storeArchiveEntry()); err != nil {
+		t.Fatalf("strip required entry %s: %v", storeArchiveEntry(), err)
 	}
 	if err := os.RemoveAll(dataDir); err != nil {
 		t.Fatalf("clear data dir: %v", err)
@@ -1523,10 +1605,10 @@ func TestRunBackupRestoreCommandRefusalLeavesDataDirUntouched(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatalf("restore accepted an archive missing the required entry %s; it must refuse",
-			backupStoreArchivePath)
+			storeArchiveEntry())
 	}
-	if !strings.Contains(err.Error(), backupStoreArchivePath) {
-		t.Fatalf("refusal should name the missing entry %s, got: %v", backupStoreArchivePath, err)
+	if !strings.Contains(err.Error(), storeArchiveEntry()) {
+		t.Fatalf("refusal should name the missing entry %s, got: %v", storeArchiveEntry(), err)
 	}
 	if leaked := recoveredFilesIn(dataDir); len(leaked) > 0 {
 		t.Fatalf("restore REFUSED with %q, yet it had already written %v into the data directory — "+
