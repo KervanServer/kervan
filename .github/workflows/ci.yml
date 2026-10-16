@@ -31,7 +31,9 @@ jobs:
 
       - name: Run gofmt check
         run: |
-          files="$(find . -name '*.go' -not -path './webui/*' -not -path './vendor/*')"
+          # git ls-files, not find: it matches tracked sources only, so local
+          # scratch dirs (.temp_files/) and vendored trees cannot fail the build.
+          files="$(git ls-files '*.go' | grep -v '^webui/')"
           test -n "$files"
           unformatted="$(gofmt -l $files)"
           if [ -n "$unformatted" ]; then
