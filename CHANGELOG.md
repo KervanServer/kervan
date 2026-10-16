@@ -10,6 +10,11 @@
   traffic into one store write per request. The time is now saved at most
   once a minute per key, inside a store transaction, so it also cannot
   recreate a key deleted while a request through it was in flight.
+  Successful sign-ins (FTP, SFTP, WebUI, OIDC) follow the same rule for
+  the user's last-login time, which cost one store rewrite per sign-in.
+  A sign-in after a failed attempt or a lockout still writes at once, so
+  the failure counter is always reset before it can count towards a
+  lockout.
 
 - **Audit events are no longer dropped when the queue fills up.** The audit
   engine discarded events once its 1024-event queue was full, and wrote to
