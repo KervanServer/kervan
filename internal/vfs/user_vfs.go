@@ -74,12 +74,24 @@ func (u *UserVFS) Open(name string, flags int, perm os.FileMode) (File, error) {
 	// A new file counts against the file-count quota; overwriting an
 	// existing one does not.
 	reservedFile := false
-	if isWrite && flags&os.O_CREATE != 0 && u.quota != nil {
-		if _, statErr := backend.Stat(relPath); errors.Is(statErr, os.ErrNotExist) {
+	// truncatedBytes is the size of the previous version of a file that is
+	// about to be O_TRUNC'd: those bytes are about to be discarded from disk,
+	// so their quota has to be released. It must be read BEFORE the open,
+	// because O_TRUNC is applied by the backend at open time and a Stat
+	// afterwards always reports 0 — the old usage would then leak for the
+	// life of the process. One Stat serves both quota facts, so a write open
+	// pays at most one extra HEAD on the S3 backend.
+	var truncatedBytes int64
+	if isWrite && u.quota != nil && (flags&os.O_CREATE != 0 || flags&os.O_TRUNC != 0) {
+		info, statErr := backend.Stat(relPath)
+		switch {
+		case statErr != nil && errors.Is(statErr, os.ErrNotExist) && flags&os.O_CREATE != 0:
 			if err := u.quota.OnFileCreated(); err != nil {
 				return nil, err
 			}
 			reservedFile = true
+		case statErr == nil && info != nil && !info.IsDir() && flags&os.O_TRUNC != 0:
+			truncatedBytes = info.Size()
 		}
 	}
 	f, err := backend.Open(relPath, flags, perm)
@@ -93,13 +105,16 @@ func (u *UserVFS) Open(name string, flags int, perm os.FileMode) (File, error) {
 		f = &throttledFile{File: f, limiters: u.limiters}
 	}
 	if isWrite && u.quota != nil {
-		initialSize := int64(0)
-		if info, statErr := f.Stat(); statErr == nil && info != nil {
-			initialSize = info.Size()
+		if truncatedBytes > 0 {
+			u.quota.OnShrink(truncatedBytes)
 		}
-		if flags&os.O_TRUNC != 0 && initialSize > 0 {
-			u.quota.OnShrink(initialSize)
-			initialSize = 0
+		// O_TRUNC already discarded the previous contents, so the file
+		// starts empty no matter what a post-open Stat reports.
+		initialSize := int64(0)
+		if flags&os.O_TRUNC == 0 {
+			if info, statErr := f.Stat(); statErr == nil && info != nil {
+				initialSize = info.Size()
+			}
 		}
 		initialOffset := int64(0)
 		if flags&os.O_APPEND != 0 {

@@ -5,6 +5,7 @@ import (
 	"os"
 	"testing"
 
+	"github.com/kervanserver/kervan/internal/quota"
 	"github.com/kervanserver/kervan/internal/storage/memory"
 	"github.com/kervanserver/kervan/internal/vfs"
 )
@@ -41,6 +42,62 @@ func (q *quotaStub) OnShrink(n int64) {
 	}
 }
 
+func TestUserVFSOverwriteReleasesTruncatedQuota(t *testing.T) {
+	backend := memory.New()
+	mounts := vfs.NewMountTable()
+	mounts.Mount("/", backend, false)
+	// A real tracker, not a stub: the accounting contract under test is the
+	// production one enforced against the storage quota.
+	tracker, err := quota.NewTracker(backend, 100_000, 0)
+	if err != nil {
+		t.Fatalf("NewTracker: %v", err)
+	}
+	fsys := vfs.NewUserVFS(mounts, &vfs.UserPermissions{
+		Upload: true, Download: true, Delete: true, Rename: true, CreateDir: true, ListDir: true,
+	}, tracker)
+
+	write := func(name, content string) {
+		t.Helper()
+		f, openErr := fsys.Open(name, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+		if openErr != nil {
+			t.Fatalf("Open(%s): %v", name, openErr)
+		}
+		if _, writeErr := f.Write([]byte(content)); writeErr != nil {
+			t.Fatalf("Write(%s): %v", name, writeErr)
+		}
+		if closeErr := f.Close(); closeErr != nil {
+			t.Fatalf("Close(%s): %v", name, closeErr)
+		}
+	}
+	usedMatchesRealUsage := func(stage string) {
+		t.Helper()
+		info, statErr := fsys.Stat("/rolling.bin")
+		if statErr != nil {
+			t.Fatalf("Stat: %v", statErr)
+		}
+		if used, real := tracker.UsedBytes(), info.Size(); used != real {
+			t.Fatalf("%s: quota tracks %d bytes but the file occupies %d; "+
+				"the previous version's bytes were never released", stage, used, real)
+		}
+	}
+
+	write("/rolling.bin", string(make([]byte, 5_000)))
+	usedMatchesRealUsage("after the first upload")
+
+	// Re-uploading the same path with fewer bytes must release the difference.
+	write("/rolling.bin", string(make([]byte, 10)))
+	usedMatchesRealUsage("after overwriting with a smaller file")
+
+	// ...and repeated overwrites must not accumulate phantom usage until the
+	// quota locks the user out of a small upload.
+	for i := 0; i < 5; i++ {
+		write("/rolling.bin", string(make([]byte, 5_000)))
+	}
+	usedMatchesRealUsage("after repeated overwrites")
+}
+
+// TestUserVFSQuotaAndMaxFileSize is the control neighbour: fresh creates,
+// append and the file-count quota must keep behaving exactly as before.
 func TestUserVFSQuotaAndMaxFileSize(t *testing.T) {
 	backend := memory.New()
 	mounts := vfs.NewMountTable()
