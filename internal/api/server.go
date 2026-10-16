@@ -1902,7 +1902,9 @@ func (s *Server) handleShareInfo(w http.ResponseWriter, token string) {
 		out["downloads_remaining"] = max(link.MaxDownloads-link.DownloadCount, 0)
 	}
 	if s.fsBuilder != nil {
-		if fsys, err := s.fsBuilder(link.Username); err == nil {
+		fsys, err := s.fsBuilder(link.Username)
+		defer vfs.ReleaseFS(fsys)
+		if err == nil {
 			if info, err := fsys.Stat(link.Path); err == nil && !info.IsDir() {
 				out["size"] = info.Size()
 			} else {

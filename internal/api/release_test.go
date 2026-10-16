@@ -3,11 +3,14 @@ package api
 import (
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/kervanserver/kervan/internal/storage/memory"
+	"github.com/kervanserver/kervan/internal/store"
 	"github.com/kervanserver/kervan/internal/vfs"
 )
 
@@ -62,6 +65,74 @@ func TestFileHandlersReleaseUserFS(t *testing.T) {
 		}
 		if got, want := released.Load(), built.Load(); got != want {
 			t.Fatalf("%s: %d of %d request filesystems released (status %d, body %q)", rq.name, got, want, rec.Code, rec.Body.String())
+		}
+	}
+}
+
+// The public share-link endpoints build the link owner's filesystem per
+// request, like the authenticated file handlers, and must release it on
+// every outcome: a served download, a missing file, and the /info probe.
+func TestShareLinkHandlersReleaseUserFS(t *testing.T) {
+	st, err := store.Open(t.TempDir())
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = st.Close()
+	})
+	repo := newShareLinkRepository(st)
+	present, err := repo.Create("alice", "/report.txt", 24*time.Hour, 0, "")
+	if err != nil {
+		t.Fatalf("create share link: %v", err)
+	}
+	missing, err := repo.Create("alice", "/missing.txt", 24*time.Hour, 0, "")
+	if err != nil {
+		t.Fatalf("create share link: %v", err)
+	}
+
+	mem := memory.New()
+	f, err := mem.Open("/report.txt", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		t.Fatalf("create backing file: %v", err)
+	}
+	if _, err := f.Write([]byte("ok")); err != nil {
+		t.Fatalf("write backing file: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close backing file: %v", err)
+	}
+
+	var built, released atomic.Int32
+	srv := &Server{
+		shareLinks: repo,
+		fsBuilder: func(string) (vfs.FileSystem, error) {
+			built.Add(1)
+			return releaseCountingFS{FileSystem: mem, released: &released}, nil
+		},
+	}
+
+	cases := []struct {
+		name   string
+		target string
+		status int
+	}{
+		{"download", "/api/v1/share/" + present.Token, http.StatusOK},
+		{"missing file", "/api/v1/share/" + missing.Token, http.StatusNotFound},
+		{"info", "/api/v1/share/" + present.Token + "/info", http.StatusOK},
+	}
+	for _, tc := range cases {
+		before := built.Load()
+		req := httptest.NewRequest(http.MethodGet, tc.target, nil)
+		rec := httptest.NewRecorder()
+		srv.handleShareDownload(rec, req)
+		if rec.Code != tc.status {
+			t.Fatalf("%s: status %d, want %d (body %q)", tc.name, rec.Code, tc.status, rec.Body.String())
+		}
+		if built.Load() == before {
+			t.Fatalf("%s: handler did not build the owner's filesystem", tc.name)
+		}
+		if got, want := released.Load(), built.Load(); got != want {
+			t.Fatalf("%s: %d of %d share-link filesystems released", tc.name, got, want)
 		}
 	}
 }
