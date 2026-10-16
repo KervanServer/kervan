@@ -274,3 +274,77 @@ func TestAuthCodeFlowWithPKCE(t *testing.T) {
 		t.Fatal("authorization code reused")
 	}
 }
+
+// TestJWKSFetchDoesNotBlockOtherVerifications pins that VerifyIDToken honours
+// its ctx even while another verification is stuck fetching keys.
+//
+// keysFor held p.mu across the JWKS HTTP fetch, and Metadata took the same mutex
+// before it. A caller arriving while a fetch was in flight therefore blocked on a
+// mutex it could not cancel: its own context deadline passed and the call did not
+// return. Both take ctx, and api/oidc.go hands its 15s request context straight
+// down, so a slow provider pinned every concurrent sign-in.
+func TestJWKSFetchDoesNotBlockOtherVerifications(t *testing.T) {
+	release := make(chan struct{})
+	blocked := make(chan struct{}, 1)
+
+	var issuer string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/.well-known/openid-configuration":
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"issuer":                 issuer,
+				"authorization_endpoint": issuer + "/auth",
+				"token_endpoint":         issuer + "/token",
+				"jwks_uri":               issuer + "/jwks",
+			})
+		case "/jwks":
+			blocked <- struct{}{}
+			<-release
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"keys":[]}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	// Registered AFTER srv.Close so it runs FIRST (defers are LIFO):
+	// httptest.Server.Close blocks until outstanding handlers return.
+	defer close(release)
+	issuer = srv.URL
+
+	p, err := NewProvider(Config{Issuer: issuer, ClientID: "cid", RedirectURL: issuer + "/cb"})
+	if err != nil {
+		t.Fatalf("NewProvider: %v", err)
+	}
+
+	seg := func(v any) string {
+		raw, _ := json.Marshal(v)
+		return base64.RawURLEncoding.EncodeToString(raw)
+	}
+	token := seg(map[string]string{"alg": "RS256", "kid": "k1"}) + "." +
+		seg(map[string]any{"iss": issuer, "sub": "u1", "aud": "cid",
+			"exp": time.Now().Add(time.Hour).Unix()}) + "." + "c2ln"
+
+	go func() { _, _ = p.VerifyIDToken(context.Background(), token, "") }()
+
+	select {
+	case <-blocked:
+	case <-time.After(5 * time.Second):
+		t.Fatal("precondition: the first verification never reached the JWKS fetch")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	secondDone := make(chan struct{})
+	go func() {
+		defer close(secondDone)
+		_, _ = p.VerifyIDToken(ctx, token, "")
+	}()
+
+	select {
+	case <-secondDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("VerifyIDToken is still blocked 2s after its 200ms context expired; " +
+			"keysFor/Metadata must not hold p.mu across the JWKS HTTP fetch")
+	}
+}

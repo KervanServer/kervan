@@ -114,10 +114,15 @@ func (p *Provider) getJSON(ctx context.Context, rawURL string, out any) error {
 
 // Metadata returns the discovery document, fetching it on first use.
 func (p *Provider) Metadata(ctx context.Context) (*Metadata, error) {
+	// Read the cache under the lock, but never hold it across the HTTP
+	// request: a caller queued on p.mu cannot honour its own context, so a slow
+	// or unresponsive provider would pin every concurrent sign-in past its
+	// deadline.
 	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.meta != nil {
-		return p.meta, nil
+	cached := p.meta
+	p.mu.Unlock()
+	if cached != nil {
+		return cached, nil
 	}
 	var meta Metadata
 	if err := p.getJSON(ctx, p.cfg.Issuer+"/.well-known/openid-configuration", &meta); err != nil {
@@ -131,8 +136,10 @@ func (p *Provider) Metadata(ctx context.Context) (*Metadata, error) {
 		return nil, errors.New("oidc discovery: authorization_endpoint, token_endpoint and jwks_uri are required")
 	}
 	meta.Issuer = p.cfg.Issuer
+	p.mu.Lock()
 	p.meta = &meta
-	return p.meta, nil
+	p.mu.Unlock()
+	return &meta, nil
 }
 
 // AuthRequest carries the per-login secrets that must survive the redirect
@@ -258,24 +265,35 @@ func (p *Provider) keysFor(ctx context.Context, kid string) (*keySet, error) {
 		return nil, err
 	}
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	now := p.cfg.Now()
 	if p.keys != nil {
 		fresh := now.Sub(p.keysAt) < keyCacheTTL
 		if fresh && (kid == "" || p.keys.has(kid)) {
-			return p.keys, nil
+			keys := p.keys
+			p.mu.Unlock()
+			return keys, nil
 		}
 		// An unknown kid triggers a refetch (key rotation), but tokens with
 		// made-up kids must not make every request hit the provider.
 		if now.Sub(p.keysAt) < minKeyRefresh || now.Sub(p.lastFail) < minKeyRefresh {
-			return p.keys, nil
+			keys := p.keys
+			p.mu.Unlock()
+			return keys, nil
 		}
 	}
+	p.mu.Unlock()
+
+	// The JWKS fetch runs without p.mu held: a caller waiting for the mutex
+	// could not honour its context, so an unresponsive provider would pin
+	// every concurrent verification past its own deadline.
 	var raw jwks
 	if err := p.getJSON(ctx, meta.JWKSURI, &raw); err != nil {
-		p.lastFail = now
-		if p.keys != nil {
-			return p.keys, nil
+		p.mu.Lock()
+		p.lastFail = p.cfg.Now()
+		keys := p.keys
+		p.mu.Unlock()
+		if keys != nil {
+			return keys, nil
 		}
 		return nil, fmt.Errorf("oidc jwks: %w", err)
 	}
@@ -283,7 +301,9 @@ func (p *Provider) keysFor(ctx context.Context, kid string) (*keySet, error) {
 	if err != nil {
 		return nil, err
 	}
-	p.keys, p.keysAt = set, now
+	p.mu.Lock()
+	p.keys, p.keysAt = set, p.cfg.Now()
+	p.mu.Unlock()
 	return set, nil
 }
 
