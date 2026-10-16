@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 )
 
 var ErrNotFound = errors.New("not found")
@@ -26,8 +27,9 @@ type Store struct {
 	mu         sync.RWMutex
 	persistMu  sync.Mutex
 	data       map[string]json.RawMessage
-	stamp      os.FileInfo // primary file as last loaded or written; guarded by mu
-	dirty      bool        // a write failed to persist; guarded by persistMu
+	stamp      os.FileInfo   // primary file as last loaded or written; guarded by mu
+	dirty      bool          // a write failed to persist; guarded by persistMu
+	txOwner    atomic.Uint64 // goroutine running an Update callback, 0 if none
 }
 
 func Open(dataDir string) (*Store, error) {
@@ -54,6 +56,9 @@ func Open(dataDir string) (*Store, error) {
 // rewrites an up-to-date store: a stale snapshot written on Close would undo
 // another process's changes.
 func (s *Store) Close() error {
+	if err := s.checkNotInUpdate(); err != nil {
+		return err
+	}
 	s.persistMu.Lock()
 	defer s.persistMu.Unlock()
 	if !s.dirty {
@@ -63,6 +68,9 @@ func (s *Store) Close() error {
 }
 
 func (s *Store) Put(collection, key string, value any) error {
+	if err := s.checkNotInUpdate(); err != nil {
+		return err
+	}
 	raw, err := json.Marshal(value)
 	if err != nil {
 		return fmt.Errorf("marshal value for %s/%s: %w", collection, key, err)
@@ -151,10 +159,11 @@ func (tx *Tx) Delete(collection, key string) {
 // Update runs fn as one read-check-write transaction under the cross-process
 // lock, against the latest file contents. Its writes are persisted together
 // in a single flush; if fn returns an error nothing changes. fn must use only
-// tx: Put, Delete, Close and Update deadlock on the non-reentrant persistMu,
-// and Get and List silently read pre-transaction state, defeating any check
-// fn makes before writing.
+// tx: Store methods called from fn's goroutine return ErrInsideUpdate.
 func (s *Store) Update(fn func(tx *Tx) error) error {
+	if err := s.checkNotInUpdate(); err != nil {
+		return err
+	}
 	s.persistMu.Lock()
 	defer s.persistMu.Unlock()
 	unlock, err := lockFile(s.lockPath)
@@ -169,7 +178,7 @@ func (s *Store) Update(fn func(tx *Tx) error) error {
 		work[k] = v
 	}
 	s.mu.RUnlock()
-	if err := fn(&Tx{s: s, data: work}); err != nil {
+	if err := s.runTx(fn, work); err != nil {
 		return err
 	}
 	s.mu.Lock()
@@ -184,6 +193,9 @@ func (s *Store) Update(fn func(tx *Tx) error) error {
 }
 
 func (s *Store) Get(collection, key string, out any) error {
+	if err := s.checkNotInUpdate(); err != nil {
+		return err
+	}
 	s.refresh()
 	s.mu.RLock()
 	raw, ok := s.data[s.composite(collection, key)]
@@ -198,6 +210,9 @@ func (s *Store) Get(collection, key string, out any) error {
 }
 
 func (s *Store) Delete(collection, key string) error {
+	if err := s.checkNotInUpdate(); err != nil {
+		return err
+	}
 	ck := s.composite(collection, key)
 	s.persistMu.Lock()
 	defer s.persistMu.Unlock()
@@ -205,6 +220,9 @@ func (s *Store) Delete(collection, key string) error {
 }
 
 func (s *Store) List(collection string, out any) error {
+	if err := s.checkNotInUpdate(); err != nil {
+		return err
+	}
 	s.refresh()
 	prefix := collection + ":"
 	s.mu.RLock()
