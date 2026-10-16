@@ -196,6 +196,9 @@ func (s *SyslogSink) Write(_ context.Context, evt Event) error {
 	return fmt.Errorf("syslog %s://%s: %w", s.network, s.address, lastErr)
 }
 
+// queuedDelivery marks the sink for its own engine queue (see queuedSink).
+func (s *SyslogSink) queuedDelivery() {}
+
 func (s *SyslogSink) Close() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

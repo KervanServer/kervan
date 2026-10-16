@@ -660,6 +660,15 @@ subsystem check.
   files.
 - HTTP/webhook outputs support custom headers, batch size, flush interval and
   retry count for downstream audit collectors.
+- **Delivery guarantees:** `file` outputs never lose an event. If they fall
+  behind, the actions being audited wait for them rather than events being
+  dropped. Each `http`, `webhook` and `syslog` output has its own queue
+  (4096 events), so a slow or unreachable collector never delays the audit
+  file or other outputs. When such a queue is full, that output alone skips
+  events. At shutdown, remote outputs get 5 seconds to send what is queued.
+  `/metrics` reports `kervan_audit_events_dropped_total` and, for remote
+  outputs, `kervan_audit_queue_length`, both labelled with the output's
+  position in `audit.outputs` (`output="2"`) and its `type`.
 - Events are also queryable over the REST API at `/api/v1/audit/events`.
 - `kervan backup create` packages the embedded store, its `.bak` recovery copy,
   the audit log and the active config into a ZIP archive for offline recovery.

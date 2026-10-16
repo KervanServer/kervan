@@ -4,6 +4,15 @@
 
 ### Fixed
 
+- **Audit events are no longer dropped when the queue fills up.** The audit
+  engine discarded events once its 1024-event queue was full, and wrote to
+  every output in turn, so one slow HTTP or syslog collector held up the
+  audit file and made those drops more likely. File outputs now never lose
+  an event: callers wait instead. Each HTTP/webhook/syslog output has its
+  own 4096-event queue and worker, and drops only its own events when that
+  overflows. `/metrics` gains `kervan_audit_events_dropped_total` and
+  `kervan_audit_queue_length`, per output.
+
 - **Quotas are shared by all of a user's sessions.** Every FTP/SFTP/SCP
   connection and every WebUI/API file request used to get its own quota
   tracker, each measured from storage when it was created. Parallel
