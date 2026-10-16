@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"sync"
 	"testing"
@@ -69,8 +70,14 @@ func TestSQLiteBackendFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if perm := info.Mode().Perm(); perm&0o077 != 0 {
-		t.Fatalf("%s has mode %v, want no group/other access", sqliteFileName, perm)
+	// Windows has no POSIX group/other permission bits: os.Chmod there only
+	// toggles the read-only attribute, so a 0600 file still reports 0666.
+	// Production still calls Chmod(0o600) on the db and its -wal/-shm files
+	// (sqlite_backend.go), but the restriction is not expressible there.
+	if runtime.GOOS != "windows" {
+		if perm := info.Mode().Perm(); perm&0o077 != 0 {
+			t.Fatalf("%s has mode %v, want no group/other access", sqliteFileName, perm)
+		}
 	}
 	var mode string
 	if err := st.b.(*sqliteBackend).db.QueryRow(`PRAGMA journal_mode`).Scan(&mode); err != nil || mode != "wal" {
@@ -267,4 +274,47 @@ func TestSQLiteReadersNotBlockedByWriter(t *testing.T) {
 			return nil
 		})
 	})
+}
+
+// The server and a CLI command opening the store for the first time race to
+// create kervan-store.db. SQLite answers that race with SQLITE_BUSY after
+// microseconds without consulting busy_timeout, so every concurrent opener
+// must still succeed and see the imported records.
+func TestSQLiteConcurrentFirstOpensInitialiseSchema(t *testing.T) {
+	const openers, rounds = 8, 40
+	for r := 0; r < rounds; r++ {
+		dir := t.TempDir()
+		seedJSONStore(t, dir, map[string]map[string]string{"users": {"u1": "alice", "u2": "bob"}})
+
+		gate := make(chan struct{})
+		stores := make([]*Store, openers)
+		errs := make([]error, openers)
+		var wg sync.WaitGroup
+		for i := range stores {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				<-gate // every opener reaches its first open together
+				stores[i], errs[i] = OpenWithOptions(dir, Options{Backend: BackendSQLite})
+			}(i)
+		}
+		close(gate)
+		wg.Wait()
+
+		for i, err := range errs {
+			if err != nil {
+				t.Fatalf("round %d: concurrent first open %d: %v", r, i, err)
+			}
+			var users []string
+			if err := stores[i].List("users", &users); err != nil {
+				t.Fatalf("round %d: open %d: list imported users: %v", r, i, err)
+			}
+			if len(users) != 2 || users[0] != "alice" || users[1] != "bob" {
+				t.Fatalf("round %d: open %d: imported users = %v, want [alice bob]", r, i, users)
+			}
+			if err := stores[i].Close(); err != nil {
+				t.Fatalf("round %d: open %d: close: %v", r, i, err)
+			}
+		}
+	}
 }
