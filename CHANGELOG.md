@@ -19,6 +19,9 @@
   own 4096-event queue and worker, and drops only its own events when that
   overflows. `/metrics` gains `kervan_audit_events_dropped_total` and
   `kervan_audit_queue_length`, per output.
+  The 5-second shutdown drain is a hard limit: a syslog send blocked on a
+  collector that stopped reading is interrupted instead of holding up
+  shutdown.
 
 - **Quotas are shared by all of a user's sessions.** Every FTP/SFTP/SCP
   connection and every WebUI/API file request used to get its own quota

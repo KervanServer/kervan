@@ -667,7 +667,9 @@ subsystem check.
   dropped. Each `http`, `webhook` and `syslog` output has its own queue
   (4096 events), so a slow or unreachable collector never delays the audit
   file or other outputs. When such a queue is full, that output alone skips
-  events. At shutdown, remote outputs get 5 seconds to send what is queued.
+  events. At shutdown, remote outputs get 5 seconds to send what is queued;
+  a send still in progress then is interrupted, even to a collector that has
+  stopped reading, and what was not sent counts as dropped.
   `/metrics` reports `kervan_audit_events_dropped_total` and, for remote
   outputs, `kervan_audit_queue_length`, both labelled with the output's
   position in `audit.outputs` (`output="2"`) and its `type`.
