@@ -26,6 +26,7 @@ type jsonBackend struct {
 	data       map[string]json.RawMessage
 	stamp      os.FileInfo // primary file as last loaded or written; guarded by mu
 	dirty      bool        // a write failed to persist; guarded by persistMu
+	readErr    error       // last refresh could not read the primary; guarded by mu
 }
 
 func openJSONBackend(dataDir string) (*jsonBackend, error) {
@@ -109,11 +110,22 @@ func (s *jsonBackend) refresh() {
 	}
 	decoded, _, err := loadStoreFile(s.path)
 	if err != nil {
+		// A regular file we cannot parse is truncation or corruption worth
+		// reporting: the in-memory snapshot would claim records that are no
+		// longer on disk. A non-regular file (a directory standing where the
+		// store belongs) is a condition the next write repairs, so leave reads
+		// answering from memory in that case.
+		if info.Mode().IsRegular() {
+			s.mu.Lock()
+			s.readErr = fmt.Errorf("reload store file %s: %w", s.path, err)
+			s.mu.Unlock()
+		}
 		return
 	}
 	s.mu.Lock()
 	s.data = decoded
 	s.stamp = info
+	s.readErr = nil
 	s.mu.Unlock()
 }
 
@@ -172,8 +184,11 @@ func (s *jsonBackend) update(fn func(txBackend) error) error {
 func (s *jsonBackend) get(collection, key string) (json.RawMessage, bool, error) {
 	s.refresh()
 	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.readErr != nil {
+		return nil, false, s.readErr
+	}
 	raw, ok := s.data[composite(collection, key)]
-	s.mu.RUnlock()
 	return raw, ok, nil
 }
 
@@ -182,6 +197,9 @@ func (s *jsonBackend) list(collection string) ([]json.RawMessage, error) {
 	prefix := collection + ":"
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	if s.readErr != nil {
+		return nil, s.readErr
+	}
 	keys := make([]string, 0, len(s.data))
 	for k := range s.data {
 		if strings.HasPrefix(k, prefix) {
@@ -240,6 +258,9 @@ func (s *jsonBackend) flush() error {
 	if info, err := os.Stat(s.path); err == nil {
 		s.mu.Lock()
 		s.stamp = info
+		// The file is readable again; a previously recorded refresh failure
+		// no longer applies.
+		s.readErr = nil
 		s.mu.Unlock()
 	}
 	if err := writeFileAtomically(s.backupPath, raw, 0o600); err != nil {
