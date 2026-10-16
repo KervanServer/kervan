@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/kervanserver/kervan/internal/audit"
 	"github.com/kervanserver/kervan/internal/transfer"
@@ -255,6 +256,13 @@ func (src *scpSource) sendDir(dirPath string, info os.FileInfo) error {
 	if err := src.sendTimes(info); err != nil {
 		return err
 	}
+	// Same framing rule as the "C" record in sendFile: a name that cannot be
+	// framed must fail the transfer rather than inject a line break into the
+	// stream the peer is parsing.
+	if err := validateSCPFileName(path.Base(dirPath)); err != nil {
+		_ = writeSCPError(src.ch, false, err.Error())
+		return err
+	}
 	if _, err := fmt.Fprintf(src.ch, "D%04o 0 %s\n", info.Mode().Perm(), path.Base(dirPath)); err != nil {
 		return err
 	}
@@ -305,6 +313,13 @@ func (src *scpSource) sendFile(filePath string, eofIsSuccess bool) error {
 		return err
 	}
 	if err := src.sendTimes(info); err != nil {
+		return err
+	}
+	// The name is formatted into a single newline-terminated record with no
+	// escaping, so a name that cannot be framed must fail the transfer rather
+	// than inject a line break into the stream the peer is parsing.
+	if err := validateSCPFileName(info.Name()); err != nil {
+		_ = writeSCPError(src.ch, false, err.Error())
 		return err
 	}
 	if _, err := fmt.Fprintf(src.ch, "C%04o %d %s\n", info.Mode().Perm(), info.Size(), info.Name()); err != nil {
@@ -549,6 +564,15 @@ func validateSCPFileName(name string) error {
 	default:
 		if strings.Contains(trimmed, "/") || strings.Contains(trimmed, `\`) {
 			return errors.New("invalid file name")
+		}
+		// An SCP record is a single newline-terminated line with no escape
+		// mechanism, so a name carrying a control character cannot be framed:
+		// the newline would end the record and the remainder of the name
+		// would be read by the peer as a forged record of its own.
+		for _, r := range trimmed {
+			if unicode.IsControl(r) {
+				return errors.New("invalid file name")
+			}
 		}
 		return nil
 	}

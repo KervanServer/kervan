@@ -274,3 +274,249 @@ func TestSCPSinkRejectsUnsafeDirectories(t *testing.T) {
 		t.Fatal("unbounded directory nesting accepted")
 	}
 }
+
+// Contract: an SCP record is a single newline-terminated line
+// ("C<mode> <size> <name>\n") with no escape mechanism, so a name carrying a
+// newline cannot be framed. runSCPSource formatted info.Name() straight into
+// the record with no validation, so such a file injected an extra protocol
+// line into the stream the peer was parsing: the remainder of the name was
+// read as a forged record of its own.
+func TestSCPSourceRejectsUnrepresentableFilename(t *testing.T) {
+	const badName = "injected\nC0644 99 forged.txt"
+
+	fsys := memory.New()
+	f, err := fsys.Open("/"+badName, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		t.Fatalf("create fixture file: %v", err)
+	}
+	if _, err := f.Write([]byte("payload")); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close fixture: %v", err)
+	}
+
+	srv := NewServer(Config{}, nil, nil, nil, nil, nil, nil)
+	serverConn, clientConn := net.Pipe()
+	t.Cleanup(func() {
+		_ = serverConn.Close()
+		_ = clientConn.Close()
+	})
+	go func() {
+		_ = srv.runSCPSource(pipeSCPChannel{Conn: serverConn}, fsys, "/"+badName,
+			scpRequest{mode: scpModeSource}, "alice", "remote", func() {})
+		_ = serverConn.Close()
+	}()
+
+	ack := func() {
+		t.Helper()
+		_ = clientConn.SetReadDeadline(time.Now().Add(3 * time.Second))
+		var b [1]byte
+		_, _ = io.ReadFull(clientConn, b[:])
+	}
+	ack() // init ack
+	clientConn.SetWriteDeadline(time.Now().Add(3 * time.Second))
+	if _, err := clientConn.Write([]byte{0}); err != nil {
+		t.Fatalf("ack header: %v", err)
+	}
+
+	// The server must either refuse with an SCP error frame (0x01 <msg>\n) or
+	// emit a record that round-trips to the exact name. Anything else broke
+	// the framing the peer is parsing.
+	_ = clientConn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	line, err := bufio.NewReader(clientConn).ReadString('\n')
+	if err != nil {
+		t.Fatalf("read server reply: %v", err)
+	}
+	if strings.HasPrefix(line, "\x01") {
+		return
+	}
+	if _, _, name, perr := parseSCPRecord(line, 'C'); perr == nil && name == badName {
+		return
+	}
+	t.Fatalf("server emitted an SCP record that does not round-trip to %q, injecting an "+
+		"extra protocol line into the peer's stream: %q", badName, line)
+}
+
+// TestSCPSourceEmitsWellFramedOrdinaryName is the control: an ordinary name
+// still produces exactly one well-formed record.
+func TestSCPSourceEmitsWellFramedOrdinaryName(t *testing.T) {
+	const goodName = "ordinary.txt"
+
+	fsys := memory.New()
+	f, err := fsys.Open("/"+goodName, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	if err != nil {
+		t.Fatalf("create fixture file: %v", err)
+	}
+	if _, err := f.Write([]byte("payload")); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close fixture: %v", err)
+	}
+
+	srv := NewServer(Config{}, nil, nil, nil, nil, nil, nil)
+	serverConn, clientConn := net.Pipe()
+	t.Cleanup(func() {
+		_ = serverConn.Close()
+		_ = clientConn.Close()
+	})
+	go func() {
+		_ = srv.runSCPSource(pipeSCPChannel{Conn: serverConn}, fsys, "/"+goodName,
+			scpRequest{mode: scpModeSource}, "alice", "remote", func() {})
+		_ = serverConn.Close()
+	}()
+
+	ack := func() {
+		t.Helper()
+		_ = clientConn.SetReadDeadline(time.Now().Add(3 * time.Second))
+		var b [1]byte
+		_, _ = io.ReadFull(clientConn, b[:])
+	}
+	ack() // init ack
+	clientConn.SetWriteDeadline(time.Now().Add(3 * time.Second))
+	if _, err := clientConn.Write([]byte{0}); err != nil {
+		t.Fatalf("ack header: %v", err)
+	}
+
+	_ = clientConn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	line, err := bufio.NewReader(clientConn).ReadString('\n')
+	if err != nil {
+		t.Fatalf("read C record: %v", err)
+	}
+	mode, size, name, perr := parseSCPRecord(line, 'C')
+	if perr != nil {
+		t.Fatalf("control: ordinary C record did not parse: %v (line %q)", perr, line)
+	}
+	if name != goodName || size != 7 || mode != 0o644 {
+		t.Fatalf("control: record = mode %o size %d name %q, want 0644/7/%q", mode, size, name, goodName)
+	}
+}
+
+// Control: validateSCPFileName keeps accepting ordinary names (including ones
+// that merely resemble traversal) and rejects the control characters that
+// cannot be framed.
+func TestValidateSCPFileNameRejectsControlChars(t *testing.T) {
+	for _, ok := range []string{"file.txt", "a b.txt", "ünïcode.txt", "dots..name", "..hidden"} {
+		if err := validateSCPFileName(ok); err != nil {
+			t.Fatalf("control: %q must remain a valid name: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{"a\nb.txt", "a\rb.txt", "a\x00b", "tab\there", "dir/file", `dir\file`, ".", "..", ""} {
+		if err := validateSCPFileName(bad); err == nil {
+			t.Fatalf("%q must be rejected: an SCP record is a single newline-terminated line", bad)
+		}
+	}
+}
+
+// Contract: the same framing rule applies to the "D" record sendDir emits.
+// Round 12 closed it for sendFile's "C" records but left sendDir formatting
+// path.Base(dirPath) straight into the record, so a directory whose name
+// contains a newline injected an extra protocol line into the peer's stream.
+func TestSCPSourceRejectsUnrepresentableDirectoryName(t *testing.T) {
+	const badName = "injected\nD0755 0 forged"
+
+	fsys := memory.New()
+	if err := fsys.Mkdir("/"+badName, 0o755); err != nil {
+		t.Fatalf("create fixture dir: %v", err)
+	}
+
+	srv := NewServer(Config{}, nil, nil, nil, nil, nil, nil)
+	serverConn, clientConn := net.Pipe()
+	t.Cleanup(func() {
+		_ = serverConn.Close()
+		_ = clientConn.Close()
+	})
+	go func() {
+		_ = srv.runSCPSource(pipeSCPChannel{Conn: serverConn}, fsys, "/"+badName,
+			scpRequest{mode: scpModeSource, recursive: true}, "alice", "remote", func() {})
+		_ = serverConn.Close()
+	}()
+
+	ack := func() {
+		t.Helper()
+		_ = clientConn.SetReadDeadline(time.Now().Add(3 * time.Second))
+		var b [1]byte
+		_, _ = io.ReadFull(clientConn, b[:])
+	}
+	ack() // init ack
+	clientConn.SetWriteDeadline(time.Now().Add(3 * time.Second))
+	if _, err := clientConn.Write([]byte{0}); err != nil {
+		t.Fatalf("ack D record: %v", err)
+	}
+
+	_ = clientConn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	line, err := bufio.NewReader(clientConn).ReadString('\n')
+	if err != nil {
+		t.Fatalf("read server reply: %v", err)
+	}
+	if strings.HasPrefix(line, "\x01") {
+		return // correctly refused before framing anything
+	}
+	if _, _, name, perr := parseSCPRecord(line, 'D'); perr == nil && name == badName {
+		return
+	}
+	t.Fatalf("server emitted a \"D\" record that does not round-trip to %q, injecting an "+
+		"extra protocol line into the peer's stream: %q", badName, line)
+}
+
+// TestSCPSourceEmitsWellFramedOrdinaryDirectoryName is the control: an ordinary
+// directory still produces one well-formed D record and is closed with E.
+func TestSCPSourceEmitsWellFramedOrdinaryDirectoryName(t *testing.T) {
+	const goodName = "ordinary-dir"
+
+	fsys := memory.New()
+	if err := fsys.Mkdir("/"+goodName, 0o755); err != nil {
+		t.Fatalf("create fixture dir: %v", err)
+	}
+
+	srv := NewServer(Config{}, nil, nil, nil, nil, nil, nil)
+	serverConn, clientConn := net.Pipe()
+	t.Cleanup(func() {
+		_ = serverConn.Close()
+		_ = clientConn.Close()
+	})
+	go func() {
+		_ = srv.runSCPSource(pipeSCPChannel{Conn: serverConn}, fsys, "/"+goodName,
+			scpRequest{mode: scpModeSource, recursive: true}, "alice", "remote", func() {})
+		_ = serverConn.Close()
+	}()
+
+	ack := func() {
+		t.Helper()
+		_ = clientConn.SetReadDeadline(time.Now().Add(3 * time.Second))
+		var b [1]byte
+		_, _ = io.ReadFull(clientConn, b[:])
+	}
+	ack() // init ack
+	clientConn.SetWriteDeadline(time.Now().Add(3 * time.Second))
+	if _, err := clientConn.Write([]byte{0}); err != nil {
+		t.Fatalf("ack D record: %v", err)
+	}
+
+	_ = clientConn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	line, err := bufio.NewReader(clientConn).ReadString('\n')
+	if err != nil {
+		t.Fatalf("read D record: %v", err)
+	}
+	mode, size, name, perr := parseSCPRecord(line, 'D')
+	if perr != nil {
+		t.Fatalf("control: ordinary D record did not parse: %v (line %q)", perr, line)
+	}
+	if name != goodName || size != 0 || mode != 0o755 {
+		t.Fatalf("control: record = mode %o size %d name %q, want 0755/0/%q", mode, size, name, goodName)
+	}
+
+	clientConn.SetWriteDeadline(time.Now().Add(3 * time.Second))
+	if _, err := clientConn.Write([]byte{0}); err != nil {
+		t.Fatalf("ack E: %v", err)
+	}
+	_ = clientConn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	end, err := bufio.NewReader(clientConn).ReadString('\n')
+	if err != nil {
+		t.Fatalf("read E record: %v", err)
+	}
+	if strings.TrimSpace(end) != "E" {
+		t.Fatalf("control: expected an E record to close the directory, got %q", end)
+	}
+}
