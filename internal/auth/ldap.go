@@ -175,12 +175,27 @@ func (p *LDAPProvider) bindUser(ctx context.Context, dn, password string) error 
 	return ldapBind(conn, 1, dn, password)
 }
 
+// contextConn ties a connection's lifetime to the caller's context. ctx
+// otherwise bounds only the dial, and every LDAP reply is read from this
+// connection, so a server that accepts and then stops replying would pin the
+// caller long after cancellation.
+type contextConn struct {
+	net.Conn
+	stop func() bool
+}
+
+func (c *contextConn) Close() error {
+	c.stop()
+	return c.Conn.Close()
+}
+
 func (p *LDAPProvider) dial(ctx context.Context) (net.Conn, error) {
 	rawURL, err := url.Parse(strings.TrimSpace(p.cfg.URL))
 	if err != nil {
 		return nil, err
 	}
 	address := rawURL.Host
+	var conn net.Conn
 	switch rawURL.Scheme {
 	case "ldaps":
 		if !strings.Contains(address, ":") {
@@ -199,15 +214,26 @@ func (p *LDAPProvider) dial(ctx context.Context) (net.Conn, error) {
 				InsecureSkipVerify: p.cfg.TLSSkipVerify,
 			},
 		}
-		return dialer.DialContext(ctx, "tcp", address)
+		if conn, err = dialer.DialContext(ctx, "tcp", address); err != nil {
+			return nil, err
+		}
 	case "ldap":
 		if !strings.Contains(address, ":") {
 			address += ":389"
 		}
-		return p.dialContext(ctx, "tcp", address)
+		if conn, err = p.dialContext(ctx, "tcp", address); err != nil {
+			return nil, err
+		}
 	default:
 		return nil, fmt.Errorf("unsupported ldap scheme: %s", rawURL.Scheme)
 	}
+	// Close the socket once ctx is done, so an unresponsive LDAP server cannot
+	// hold the sign-in goroutine and an open connection indefinitely.
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = conn.SetDeadline(deadline)
+	}
+	return &contextConn{Conn: conn, stop: stop}, nil
 }
 
 func (p *LDAPProvider) cachedIdentity(username string) *LDAPIdentity {

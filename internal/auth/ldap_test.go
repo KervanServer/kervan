@@ -301,3 +301,100 @@ func TestReadBERValueRejectsOversizedDeclaredLength(t *testing.T) {
 		t.Fatalf("readBERValue allocated %d bytes for a length header declaring %d bytes before any payload arrived", allocated, 0x7F000000)
 	}
 }
+
+// Contract: Authenticate(ctx, ...) must honour ctx for the whole exchange,
+// not only the dial. The client bounds only the TCP/TLS dial with ctx, and
+// every LDAP reply is read from that same connection — so an LDAP endpoint
+// that accepts and then goes silent used to pin the sign-in goroutine and its
+// socket indefinitely, long after the caller's context was cancelled.
+func TestLDAPAuthenticateHonoursContextCancellation(t *testing.T) {
+	silent := newSilentLDAPServer(t)
+	p := NewLDAPProvider(config.LDAPConfig{
+		URL:               silent,
+		BaseDN:            "dc=example,dc=com",
+		UserFilter:        "(uid=%s)",
+		UsernameAttribute: "uid",
+		EmailAttribute:    "mail",
+		GroupAttribute:    "memberOf",
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := p.Authenticate(ctx, "alice", "some-password")
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("authenticating against a silent server must not succeed")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Authenticate is still blocked 10s after its context expired (300ms): " +
+			"the LDAP connection carries no deadline and outlives the caller's context")
+	}
+}
+
+// Control: a context cancelled before the call fails fast, both before and
+// after the fix, so the assertion above is about the in-flight reply only.
+func TestLDAPAuthenticateFailsFastOnCancelledContext(t *testing.T) {
+	silent := newSilentLDAPServer(t)
+	p := NewLDAPProvider(config.LDAPConfig{
+		URL:               silent,
+		BaseDN:            "dc=example,dc=com",
+		UserFilter:        "(uid=%s)",
+		UsernameAttribute: "uid",
+		EmailAttribute:    "mail",
+		GroupAttribute:    "memberOf",
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := p.Authenticate(ctx, "alice", "some-password")
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("a cancelled context must not authenticate")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("a context cancelled before the call must fail fast, not block")
+	}
+}
+
+// newSilentLDAPServer accepts connections and never replies, mimicking an
+// unresponsive or MITM'd LDAP endpoint.
+func newSilentLDAPServer(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	var held []net.Conn
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			held = append(held, conn) // accept, then never reply
+		}
+	}()
+	// Cleanups run LIFO, so one cleanup closes both the listener and every
+	// accepted connection; waiting on the accept loop here would deadlock.
+	t.Cleanup(func() {
+		_ = ln.Close()
+		for _, c := range held {
+			_ = c.Close()
+		}
+	})
+	return "ldap://" + ln.Addr().String()
+}
