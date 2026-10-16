@@ -117,6 +117,72 @@ func (s *Store) refresh() {
 	s.mu.Unlock()
 }
 
+// Tx is the view of the store inside Update. Reads see the transaction's own
+// writes; nothing is visible to other readers until Update commits.
+type Tx struct {
+	s    *Store
+	data map[string]json.RawMessage
+}
+
+func (tx *Tx) Get(collection, key string, out any) error {
+	raw, ok := tx.data[tx.s.composite(collection, key)]
+	if !ok {
+		return ErrNotFound
+	}
+	if err := json.Unmarshal(raw, out); err != nil {
+		return fmt.Errorf("decode value for %s/%s: %w", collection, key, err)
+	}
+	return nil
+}
+
+func (tx *Tx) Put(collection, key string, value any) error {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Errorf("marshal value for %s/%s: %w", collection, key, err)
+	}
+	tx.data[tx.s.composite(collection, key)] = raw
+	return nil
+}
+
+func (tx *Tx) Delete(collection, key string) {
+	delete(tx.data, tx.s.composite(collection, key))
+}
+
+// Update runs fn as one read-check-write transaction under the cross-process
+// lock, against the latest file contents. Its writes are persisted together
+// in a single flush; if fn returns an error nothing changes. fn must use only
+// tx: Put, Delete, Close and Update deadlock on the non-reentrant persistMu,
+// and Get and List silently read pre-transaction state, defeating any check
+// fn makes before writing.
+func (s *Store) Update(fn func(tx *Tx) error) error {
+	s.persistMu.Lock()
+	defer s.persistMu.Unlock()
+	unlock, err := lockFile(s.lockPath)
+	if err != nil {
+		return fmt.Errorf("lock store %s: %w", s.lockPath, err)
+	}
+	defer unlock()
+	s.refresh()
+	s.mu.RLock()
+	work := make(map[string]json.RawMessage, len(s.data))
+	for k, v := range s.data {
+		work[k] = v
+	}
+	s.mu.RUnlock()
+	if err := fn(&Tx{s: s, data: work}); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.data = work
+	s.mu.Unlock()
+	if err := s.flush(); err != nil {
+		s.dirty = true
+		return err
+	}
+	s.dirty = false
+	return nil
+}
+
 func (s *Store) Get(collection, key string, out any) error {
 	s.refresh()
 	s.mu.RLock()

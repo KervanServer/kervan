@@ -37,6 +37,10 @@ type Engine struct {
 	lockoutDisabled   bool
 	ldap              *LDAPProvider
 	ipThrottle        *IPThrottle
+	// passwordLocks serializes password checks per user ID so each attempt
+	// sees the lockout state left by the previous one; without it parallel
+	// guesses all pass ensureLoginAllowed before any failure is recorded.
+	passwordLocks sync.Map // user ID -> *sync.Mutex
 }
 
 func NewEngine(repo *UserRepository, hashAlgo string, maxAttempts int, lockDuration time.Duration) *Engine {
@@ -83,6 +87,19 @@ func (e *Engine) authenticate(ctx context.Context, username, password string) (*
 }
 
 func (e *Engine) authenticateLocalUser(user *User, password string) (*User, error) {
+	lock, _ := e.passwordLocks.LoadOrStore(user.ID, &sync.Mutex{})
+	lock.(*sync.Mutex).Lock()
+	defer lock.(*sync.Mutex).Unlock()
+	// Re-read under the lock: the copy the caller looked up may predate a
+	// failure (or lockout) recorded by a concurrent attempt.
+	fresh, err := e.repo.GetByID(user.ID)
+	if err != nil {
+		return nil, err
+	}
+	if fresh == nil {
+		return nil, ErrInvalidCredentials
+	}
+	user = fresh
 	if err := e.ensureLoginAllowed(user); err != nil {
 		return nil, err
 	}
@@ -394,12 +411,21 @@ func (e *Engine) registerFailedLogin(user *User) error {
 	e.policyMu.RLock()
 	lockout, maxAttempts, lockDuration := !e.lockoutDisabled, e.maxAttempts, e.lockDuration
 	e.policyMu.RUnlock()
-	user.FailedLogins++
-	if lockout && user.FailedLogins >= maxAttempts {
-		until := time.Now().UTC().Add(lockDuration)
-		user.LockedUntil = &until
+	// Increment the stored counter, not the caller's possibly stale copy.
+	saved, err := e.repo.Mutate(user.ID, func(u *User) error {
+		u.FailedLogins++
+		if lockout && u.FailedLogins >= maxAttempts {
+			until := time.Now().UTC().Add(lockDuration)
+			u.LockedUntil = &until
+		}
+		return nil
+	})
+	if err != nil || saved == nil {
+		return err
 	}
-	return e.repo.Update(user)
+	user.FailedLogins = saved.FailedLogins
+	user.LockedUntil = saved.LockedUntil
+	return nil
 }
 
 func isLDAPUser(user *User) bool {

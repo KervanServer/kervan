@@ -41,18 +41,55 @@ func (r *UserRepository) Create(user *User) error {
 		user.Permissions = DefaultUserPermissions()
 	}
 
-	if existing, _ := r.GetByUsername(user.Username); existing != nil {
-		return fmt.Errorf("username %q already exists", user.Username)
-	}
+	// The uniqueness check and both writes share one transaction, so
+	// concurrent creators (including another process) cannot both pass.
+	return r.store.Update(func(tx *store.Tx) error {
+		existing, err := userByNameTx(tx, user.Username)
+		if err != nil {
+			return err
+		}
+		if existing != nil {
+			return fmt.Errorf("username %q already exists", user.Username)
+		}
+		now := time.Now().UTC()
+		user.CreatedAt = now
+		user.UpdatedAt = now
+		if err := tx.Put(collUsers, user.ID, user); err != nil {
+			return err
+		}
+		return tx.Put(collUserByName, usernameIndexKey(user.Username), user.ID)
+	})
+}
 
-	now := time.Now().UTC()
-	user.CreatedAt = now
-	user.UpdatedAt = now
-
-	if err := r.store.Put(collUsers, user.ID, user); err != nil {
-		return err
+func userByIDTx(tx *store.Tx, id string) (*User, error) {
+	var user User
+	if err := tx.Get(collUsers, id, &user); err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return nil, nil
+		}
+		return nil, err
 	}
-	return r.store.Put(collUserByName, usernameIndexKey(user.Username), user.ID)
+	return &user, nil
+}
+
+// userByNameTx mirrors GetByUsername, including the legacy un-normalized
+// index key and treating an index entry without a user record as absent.
+func userByNameTx(tx *store.Tx, username string) (*User, error) {
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return nil, nil
+	}
+	var id string
+	for _, key := range []string{usernameIndexKey(username), username} {
+		err := tx.Get(collUserByName, key, &id)
+		if err == nil {
+			return userByIDTx(tx, id)
+		}
+		if !errors.Is(err, store.ErrNotFound) {
+			return nil, err
+		}
+	}
+	return nil, nil
 }
 
 func permissionsEmpty(p UserPermissions) bool {
@@ -107,15 +144,24 @@ func (r *UserRepository) Update(user *User) error {
 	if user.Username == "" {
 		return errors.New("username is required")
 	}
-	existing, err := r.GetByID(user.ID)
+	return r.store.Update(func(tx *store.Tx) error {
+		return updateTx(tx, user)
+	})
+}
+
+// updateTx writes user over the stored record and keeps the username index
+// in step, all within the caller's transaction.
+func updateTx(tx *store.Tx, user *User) error {
+	existing, err := userByIDTx(tx, user.ID)
 	if err != nil {
 		return err
 	}
 	if existing == nil {
 		return errors.New("user not found")
 	}
-	if !strings.EqualFold(existing.Username, user.Username) {
-		other, err := r.GetByUsername(user.Username)
+	renamed := !strings.EqualFold(existing.Username, user.Username)
+	if renamed {
+		other, err := userByNameTx(tx, user.Username)
 		if err != nil {
 			return err
 		}
@@ -124,15 +170,38 @@ func (r *UserRepository) Update(user *User) error {
 		}
 	}
 	user.UpdatedAt = time.Now().UTC()
-	if err := r.store.Put(collUsers, user.ID, user); err != nil {
+	if err := tx.Put(collUsers, user.ID, user); err != nil {
 		return err
 	}
-	if !strings.EqualFold(existing.Username, user.Username) {
+	if renamed {
 		for _, key := range usernameIndexKeys(existing.Username) {
-			_ = r.store.Delete(collUserByName, key)
+			tx.Delete(collUserByName, key)
 		}
 	}
-	return r.store.Put(collUserByName, usernameIndexKey(user.Username), user.ID)
+	return tx.Put(collUserByName, usernameIndexKey(user.Username), user.ID)
+}
+
+// Mutate applies fn to the latest stored copy of the user and saves the
+// result in one transaction, so fields fn does not touch keep any change
+// made concurrently. It returns the saved user, or nil if it does not exist.
+// An error from fn aborts the write.
+func (r *UserRepository) Mutate(id string, fn func(*User) error) (*User, error) {
+	var saved *User
+	err := r.store.Update(func(tx *store.Tx) error {
+		u, err := userByIDTx(tx, id)
+		if err != nil || u == nil {
+			return err
+		}
+		if err := fn(u); err != nil {
+			return err
+		}
+		if err := updateTx(tx, u); err != nil {
+			return err
+		}
+		saved = u
+		return nil
+	})
+	return saved, err
 }
 
 func (r *UserRepository) Delete(id string) error {
@@ -158,15 +227,14 @@ func (r *UserRepository) List() ([]*User, error) {
 }
 
 func (r *UserRepository) UpdateLastLogin(id string) error {
-	u, err := r.GetByID(id)
-	if err != nil || u == nil {
-		return err
-	}
-	now := time.Now().UTC()
-	u.LastLoginAt = &now
-	u.FailedLogins = 0
-	u.LockedUntil = nil
-	return r.Update(u)
+	_, err := r.Mutate(id, func(u *User) error {
+		now := time.Now().UTC()
+		u.LastLoginAt = &now
+		u.FailedLogins = 0
+		u.LockedUntil = nil
+		return nil
+	})
+	return err
 }
 
 func usernameIndexKey(username string) string {
