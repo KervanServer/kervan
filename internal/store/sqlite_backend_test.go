@@ -280,6 +280,33 @@ func TestSQLiteReadersNotBlockedByWriter(t *testing.T) {
 // create kervan-store.db. SQLite answers that race with SQLITE_BUSY after
 // microseconds without consulting busy_timeout, so every concurrent opener
 // must still succeed and see the imported records.
+// An already-initialised store is the common case, so openSQLiteBackend must
+// not need the cross-process lock there. Holding that lock externally and then
+// opening proves it: if initSchema still locked, this would block until the
+// watchdog fires. flock is per open file description, so a second lockFile in
+// the same process genuinely contends.
+func TestSQLiteOpenSkipsLockWhenSchemaExists(t *testing.T) {
+	dir := t.TempDir()
+	openSQLite(t, dir) // creates the schema
+
+	unlock, err := lockFile(filepath.Join(dir, sqliteFileName) + ".lock")
+	if err != nil {
+		t.Fatalf("hold store lock: %v", err)
+	}
+	defer unlock()
+
+	runWithin(t, func() {
+		st, err := OpenWithOptions(dir, Options{Backend: BackendSQLite})
+		if err != nil {
+			t.Errorf("open while another holder has the store lock: %v", err)
+			return
+		}
+		if err := st.Close(); err != nil {
+			t.Errorf("close: %v", err)
+		}
+	})
+}
+
 func TestSQLiteConcurrentFirstOpensInitialiseSchema(t *testing.T) {
 	const openers, rounds = 8, 40
 	for r := 0; r < rounds; r++ {
