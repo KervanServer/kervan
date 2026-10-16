@@ -26,6 +26,12 @@ func TestStoreMethodsInsideUpdateReturnErrInsideUpdate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
+	// Without this the store's handle is still open when t.TempDir() cleans
+	// up. On Linux unlinking an open file succeeds, so the leak is invisible;
+	// on Windows the cleanup fails with "file is being used by another
+	// process". Note the "Close" case below deliberately exercises Close
+	// inside Update, where the guard rejects it, so it never closes either.
+	t.Cleanup(func() { _ = st.Close() })
 	if err := st.Put("c", "k", "v"); err != nil {
 		t.Fatalf("put: %v", err)
 	}
@@ -68,6 +74,12 @@ func TestStoreReadsFromOtherGoroutinesDuringUpdate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
+	// Without this the store's handle is still open when t.TempDir() cleans
+	// up. On Linux unlinking an open file succeeds, so the leak is invisible;
+	// on Windows the cleanup fails with "file is being used by another
+	// process". Note the "Close" case below deliberately exercises Close
+	// inside Update, where the guard rejects it, so it never closes either.
+	t.Cleanup(func() { _ = st.Close() })
 	if err := st.Put("c", "k", "v"); err != nil {
 		t.Fatalf("put: %v", err)
 	}
@@ -91,6 +103,12 @@ func TestStoreUpdateClearsOwnerAfterPanic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
+	// Without this the store's handle is still open when t.TempDir() cleans
+	// up. On Linux unlinking an open file succeeds, so the leak is invisible;
+	// on Windows the cleanup fails with "file is being used by another
+	// process". Note the "Close" case below deliberately exercises Close
+	// inside Update, where the guard rejects it, so it never closes either.
+	t.Cleanup(func() { _ = st.Close() })
 	func() {
 		defer func() { _ = recover() }()
 		_ = st.Update(func(*Tx) error { panic("boom") })
