@@ -80,8 +80,12 @@ func (t *IPThrottle) Configure(cfg IPThrottleConfig) error {
 	return nil
 }
 
-func (t *IPThrottle) exempt(ip string) bool {
-	return t.whitelist != nil && t.whitelist.AllowedRemote(ip)
+// exempt reports whether remote is on the operator's whitelist. It matches
+// the caller's address, not the throttle key: for IPv6 the key is a per-/64
+// bucket such as "2001:db8::/64", which netip.ParseAddr cannot parse, so
+// matching the key silently exempts no IPv6 client at all.
+func (t *IPThrottle) exempt(remote string) bool {
+	return t.whitelist != nil && t.whitelist.AllowedRemote(remote)
 }
 
 // Check returns ErrIPBanned while remote is banned.
@@ -92,7 +96,7 @@ func (t *IPThrottle) Check(remote string, now time.Time) error {
 	ip := throttleKey(remote)
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if !t.enabled || ip == "" || t.exempt(ip) {
+	if !t.enabled || ip == "" || t.exempt(remote) {
 		return nil
 	}
 	if e := t.entries[ip]; e != nil && now.Before(e.bannedUntil) {
@@ -109,7 +113,7 @@ func (t *IPThrottle) RecordFailure(remote string, now time.Time) bool {
 	ip := throttleKey(remote)
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if !t.enabled || ip == "" || t.exempt(ip) {
+	if !t.enabled || ip == "" || t.exempt(remote) {
 		return false
 	}
 	e := t.entries[ip]
@@ -172,6 +176,13 @@ func throttleKey(remote string) string {
 	host := strings.TrimSpace(remote)
 	if h, _, err := net.SplitHostPort(host); err == nil {
 		host = h
+	}
+	// Drop an IPv6 zone identifier ("fe80::1%eth0"). net.ParseIP rejects a
+	// zoned address, and an empty key is treated as "not throttleable" by
+	// Check/RecordFailure, so without this a link-local client would evade the
+	// ban entirely. Mirrors netguard.parseRemote.
+	if i := strings.IndexByte(host, '%'); i >= 0 {
+		host = host[:i]
 	}
 	ip := net.ParseIP(host)
 	if ip == nil {
