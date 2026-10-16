@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/kervanserver/kervan/internal/store"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -35,7 +36,11 @@ func GenerateED25519HostKey(path string) error {
 		return fmt.Errorf("marshal ed25519 key for %s: %w", path, err)
 	}
 	block := &pem.Block{Type: "PRIVATE KEY", Bytes: der}
-	if err := os.WriteFile(path, pem.EncodeToMemory(block), 0o600); err != nil {
+	// Written atomically with an explicit chmod: os.WriteFile applies its
+	// perm argument only when it CREATES the file, so regenerating over an
+	// existing key (`kervan keygen --force`) would leave a restored or
+	// pre-existing host key group/other-readable.
+	if err := store.WriteFileAtomically(path, pem.EncodeToMemory(block), 0o600); err != nil {
 		return fmt.Errorf("write ed25519 key file %s: %w", path, err)
 	}
 	return nil
@@ -51,7 +56,7 @@ func GenerateRSAHostKey(path string, bits int) error {
 	}
 	der := x509.MarshalPKCS1PrivateKey(key)
 	block := &pem.Block{Type: "RSA PRIVATE KEY", Bytes: der}
-	if err := os.WriteFile(path, pem.EncodeToMemory(block), 0o600); err != nil {
+	if err := store.WriteFileAtomically(path, pem.EncodeToMemory(block), 0o600); err != nil {
 		return fmt.Errorf("write rsa key file %s: %w", path, err)
 	}
 	return nil
