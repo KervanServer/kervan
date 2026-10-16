@@ -6,7 +6,7 @@ LDFLAGS := -s -w \
   -X github.com/kervanserver/kervan/internal/build.Commit=$(COMMIT) \
   -X github.com/kervanserver/kervan/internal/build.Date=$(DATE)
 
-.PHONY: build webui test check audit clean docker-build compose-config compose-up compose-down release-snapshot release-check interop
+.PHONY: build webui test check check-sqlite audit clean docker-build compose-config compose-up compose-down release-snapshot release-check interop
 
 build: webui
 	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/kervan ./cmd/kervan
@@ -28,9 +28,18 @@ check:
 	  else echo "staticcheck not installed: go install honnef.co/go/tools/cmd/staticcheck@latest"; exit 1; fi
 	go test ./... -count=1
 	CGO_ENABLED=1 go test -race ./... -count=1
+	$(MAKE) check-sqlite
 	cd webui && npm test
 	go run ./scripts
 	git diff --exit-code -- internal/webui/dist
+
+# check-sqlite runs the suite against the opt-in SQLite backend. The steps
+# above only exercise the default JSON backend, and the SQLite engine exists
+# precisely to improve concurrency, so its transactions and locking must run
+# under -race too rather than only on an ad-hoc local check.
+check-sqlite:
+	KERVAN_STORE_BACKEND=sqlite go test ./... -count=1
+	CGO_ENABLED=1 KERVAN_STORE_BACKEND=sqlite go test -race ./... -count=1
 
 # audit scans Go code (reachable stdlib/module vulnerabilities) and the WebUI
 # dependency tree for known security advisories.

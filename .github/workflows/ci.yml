@@ -106,6 +106,28 @@ jobs:
           CGO_ENABLED: "0"
         run: go build ./cmd/kervan
 
+  race-sqlite:
+    name: Race Detector (SQLite backend)
+    runs-on: ubuntu-latest
+
+    # The backend and race jobs above only exercise the default JSON backend.
+    # The SQLite engine exists to improve concurrency, so its transactions and
+    # locking need the detector too. Mirrors `make check-sqlite`.
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run Go tests with -race against the SQLite backend
+        env:
+          CGO_ENABLED: "1"
+          KERVAN_STORE_BACKEND: sqlite
+        run: go test -race ./... -count=1
+
   webui:
     name: WebUI Checks
     runs-on: ubuntu-latest
