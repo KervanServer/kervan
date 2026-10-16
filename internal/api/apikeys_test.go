@@ -139,6 +139,9 @@ func TestAPIKeyRepositoryCanonicalizesScopedPermissions(t *testing.T) {
 // rewritten.
 func storeFileID(t *testing.T, dir string) os.FileInfo {
 	t.Helper()
+	if b := os.Getenv("KERVAN_STORE_BACKEND"); b != "" && b != store.BackendJSON {
+		t.Skipf("counts JSON store file rewrites; suite runs on %q", b)
+	}
 	info, err := os.Stat(filepath.Join(dir, "kervan-store.json"))
 	if err != nil {
 		t.Fatalf("stat store file: %v", err)

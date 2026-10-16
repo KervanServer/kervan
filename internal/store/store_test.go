@@ -8,6 +8,16 @@ import (
 	"testing"
 )
 
+// requireJSONBackend skips tests about the JSON backend's files (the .bak
+// recovery copy, atomic temp files) when the suite runs against another
+// backend via KERVAN_STORE_BACKEND.
+func requireJSONBackend(t *testing.T) {
+	t.Helper()
+	if b := os.Getenv(backendEnv); b != "" && b != BackendJSON {
+		t.Skipf("tests the JSON backend's files; suite runs on %q", b)
+	}
+}
+
 func TestStorePersistsAcrossReopen(t *testing.T) {
 	dir := t.TempDir()
 
@@ -40,6 +50,7 @@ func TestStorePersistsAcrossReopen(t *testing.T) {
 }
 
 func TestStoreAtomicFlushLeavesNoTempFiles(t *testing.T) {
+	requireJSONBackend(t)
 	dir := t.TempDir()
 	st, err := Open(dir)
 	if err != nil {
@@ -94,6 +105,7 @@ func TestStoreDeletePersistsAcrossReopen(t *testing.T) {
 }
 
 func TestStoreRecoversFromBackupWhenPrimaryIsCorrupt(t *testing.T) {
+	requireJSONBackend(t)
 	dir := t.TempDir()
 
 	st, err := Open(dir)
@@ -130,6 +142,7 @@ func TestStoreRecoversFromBackupWhenPrimaryIsCorrupt(t *testing.T) {
 }
 
 func TestStoreRecoversFromBackupWhenPrimaryIsMissing(t *testing.T) {
+	requireJSONBackend(t)
 	dir := t.TempDir()
 
 	st, err := Open(dir)

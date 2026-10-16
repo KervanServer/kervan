@@ -13,6 +13,9 @@ import (
 // replaces it with an atomic rename, so a new inode means a write.
 func storeFileInfo(t *testing.T, dir string) os.FileInfo {
 	t.Helper()
+	if b := os.Getenv("KERVAN_STORE_BACKEND"); b != "" && b != store.BackendJSON {
+		t.Skipf("counts JSON store file rewrites; suite runs on %q", b)
+	}
 	fi, err := os.Stat(filepath.Join(dir, "kervan-store.json"))
 	if err != nil {
 		t.Fatalf("stat store file: %v", err)
