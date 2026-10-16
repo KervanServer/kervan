@@ -41,10 +41,14 @@ type request struct {
 }
 
 type response struct {
-	JSONRPC string    `json:"jsonrpc"`
-	ID      any       `json:"id,omitempty"`
-	Result  any       `json:"result,omitempty"`
-	Error   *rpcError `json:"error,omitempty"`
+	JSONRPC string `json:"jsonrpc"`
+	// No omitempty: JSON-RPC 2.0 requires the id member on every reply, and
+	// when the request id cannot be determined (a parse error) it MUST be Null.
+	// With omitempty a nil id was dropped from the frame entirely, leaving a
+	// client correlating replies by id unable to match the error.
+	ID     any       `json:"id"`
+	Result any       `json:"result,omitempty"`
+	Error  *rpcError `json:"error,omitempty"`
 }
 
 type rpcError struct {

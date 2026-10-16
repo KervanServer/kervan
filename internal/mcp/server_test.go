@@ -179,6 +179,95 @@ func extractTextResult(t *testing.T, response map[string]any) string {
 // before any payload, so an unbounded make() let a single header line force
 // an arbitrarily large allocation on the stdio MCP process (the SFTP
 // readPacket bounds the same value at 16MB).
+// TestParseErrorReplyIncludesNullID pins the JSON-RPC 2.0 §5 rule: when the
+// request id cannot be determined, a reply MUST carry an explicit null id.
+// response.ID used to be tagged `json:"id,omitempty"`, so a parse error — the
+// one reply with no id — dropped the member entirely.
+func TestParseErrorReplyIncludesNullID(t *testing.T) {
+	dataDir := t.TempDir()
+	cfg := config.DefaultConfig()
+	cfg.Server.DataDir = dataDir
+
+	st, err := store.Open(dataDir)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	// A frame whose payload is not valid JSON, so Serve takes its parse-error
+	// branch and replies with code -32700 and no id.
+	stdin := strings.NewReader("Content-Length: 7\r\n\r\n{not-json")
+	var stdout bytes.Buffer
+
+	srv := NewServer(cfg, auth.NewUserRepository(st), nil, "", stdin, &stdout)
+	if err := srv.Serve(context.Background()); err != nil {
+		t.Fatalf("Serve: %v", err)
+	}
+
+	_, payload, ok := strings.Cut(stdout.String(), "\r\n\r\n")
+	if !ok {
+		t.Fatalf("no frame header in %q", stdout.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(payload), &got); err != nil {
+		t.Fatalf("reply is not valid JSON (%v): %s", err, payload)
+	}
+	if _, present := got["id"]; !present {
+		t.Fatalf("parse-error reply omitted the \"id\" member entirely: %s; JSON-RPC 2.0 "+
+			"requires \"id\": null when the request id cannot be determined", payload)
+	}
+	if got["id"] != nil {
+		t.Fatalf("parse-error reply id = %v, want null: %s", got["id"], payload)
+	}
+	if got["jsonrpc"] != "2.0" {
+		t.Fatalf("jsonrpc = %v, want \"2.0\": %s", got["jsonrpc"], payload)
+	}
+}
+
+// TestReplyEchoesNumericAndStringIDs is the control for the tag change: a valid
+// request must still echo its own id, so emitting an explicit null cannot
+// swallow a real id (0 and "" are the omitempty-adjacent edge cases).
+func TestReplyEchoesNumericAndStringIDs(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		id   string
+		want float64
+	}{{"zero", "0", 0}, {"seven", "7", 7}} {
+		t.Run(tc.name, func(t *testing.T) {
+			dataDir := t.TempDir()
+			cfg := config.DefaultConfig()
+			cfg.Server.DataDir = dataDir
+
+			st, err := store.Open(dataDir)
+			if err != nil {
+				t.Fatalf("open store: %v", err)
+			}
+			t.Cleanup(func() { _ = st.Close() })
+
+			body := fmt.Sprintf(`{"jsonrpc":"2.0","id":%s,"method":"ping"}`, tc.id)
+			stdin := strings.NewReader(fmt.Sprintf("Content-Length: %d\r\n\r\n%s", len(body), body))
+			var stdout bytes.Buffer
+
+			srv := NewServer(cfg, auth.NewUserRepository(st), nil, "", stdin, &stdout)
+			if err := srv.Serve(context.Background()); err != nil && !errors.Is(err, io.EOF) {
+				t.Fatalf("Serve: %v", err)
+			}
+
+			_, payload, ok := strings.Cut(stdout.String(), "\r\n\r\n")
+			if !ok {
+				t.Fatalf("no frame header in %q", stdout.String())
+			}
+			var got map[string]any
+			if err := json.Unmarshal([]byte(payload), &got); err != nil {
+				t.Fatalf("reply is not valid JSON (%v): %s", err, payload)
+			}
+			if got["id"] != tc.want {
+				t.Fatalf("request id %s echoed as %v, want %v: %s", tc.id, got["id"], tc.want, payload)
+			}
+		})
+	}
+}
+
 func TestReadFrameRejectsOversizedDeclaredLength(t *testing.T) {
 	const declared = 1 << 30 // 1 GiB, fits comfortably in int on 64-bit
 	wire := "Content-Length: 1073741824\r\n\r\n"
