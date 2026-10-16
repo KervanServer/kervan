@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 )
@@ -235,8 +236,14 @@ func TestSQLiteSnapshotAndConversion(t *testing.T) {
 	if exists(t, snap+"-wal") || exists(t, snap+"-shm") {
 		t.Fatal("verification left -wal/-shm files behind")
 	}
-	if info, _ := os.Stat(snap); info.Mode().Perm()&0o077 != 0 {
-		t.Fatalf("snapshot mode %v, want owner-only", info.Mode().Perm())
+	// Windows has no POSIX group/other permission bits: os.Chmod there only
+	// toggles the read-only attribute, so a 0600 file still reports 0666.
+	// writeSnapshot still calls Chmod(0o600); the restriction just is not
+	// expressible there.
+	if runtime.GOOS != "windows" {
+		if info, _ := os.Stat(snap); info.Mode().Perm()&0o077 != 0 {
+			t.Fatalf("snapshot mode %v, want owner-only", info.Mode().Perm())
+		}
 	}
 	if st.Path() != filepath.Join(dir, sqliteFileName) {
 		t.Fatalf("Path() = %q", st.Path())
