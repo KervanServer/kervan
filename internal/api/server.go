@@ -1377,6 +1377,10 @@ func (s *Server) handleFilesShare(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, shareLinkJSON(link))
 }
 
+// uploadTempSuffix names the sibling file handleFilesUpload streams into
+// before renaming it over the target.
+const uploadTempSuffix = ".kervan-upload.tmp"
+
 func (s *Server) handleFilesUpload(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
@@ -1394,18 +1398,32 @@ func (s *Server) handleFilesUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p := normalizeAPIPath(rawPath)
-	f, err := fsys.Open(p, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	// Stream into a sibling temp file and rename it into place only after the
+	// whole body lands. O_TRUNC is applied by the backend at Open time, so
+	// writing straight into p destroyed the previous contents the moment an
+	// upload was rejected partway — a client disconnect, a quota rejection or a
+	// disk error left the target truncated to a partial prefix even though the
+	// handler answered 500 and accepted nothing.
+	tmpPath := p + uploadTempSuffix
+	tmp, err := fsys.Open(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
 	}
-	n, err := io.Copy(f, r.Body)
-	if err != nil {
-		_ = f.Close()
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	n, copyErr := io.Copy(tmp, r.Body)
+	closeErr := tmp.Close()
+	if copyErr != nil {
+		_ = fsys.Remove(tmpPath)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": copyErr.Error()})
 		return
 	}
-	if err := f.Close(); err != nil {
+	if closeErr != nil {
+		_ = fsys.Remove(tmpPath)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": closeErr.Error()})
+		return
+	}
+	if err := fsys.Rename(tmpPath, p); err != nil {
+		_ = fsys.Remove(tmpPath)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
@@ -1440,6 +1458,14 @@ func (s *Server) handleFilesDownload(w http.ResponseWriter, r *http.Request) {
 	}
 	defer f.Close()
 	info, _ := f.Stat()
+	// A directory is not downloadable. Declaring its size as Content-Length
+	// and then failing to read it (EISDIR) would answer 200 with a body
+	// shorter than promised, truncating the response for every client.
+	// handleShareDownload and handleFilesShare refuse the same target.
+	if info != nil && info.IsDir() {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "download target is a directory"})
+		return
+	}
 
 	w.Header().Set("Content-Type", "application/octet-stream")
 	setAttachmentDisposition(w.Header(), path.Base(p))
