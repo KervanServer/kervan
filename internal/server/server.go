@@ -1173,23 +1173,28 @@ func (a *App) applyRuntimeConfig(nextCfg *config.Config) ([]string, []string) {
 		return appliedPaths, restartPaths
 	}
 
+	// Every write to the shared config goes through one critical section. A
+	// live server reads these fields on each connection (Start, Close and
+	// buildUserFS all touch a.cfg), so an unlocked write is a data race. The
+	// sibling api.Server.ApplyRuntimeConfig holds its cfgMu the same way.
+	a.cfgMu.Lock()
 	a.cfg.WebUI.SessionTimeout = nextCfg.WebUI.SessionTimeout
 	a.cfg.WebUI.TOTPEnabled = nextCfg.WebUI.TOTPEnabled
 	a.cfg.WebUI.CORSOrigins = append([]string(nil), nextCfg.WebUI.CORSOrigins...)
 	a.cfg.Auth.MinPasswordLength = nextCfg.Auth.MinPasswordLength
+	a.cfg.Auth.RequireSpecialChar = nextCfg.Auth.RequireSpecialChar
 	a.cfg.Security.BruteForce.Enabled = nextCfg.Security.BruteForce.Enabled
 	a.cfg.Security.BruteForce.MaxAttempts = nextCfg.Security.BruteForce.MaxAttempts
 	a.cfg.Security.BruteForce.LockoutDuration = nextCfg.Security.BruteForce.LockoutDuration
-	a.cfgMu.Lock()
+	a.cfg.Security.BruteForce.IPBanThreshold = nextCfg.Security.BruteForce.IPBanThreshold
+	a.cfg.Security.BruteForce.IPBanDuration = nextCfg.Security.BruteForce.IPBanDuration
+	a.cfg.Security.BruteForce.WhitelistIPs = append([]string(nil), nextCfg.Security.BruteForce.WhitelistIPs...)
+	a.cfg.Security.MaxConnectionsPerIP = nextCfg.Security.MaxConnectionsPerIP
 	a.cfg.Bandwidth = nextCfg.Bandwidth
 	a.cfgMu.Unlock()
 	if a.totalRate != nil {
 		a.totalRate.SetRate(nextCfg.Bandwidth.MaxTotal)
 	}
-	a.cfg.Auth.RequireSpecialChar = nextCfg.Auth.RequireSpecialChar
-	a.cfg.Security.BruteForce.IPBanThreshold = nextCfg.Security.BruteForce.IPBanThreshold
-	a.cfg.Security.BruteForce.IPBanDuration = nextCfg.Security.BruteForce.IPBanDuration
-	a.cfg.Security.BruteForce.WhitelistIPs = append([]string(nil), nextCfg.Security.BruteForce.WhitelistIPs...)
 	if a.auth != nil {
 		a.auth.SetMinPasswordLength(nextCfg.Auth.MinPasswordLength)
 		a.auth.SetRequireSpecialChar(nextCfg.Auth.RequireSpecialChar)
@@ -1200,12 +1205,13 @@ func (a *App) applyRuntimeConfig(nextCfg *config.Config) ([]string, []string) {
 		}
 	}
 	a.perIP.SetMax(nextCfg.Security.MaxConnectionsPerIP)
-	a.cfg.Security.MaxConnectionsPerIP = nextCfg.Security.MaxConnectionsPerIP
 	if a.ipFilter != nil {
 		// nextCfg passed validation, so the entries parse.
 		if err := a.ipFilter.Update(nextCfg.Security.AllowedIPs, nextCfg.Security.DeniedIPs); err == nil {
+			a.cfgMu.Lock()
 			a.cfg.Security.AllowedIPs = append([]string(nil), nextCfg.Security.AllowedIPs...)
 			a.cfg.Security.DeniedIPs = append([]string(nil), nextCfg.Security.DeniedIPs...)
+			a.cfgMu.Unlock()
 		} else if a.logger != nil {
 			a.logger.Error("ip filter reload failed", "error", err)
 		}
