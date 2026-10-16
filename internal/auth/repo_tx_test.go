@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/kervanserver/kervan/internal/store"
 )
@@ -96,6 +97,94 @@ func TestResetPasswordKeepsConcurrentDisable(t *testing.T) {
 	}
 	if reverted > 0 {
 		t.Fatalf("admin disable reverted by a concurrent ResetPassword in %d/%d trials", reverted, trials)
+	}
+}
+
+// raceDisable runs op concurrently with an admin disable of u, started
+// after delay, and reports whether the disable survived.
+func raceDisable(t *testing.T, repo *UserRepository, u *User, delay time.Duration, op func()) bool {
+	t.Helper()
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		op()
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		time.Sleep(delay)
+		_, _ = repo.Mutate(u.ID, func(u *User) error { u.Enabled = false; return nil })
+	}()
+	close(start)
+	wg.Wait()
+	final, err := repo.GetByID(u.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	return !final.Enabled
+}
+
+// An OIDC login syncing attributes must not revert a concurrent disable.
+func TestProvisionExternalUserKeepsConcurrentDisable(t *testing.T) {
+	e, repo := newTxTestEngine(t)
+	const trials = 30
+	reverted := 0
+	for i := 0; i < trials; i++ {
+		name := fmt.Sprintf("oli%d", i)
+		u := &User{Username: name, AuthProvider: "oidc", ExternalID: "sub-" + name, Enabled: true}
+		if err := repo.Create(u); err != nil {
+			t.Fatalf("create: %v", err)
+		}
+		id := ExternalIdentity{Provider: "oidc", Subject: "sub-" + name, Username: name, Email: name + "@example.test"}
+		if !raceDisable(t, repo, u, 0, func() { _, _ = e.ProvisionExternalUser(id, false) }) {
+			reverted++
+		}
+	}
+	if reverted > 0 {
+		t.Fatalf("admin disable reverted by a concurrent OIDC sync in %d/%d trials", reverted, trials)
+	}
+}
+
+// Renaming a group rewrites every member's references; a member's
+// concurrent disable must survive it. Members are rewritten one by one after
+// a single read, so the last of several members has the widest window.
+func TestGroupRenameKeepsMemberConcurrentDisable(t *testing.T) {
+	_, repo := newTxTestEngine(t)
+	groups := NewGroupRepository(repo.store, repo)
+	const trials, members = 25, 12
+	reverted := 0
+	for i := 0; i < trials; i++ {
+		g := &Group{Name: fmt.Sprintf("team%d", i)}
+		if err := groups.Create(g); err != nil {
+			t.Fatalf("create group: %v", err)
+		}
+		var u *User
+		for m := 0; m < members; m++ {
+			u = &User{Username: fmt.Sprintf("pia%d-%02d", i, m), PrimaryGroup: g.Name, Enabled: true}
+			if err := repo.Create(u); err != nil {
+				t.Fatalf("create user: %v", err)
+			}
+		}
+		renamed := *g
+		renamed.Name = fmt.Sprintf("crew%d", i)
+		// Sweep the disable's start across the rename so some trials land
+		// between the member list read and the last member's rewrite.
+		if !raceDisable(t, repo, u, time.Duration(i)*time.Millisecond, func() {
+			if err := groups.Update(&renamed); err != nil {
+				t.Errorf("rename: %v", err)
+			}
+		}) {
+			reverted++
+		}
+		if final, _ := repo.GetByID(u.ID); final.PrimaryGroup != renamed.Name {
+			t.Fatalf("trial %d: membership not rewritten: %q", i, final.PrimaryGroup)
+		}
+	}
+	if reverted > 0 {
+		t.Fatalf("member disable reverted by a concurrent group rename in %d/%d trials", reverted, trials)
 	}
 }
 

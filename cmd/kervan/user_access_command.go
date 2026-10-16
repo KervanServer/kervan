@@ -47,37 +47,64 @@ func runUserAccessCommand(stdout io.Writer, args []string) error {
 		return fmt.Errorf("user %q not found", *username)
 	}
 
-	changed := false
+	// Parse the flags first; they are then applied to the latest stored
+	// record, so the policy is normalized against current values for any
+	// field this command leaves alone.
+	var (
+		newExpiry            *time.Time
+		setExpiry            bool
+		setIPs, setProtocols bool
+		setMax               bool
+		flagIPs, flagProtos  []string
+		flagMax              int
+	)
 	if v := strings.TrimSpace(*expires); v != "" {
-		t, err := parseExpiry(v)
-		if err != nil {
+		if newExpiry, err = parseExpiry(v); err != nil {
 			return err
 		}
-		user.ExpiresAt, changed = t, true
+		setExpiry = true
 	}
-	nextIPs, nextProtocols, nextMax := user.AllowedIPs, user.AllowedProtocols, user.MaxSessions
 	if v := strings.TrimSpace(*ips); v != "" {
-		nextIPs, changed = splitList(v, "any"), true
+		flagIPs, setIPs = splitList(v, "any"), true
 	}
 	if v := strings.TrimSpace(*protocols); v != "" {
-		nextProtocols, changed = splitList(v, "all"), true
+		flagProtos, setProtocols = splitList(v, "all"), true
 	}
 	if v := strings.TrimSpace(*maxSessions); v != "" {
-		n, err := strconv.Atoi(v)
-		if err != nil {
+		if flagMax, err = strconv.Atoi(v); err != nil {
 			return fmt.Errorf("--max-sessions: %w", err)
 		}
-		nextMax, changed = n, true
+		setMax = true
 	}
-	if changed {
-		nextIPs, nextProtocols, err = auth.NormalizeAccessPolicy(nextIPs, nextProtocols, nextMax)
-		if err != nil {
-			return err
+	if setExpiry || setIPs || setProtocols || setMax {
+		saved, err := ctx.repo.Mutate(user.ID, func(u *auth.User) error {
+			if setExpiry {
+				u.ExpiresAt = newExpiry
+			}
+			nextIPs, nextProtocols, nextMax := u.AllowedIPs, u.AllowedProtocols, u.MaxSessions
+			if setIPs {
+				nextIPs = flagIPs
+			}
+			if setProtocols {
+				nextProtocols = flagProtos
+			}
+			if setMax {
+				nextMax = flagMax
+			}
+			nextIPs, nextProtocols, err := auth.NormalizeAccessPolicy(nextIPs, nextProtocols, nextMax)
+			if err != nil {
+				return err
+			}
+			u.AllowedIPs, u.AllowedProtocols, u.MaxSessions = nextIPs, nextProtocols, nextMax
+			return nil
+		})
+		if err == nil && saved == nil {
+			err = fmt.Errorf("user %q not found", *username)
 		}
-		user.AllowedIPs, user.AllowedProtocols, user.MaxSessions = nextIPs, nextProtocols, nextMax
-		if err := ctx.repo.Update(user); err != nil {
+		if err != nil {
 			return fmt.Errorf("update user: %w", err)
 		}
+		user = saved
 	}
 
 	if *jsonOut {
