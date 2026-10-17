@@ -139,11 +139,15 @@ func createThrowawayPR(t *testing.T, branch string) string {
 	if err != nil {
 		t.Fatalf("gh pr create failed: %v\n%s", err, out)
 	}
-	for _, f := range strings.Fields(string(out)) {
-		f = strings.Trim(f, "[]#")
-		if len(f) > 0 && f[0] >= '0' && f[0] <= '9' {
-			return f
-		}
+	// gh pr create prints the pull-request URL, e.g.
+	// https://github.com/OWNER/REPO/pull/13 -- so take the trailing segment.
+	num := strings.TrimSpace(string(out))
+	if i := strings.LastIndexByte(num, '/'); i >= 0 {
+		num = num[i+1:]
+	}
+	num = strings.TrimSpace(strings.Trim(num, "[]#"))
+	if num != "" && strings.IndexFunc(num, func(r rune) bool { return r < '0' || r > '9' }) == -1 {
+		return num
 	}
 	t.Fatalf("could not parse a PR number from %q", out)
 	return ""
@@ -202,6 +206,11 @@ func contextReport(t *testing.T, repo, ref string, required []string) string {
 // with t.Cleanup so it runs even when an assertion fails mid-merge.
 func cleanupThrowaway(t *testing.T, branch string) {
 	t.Helper()
+	// Remove the remote branch too: a failed run otherwise leaves a throwaway
+	// branch and an open pull request behind on the remote.
+	if _, repo := ghRun(t, "repo", "view", "--json", "nameWithOwner", "--jq", ".nameWithOwner"); repo != "" {
+		ghRun(t, "api", "-X", "DELETE", "repos/"+strings.TrimSpace(repo)+"/git/refs/heads/"+branch)
+	}
 	gitSoft(t, "checkout", "master")
 	gitSoft(t, "merge", "--ff-only", "origin/master")
 	gitSoft(t, "branch", "-D", branch)
