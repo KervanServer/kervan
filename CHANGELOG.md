@@ -4,6 +4,23 @@
 
 ### Fixed
 
+- **WebSocket clients no longer miss a change published while they connect.**
+  The `/api/ws` handler sent its first snapshot and only afterwards registered
+  its subscription to change events. A client that changed state as soon as the
+  upgrade completed published into that window, where the broker had no
+  subscriber at all: the notification was discarded outright — not even
+  coalesced away — and the client learned of nothing until the 15-second
+  heartbeat, instead of the 200 ms an event-driven push takes. The subscription
+  is now registered before the first snapshot, so a change racing it is
+  buffered and pushed as soon as the loop starts.
+  The window is a scheduling race, so it surfaced only on a busy runner:
+  `TestWebSocketPushesOnSessionChange` failed intermittently under `-race`
+  with an i/o timeout. Instrumenting the broker and the event loop showed
+  `Publish` reaching zero registered subscribers, the subscription being
+  registered only afterwards, and the first frame arriving at ~15.002 s — the
+  heartbeat, not the debounce. `TestWebSocketDeliversChangeRacingTheFirstSnapshot`
+  now covers it; note that it discriminates under load only.
+
 - **API-key requests no longer rewrite the store on every call.** Each
   request authenticated with an API key saved the key's last-used time,
   which rewrote the whole JSON store file and its backup, turning read
@@ -42,6 +59,17 @@
   as in progress, so one dropped upload cannot block re-measurement.
 
 ### Changed
+
+- **CI:** the SQLite store backend is now race-tested on every run. `make
+  check` and the CI race job both ran the suite with the default JSON backend
+  only, so the SQLite engine's own concurrency — its `BEGIN IMMEDIATE`
+  transactions and cross-process locking, the reason it exists — was never
+  exercised under the detector and was covered only by ad-hoc local commands,
+  which is coverage that decays. `make check-sqlite` runs the suite against
+  SQLite and is wired into `make check`; a matching `race-sqlite` CI job mirrors
+  it, and a `windows` job runs the store suite on both backends. The CI gofmt
+  step also now reads tracked files only (`git ls-files`), matching
+  `make check`, so a local scratch file cannot fail the hosted gate.
 
 - **`quota.check_interval` takes effect.** A user's usage is re-measured
   from storage at sign-in once the last measurement is older than this
