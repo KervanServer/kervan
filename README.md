@@ -1002,8 +1002,14 @@ nothing would verify what `master` actually contains after a merge.
 `master` is branch-protected. Merging requires all five checks to pass on
 an up-to-date branch, plus one approving review. An admin may merge without
 that review; the override is recorded in the pull request timeline. Green
-everything locally first with `make check`, which runs the same checks on
-both store backends.
+the portable checks locally first with `make check`, which runs the same
+steps on both store backends.
+
+One of the five cannot be run locally at all. `internal/store/atomic_windows.go`
+holds the `MoveFileEx` and `LockFileEx` calls behind a `//go:build windows`
+tag, so a Linux build does not compile that file in the first place, and
+`GOOS=windows go build` cross-compiles it without ever running it. The
+`windows-latest` job is therefore that file's only runtime coverage.
 
 ---
 
