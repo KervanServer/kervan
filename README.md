@@ -1011,6 +1011,35 @@ tag, so a Linux build does not compile that file in the first place, and
 `GOOS=windows go build` cross-compiles it without ever running it. The
 `windows-latest` job is therefore that file's only runtime coverage.
 
+### Opt-in live tests for the merge gate
+
+The merge gate has two live test layers. Both are off by default, so `make
+check` stays hermetic and no unattended CI run can reach a live merge. Both
+skip on Windows and both require an authenticated `gh`.
+
+**`MERGE_PR_LIVE=1` — read-only.** Runs the real `scripts/merge-pr.sh` against
+the real `gh` CLI. The two tests point it at an already-merged pull request, so
+the script's OPEN-state guard refuses before `gh pr merge` is ever reached. That
+covers every `--json` field and API call the gate parses, without merging
+anything.
+
+```bash
+MERGE_PR_LIVE=1 go test ./scripts/ -run TestLive -count=1 -v
+```
+
+**`MERGE_PR_LIVE_MERGE=1` — destructive, and opt-in twice over.** This one
+creates a throwaway empty pull request, waits for all five required contexts,
+merges it into `master` with the admin override, re-checks the five contexts on
+the resulting merge commit, then deletes the throwaway branch. It needs
+`MERGE_PR_LIVE=1` set as well, and it **skips whenever `CI` is set**, so it
+cannot reach a merge in hosted CI under any circumstances. Allow about eight
+minutes: most of that is the gate waiting on its own pull request's CI.
+
+```bash
+MERGE_PR_LIVE=1 MERGE_PR_LIVE_MERGE=1 \
+  go test ./scripts/ -run TestLiveMergeAdminInvocation -count=1 -v -timeout 20m
+```
+
 ---
 
 ## License
