@@ -25,9 +25,9 @@ import (
 // verbatim from the entry so a reworded entry fails loudly instead of
 // silently dropping the fix from the release notes.
 var unreleasedUserVisibleFixes = map[string]string{
-	"websocket change-push delivery": "WebSocket clients no longer miss a change published while they connect",
-	"sqlite race coverage":           "SQLite store backend is now race-tested on every run",
-	"json store file corruption":     "JSON store file",
+	"websocket change-push delivery":  "WebSocket clients no longer miss a change published while they connect",
+	"sqlite race coverage":            "SQLite store backend is now race-tested on every run",
+	"json store file corruption":      "JSON store file",
 	"backup verify/restore soundness": "backup",
 }
 
