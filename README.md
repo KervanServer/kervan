@@ -994,8 +994,16 @@ default backend and the SQLite backend), the store suite on a real
 `windows-latest` runner, and the WebUI checks. The Docker image build is
 release work and is skipped on pull requests.
 
-`master` is not branch-protected, so those checks are reported rather
-than enforced - green them locally with `make check` before opening a PR.
+Every push to `master` runs the same jobs. This matters for the merge
+commit specifically: a pull-request run validates the PR head, which is a
+different commit from the one that lands, so without the push trigger
+nothing would verify what `master` actually contains after a merge.
+
+`master` is branch-protected. Merging requires all five checks to pass on
+an up-to-date branch, plus one approving review. An admin may merge without
+that review; the override is recorded in the pull request timeline. Green
+everything locally first with `make check`, which runs the same checks on
+both store backends.
 
 ---
 
