@@ -6,7 +6,7 @@ LDFLAGS := -s -w \
   -X github.com/kervanserver/kervan/internal/build.Commit=$(COMMIT) \
   -X github.com/kervanserver/kervan/internal/build.Date=$(DATE)
 
-.PHONY: build webui test check check-sqlite audit clean docker-build compose-config compose-up compose-down release-snapshot release-check interop merge-pr
+.PHONY: build webui test check check-sqlite audit clean docker-build compose-config compose-up compose-down release-snapshot release-check interop merge-pr ci-sample
 
 build: webui
 	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/kervan ./cmd/kervan
@@ -51,6 +51,18 @@ check-sqlite:
 #   make merge-pr PR=123 ADMIN=1  additionally use the admin override
 merge-pr:
 	@scripts/merge-pr.sh
+
+# ci-sample dispatches the CI workflow N times and counts only SETTLED
+# check-runs. `gh run watch` returning does not mean the check-run read next
+# has settled: reading immediately yields conclusion="" while the job is still
+# running, which is indistinguishable from a failure. The script therefore polls
+# until every check-run at the head reports status=completed, and checks status
+# alongside conclusion, so an unsettled job is never counted as green.
+#
+#   make ci-sample N=10
+#   make ci-sample N=10 JOB="Windows Store Tests" REF=master
+ci-sample:
+	@scripts/ci-sample.sh
 
 # audit scans Go code (reachable stdlib/module vulnerabilities) and the WebUI
 # dependency tree for known security advisories.
