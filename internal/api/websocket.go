@@ -142,14 +142,11 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return writeFrameSafe(wsOpcodeText, raw)
 	}
 
-	if err := sendSnapshot(); err != nil {
-		return
-	}
-
-	// Event-driven: a change to a requested resource triggers a snapshot
-	// after a short debounce (bursts collapse into one frame); a slow
-	// heartbeat keeps uptime-style counters fresh. Without a broker, fall
-	// back to polling.
+	// Subscribe BEFORE the first snapshot. A client commonly changes state
+	// as soon as the upgrade completes, and until this broker registration
+	// exists a publish has no subscriber to reach: the notification is
+	// discarded outright (not even coalesced away) and the client waits for
+	// the next heartbeat instead of an event-driven push.
 	heartbeat := wsHeartbeatInterval
 	var changes <-chan struct{}
 	if s.events != nil {
@@ -159,6 +156,11 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	} else {
 		heartbeat = wsPollInterval
 	}
+
+	if err := sendSnapshot(); err != nil {
+		return
+	}
+
 	ticker := time.NewTicker(heartbeat)
 	defer ticker.Stop()
 	var debounce <-chan time.Time

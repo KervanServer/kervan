@@ -41,6 +41,60 @@ func readServerFrame(t *testing.T, r *bufio.Reader) []byte {
 	return payload
 }
 
+// A change published the instant the client reads its first frame must still
+// be pushed. That is only guaranteed if the handler registered its broker
+// subscription before sending that frame: otherwise the publish finds no
+// subscriber, is discarded outright, and the client waits for the 15s
+// heartbeat instead of the 200ms debounce.
+//
+// The window between the frame reaching the client and the handler reaching
+// its Subscribe call is a scheduling race, so this repeats the connect ->
+// publish -> expect-push sequence. With the subscription registered after the
+// first snapshot, some iterations lose the push and the deadline expires.
+func TestWebSocketDeliversChangeRacingTheFirstSnapshot(t *testing.T) {
+	const iterations = 30
+	for i := 0; i < iterations; i++ {
+		func() {
+			srv, _ := newAuthTestServer(t, false)
+			srv.sessions = session.NewManager()
+			srv.events = events.NewBroker()
+			srv.sessions.SetOnChange(srv.events.Publisher(events.TopicSessions))
+			token, _ := signToken(srv.secret, "alice", time.Hour)
+
+			ts := httptest.NewServer(http.HandlerFunc(srv.handleWebSocket))
+			defer ts.Close()
+			conn, err := net.Dial("tcp", strings.TrimPrefix(ts.URL, "http://"))
+			if err != nil {
+				t.Fatalf("iteration %d: dial: %v", i, err)
+			}
+			defer conn.Close()
+			_, _ = conn.Write([]byte("GET /api/v1/ws?types=sessions HTTP/1.1\r\nHost: x\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n" +
+				"Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nAuthorization: Bearer " + token + "\r\n\r\n"))
+			r := bufio.NewReader(conn)
+			resp, err := http.ReadResponse(r, nil)
+			if err != nil || resp.StatusCode != http.StatusSwitchingProtocols {
+				t.Fatalf("iteration %d: upgrade: %v %v", i, resp, err)
+			}
+			_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+
+			// Read the initial snapshot, then publish with no delay at all.
+			var first map[string]any
+			_ = json.Unmarshal(readServerFrame(t, r), &first)
+			started := time.Now()
+			srv.sessions.Start("alice", "sftp", "10.0.0.1:2222")
+
+			var next map[string]any
+			_ = json.Unmarshal(readServerFrame(t, r), &next)
+			if elapsed := time.Since(started); elapsed >= wsHeartbeatInterval {
+				t.Fatalf("iteration %d: push took %v — that is the heartbeat, not a change push", i, elapsed)
+			}
+			if got := next["sessions"].([]any); len(got) != 1 {
+				t.Fatalf("iteration %d: pushed sessions = %d, want 1", i, len(got))
+			}
+		}()
+	}
+}
+
 func TestWebSocketPushesOnSessionChange(t *testing.T) {
 	srv, _ := newAuthTestServer(t, false)
 	srv.sessions = session.NewManager()
