@@ -328,6 +328,29 @@ func (s *Server) writeMetrics(w io.Writer) {
 		}
 	}
 
+	// Audit delivery: the file output is written synchronously and never
+	// drops (writers wait instead); remote outputs have their own queues
+	// and drop, per output, only when those overflow.
+	for _, st := range s.audit.Stats() {
+		labels := map[string]string{"output": strconv.Itoa(st.Output), "type": st.Type}
+		emitter.add(
+			"kervan_audit_events_dropped_total",
+			"counter",
+			"Audit events an output never received because its queue was full or the server was shutting down.",
+			float64(st.Dropped),
+			labels,
+		)
+		if st.Queued {
+			emitter.add(
+				"kervan_audit_queue_length",
+				"gauge",
+				"Audit events waiting in a remote output's queue.",
+				float64(st.QueueLength),
+				labels,
+			)
+		}
+	}
+
 	if s.transfers != nil {
 		stats := s.transfers.Stats()
 		emitter.add("kervan_transfers_active", "gauge", "Currently active transfers.", float64(stats.ActiveTransfers), nil)

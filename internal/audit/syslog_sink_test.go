@@ -3,10 +3,12 @@ package audit
 import (
 	"bufio"
 	"context"
+	"errors"
 	"io"
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -171,5 +173,148 @@ func TestSyslogOptionsValidation(t *testing.T) {
 	s, err := NewSyslogSink(SyslogSinkOptions{URL: "tls://siem.example"})
 	if err != nil || s.address != "siem.example:6514" || s.tlsCfg.ServerName != "siem.example" {
 		t.Fatalf("tls defaults: %+v %v", s, err)
+	}
+}
+
+// stuckCollector accepts TCP connections and never reads from them, like a
+// syslog collector that has hung: once the socket buffers fill, every
+// write blocks. release drops the connections, which fails any write still
+// blocked on them; it also runs at cleanup and is safe to call twice.
+func stuckCollector(t *testing.T) (addr string, release func()) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var conns []net.Conn
+	var mu sync.Mutex
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			conns = append(conns, c)
+			mu.Unlock()
+		}
+	}()
+	release = func() {
+		_ = ln.Close()
+		mu.Lock()
+		defer mu.Unlock()
+		for _, c := range conns {
+			_ = c.Close()
+		}
+	}
+	t.Cleanup(release)
+	return ln.Addr().String(), release
+}
+
+// fillUntilBlocked writes large events until one is still blocked after
+// a short while, i.e. the collector's buffers are full. It returns that
+// write's result channel.
+func fillUntilBlocked(t *testing.T, sink *SyslogSink, ctx context.Context) <-chan error {
+	t.Helper()
+	evt := testEvent
+	evt.Message = strings.Repeat("x", 64<<10)
+	deadline := time.Now().Add(20 * time.Second)
+	for time.Now().Before(deadline) {
+		done := make(chan error, 1)
+		go func() { done <- sink.Write(ctx, evt) }()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("write failed before the collector filled up: %v", err)
+			}
+		case <-time.After(300 * time.Millisecond):
+			return done // this write is stuck
+		}
+	}
+	t.Fatal("collector never stopped accepting data")
+	return nil
+}
+
+// Cancelling the context interrupts a write that is stuck on a collector
+// that stopped reading, instead of waiting out the sink's own timeout, and
+// a cancelled context starts no new write.
+func TestSyslogWriteHonoursContextCancellation(t *testing.T) {
+	addr, release := stuckCollector(t)
+	// A timeout far longer than the test: only cancellation can unblock.
+	sink, err := NewSyslogSink(SyslogSinkOptions{URL: "tcp://" + addr, Hostname: "h", Timeout: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Drop the collector first: if cancellation did not work, a write still
+	// holds the sink's lock and Close would otherwise wait for it.
+	defer func() { release(); _ = sink.Close() }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	stuck := fillUntilBlocked(t, sink, ctx)
+	start := time.Now()
+	cancel()
+	select {
+	case err := <-stuck:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("interrupted write returned %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancelling the context did not interrupt a blocked syslog write")
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("write took %v to notice cancellation", elapsed)
+	}
+
+	// The interrupted connection was discarded, and a cancelled context
+	// does not even try again.
+	sink.mu.Lock()
+	connGone := sink.conn == nil
+	sink.mu.Unlock()
+	if !connGone {
+		t.Fatal("connection with a partially written frame was kept")
+	}
+	if err := sink.Write(ctx, testEvent); !errors.Is(err, context.Canceled) {
+		t.Fatalf("write with a cancelled context = %v, want context.Canceled", err)
+	}
+}
+
+// End to end: Engine.Close must finish within its drain timeout when the
+// syslog collector has stopped reading, and count what it gave up on.
+func TestEngineCloseBoundedBySyslogCollectorThatStoppedReading(t *testing.T) {
+	addr, release := stuckCollector(t)
+	syslog, err := NewSyslogSink(SyslogSinkOptions{URL: "tcp://" + addr, Hostname: "h", Timeout: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	file := &recordingSink{}
+	e := NewEngine(nil, file, syslog)
+	e.drainTimeout = 500 * time.Millisecond
+
+	// Enough large events to fill the socket buffers and leave more queued.
+	big := strings.Repeat("y", 64<<10)
+	const n = 400
+	for i := 0; i < n; i++ {
+		e.Emit(Event{Type: EventFileWrite, Path: "/f" + strconv.Itoa(i), Message: big})
+	}
+
+	start := time.Now()
+	closed := make(chan struct{})
+	go func() { e.Close(); close(closed) }()
+	select {
+	case <-closed:
+	case <-time.After(10 * time.Second):
+		release() // let the hung Close finish before the test ends
+		<-closed
+		t.Fatal("Engine.Close hung on a syslog collector that stopped reading")
+	}
+	if elapsed := time.Since(start); elapsed > 3*time.Second {
+		t.Fatalf("Engine.Close took %v with a 500ms drain timeout", elapsed)
+	}
+	if got := file.count(); got != n {
+		t.Fatalf("file sink got %d of %d events", got, n)
+	}
+	st := e.Stats()[1]
+	if st.Type != "syslog" || st.Dropped == 0 {
+		t.Fatalf("syslog stats after a cut-off drain = %+v, want undelivered events counted as dropped", st)
 	}
 }

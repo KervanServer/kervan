@@ -2,7 +2,84 @@
 
 ## Unreleased
 
+### Fixed
+
+- **WebSocket clients no longer miss a change published while they connect.**
+  The `/api/ws` handler sent its first snapshot and only afterwards registered
+  its subscription to change events. A client that changed state as soon as the
+  upgrade completed published into that window, where the broker had no
+  subscriber at all: the notification was discarded outright — not even
+  coalesced away — and the client learned of nothing until the 15-second
+  heartbeat, instead of the 200 ms an event-driven push takes. The subscription
+  is now registered before the first snapshot, so a change racing it is
+  buffered and pushed as soon as the loop starts.
+  The window is a scheduling race, so it surfaced only on a busy runner:
+  `TestWebSocketPushesOnSessionChange` failed intermittently under `-race`
+  with an i/o timeout. Instrumenting the broker and the event loop showed
+  `Publish` reaching zero registered subscribers, the subscription being
+  registered only afterwards, and the first frame arriving at ~15.002 s — the
+  heartbeat, not the debounce. `TestWebSocketDeliversChangeRacingTheFirstSnapshot`
+  now covers it; note that it discriminates under load only.
+
+- **API-key requests no longer rewrite the store on every call.** Each
+  request authenticated with an API key saved the key's last-used time,
+  which rewrote the whole JSON store file and its backup, turning read
+  traffic into one store write per request. The time is now saved at most
+  once a minute per key, inside a store transaction, so it also cannot
+  recreate a key deleted while a request through it was in flight.
+  Successful sign-ins (FTP, SFTP, WebUI, OIDC) follow the same rule for
+  the user's last-login time, which cost one store rewrite per sign-in.
+  A sign-in after a failed attempt or a lockout still writes at once, so
+  the failure counter is always reset before it can count towards a
+  lockout.
+
+- **Audit events are no longer dropped when the queue fills up.** The audit
+  engine discarded events once its 1024-event queue was full, and wrote to
+  every output in turn, so one slow HTTP or syslog collector held up the
+  audit file and made those drops more likely. File outputs now never lose
+  an event: callers wait instead. Each HTTP/webhook/syslog output has its
+  own 4096-event queue and worker, and drops only its own events when that
+  overflows. `/metrics` gains `kervan_audit_events_dropped_total` and
+  `kervan_audit_queue_length`, per output.
+  The 5-second shutdown drain is a hard limit: a syslog send blocked on a
+  collector that stopped reading is interrupted instead of holding up
+  shutdown.
+
+- **Quotas are shared by all of a user's sessions.** Every FTP/SFTP/SCP
+  connection and every WebUI/API file request used to get its own quota
+  tracker, each measured from storage when it was created. Parallel
+  sessions could therefore together store more than the quota, and every
+  API file request walked the user's whole directory tree. One tracker per
+  user is now shared (`quota.Registry`). A changed quota reaches open
+  sessions at the user's next sign-in or request. Trackers follow the
+  account's ID, so a rename keeps the usage and a deleted account
+  re-created under the same name starts fresh. Trackers of deleted
+  accounts are dropped by the 30-second access sweep. When an FTP/SFTP/SCP
+  connection or an API request ends, uploads it left open stop counting
+  as in progress, so one dropped upload cannot block re-measurement.
+
 ### Changed
+
+- **CI:** the SQLite store backend is now race-tested on every run. `make
+  check` and the CI race job both ran the suite with the default JSON backend
+  only, so the SQLite engine's own concurrency — its `BEGIN IMMEDIATE`
+  transactions and cross-process locking, the reason it exists — was never
+  exercised under the detector and was covered only by ad-hoc local commands,
+  which is coverage that decays. `make check-sqlite` runs the suite against
+  SQLite and is wired into `make check`; a matching `race-sqlite` CI job mirrors
+  it, and a `windows` job runs the store suite on both backends. The CI gofmt
+  step also now reads tracked files only (`git ls-files`), matching
+  `make check`, so a local scratch file cannot fail the hosted gate.
+
+- **`quota.check_interval` takes effect.** A user's usage is re-measured
+  from storage at sign-in once the last measurement is older than this
+  (default `60s`; `0` or a negative value also means `60s`, never
+  "re-measure on every request"), and only while none of their uploads,
+  deletes or renames is in progress. A user whose changes have been in
+  progress without a break for ten intervals (at least 10 minutes) is
+  re-measured anyway, so a change that is never ended cannot stop
+  re-measurement for good. The setting no longer triggers the "no
+  effect" startup warning.
 
 - **License: MIT.** Added `LICENSE`. It ships in the release archives and
   in the container image (`/usr/share/licenses/kervan/LICENSE`, with the

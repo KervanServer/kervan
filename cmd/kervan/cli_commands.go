@@ -511,10 +511,17 @@ func runUserCreateCommand(stdout io.Writer, args []string) error {
 		return fmt.Errorf("create user %s: %w", strings.TrimSpace(*username), err)
 	}
 	if primary != nil {
-		user.PrimaryGroup = primary.Name
-		if err := ctx.repo.Update(user); err != nil {
+		saved, err := ctx.repo.Mutate(user.ID, func(u *auth.User) error {
+			u.PrimaryGroup = primary.Name
+			return nil
+		})
+		if err == nil && saved == nil {
+			err = errors.New("user not found")
+		}
+		if err != nil {
 			return fmt.Errorf("assign group %s: %w", primary.Name, err)
 		}
+		user = saved
 	}
 
 	if *jsonOut {
@@ -1000,29 +1007,29 @@ func createImportedUser(ctx *cliContext, record userImportRecord) (*auth.User, e
 		return nil, errors.New("password or password_hash is required")
 	}
 
-	needsUpdate := false
-	if user.Email != strings.TrimSpace(record.Email) {
-		user.Email = strings.TrimSpace(record.Email)
-		needsUpdate = true
+	email := strings.TrimSpace(record.Email)
+	needsUpdate := user.Email != email || user.Type != userType ||
+		(record.Enabled != nil && user.Enabled != *record.Enabled) ||
+		strings.TrimSpace(user.HomeDir) != homeDir
+	if !needsUpdate {
+		return user, nil
 	}
-	if user.Type != userType {
-		user.Type = userType
-		needsUpdate = true
-	}
-	if record.Enabled != nil && user.Enabled != *record.Enabled {
-		user.Enabled = *record.Enabled
-		needsUpdate = true
-	}
-	if strings.TrimSpace(user.HomeDir) != homeDir {
-		user.HomeDir = homeDir
-		needsUpdate = true
-	}
-	if needsUpdate {
-		if err := ctx.repo.Update(user); err != nil {
-			return nil, fmt.Errorf("update imported user %s: %w", username, err)
+	saved, err := ctx.repo.Mutate(user.ID, func(u *auth.User) error {
+		u.Email = email
+		u.Type = userType
+		if record.Enabled != nil {
+			u.Enabled = *record.Enabled
 		}
+		u.HomeDir = homeDir
+		return nil
+	})
+	if err == nil && saved == nil {
+		err = errors.New("user not found")
 	}
-	return user, nil
+	if err != nil {
+		return nil, fmt.Errorf("update imported user %s: %w", username, err)
+	}
+	return saved, nil
 }
 
 func resolveImportedUserType(role, rawType string) (auth.UserType, error) {

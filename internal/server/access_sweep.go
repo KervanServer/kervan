@@ -22,6 +22,9 @@ func (a *App) runAccessSweeper(ctx context.Context) {
 			return
 		case now := <-ticker.C:
 			a.revokeIneligibleSessions(now)
+			// Quota trackers are keyed by user ID, so a re-created account
+			// never inherits one; this only frees deleted accounts' entries.
+			a.pruneQuotaTrackers()
 		}
 	}
 }

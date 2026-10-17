@@ -394,10 +394,17 @@ func createMigratedProFTPDUser(ctx *cliContext, entry proFTPDUserEntry) (*auth.U
 			return nil, fmt.Errorf("create migrated user %s: %w", entry.Username, err)
 		}
 		if entry.Disabled {
-			user.Enabled = false
-			if err := ctx.repo.Update(user); err != nil {
+			saved, err := ctx.repo.Mutate(user.ID, func(u *auth.User) error {
+				u.Enabled = false
+				return nil
+			})
+			if err == nil && saved == nil {
+				err = errors.New("user not found")
+			}
+			if err != nil {
 				return nil, fmt.Errorf("disable migrated user %s: %w", entry.Username, err)
 			}
+			user = saved
 		}
 		return user, nil
 	default:
@@ -610,15 +617,24 @@ func createOrUpdateAuthorizedKeyUser(ctx *cliContext, username, homeDir string, 
 		return user, len(user.AuthorizedKeys), nil
 	}
 
-	before := len(user.AuthorizedKeys)
-	user.AuthorizedKeys = uniqueStrings(append(user.AuthorizedKeys, keys...))
-	if strings.TrimSpace(user.HomeDir) == "" || user.HomeDir == "/" {
-		user.HomeDir = homeDir
+	// Merge into the latest stored keys, so keys a running server added
+	// meanwhile are kept rather than overwritten.
+	before := 0
+	saved, err := ctx.repo.Mutate(user.ID, func(u *auth.User) error {
+		before = len(u.AuthorizedKeys)
+		u.AuthorizedKeys = uniqueStrings(append(append([]string(nil), u.AuthorizedKeys...), keys...))
+		if strings.TrimSpace(u.HomeDir) == "" || u.HomeDir == "/" {
+			u.HomeDir = homeDir
+		}
+		return nil
+	})
+	if err == nil && saved == nil {
+		err = errors.New("user not found")
 	}
-	if err := ctx.repo.Update(user); err != nil {
+	if err != nil {
 		return nil, 0, fmt.Errorf("update authorized keys for user %s: %w", username, err)
 	}
-	return user, len(user.AuthorizedKeys) - before, nil
+	return saved, len(saved.AuthorizedKeys) - before, nil
 }
 
 func uniqueStrings(in []string) []string {

@@ -347,6 +347,9 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, implicitTLS bool
 		pbszSet:         false,
 		dataProtPrivate: false,
 	}
+	// However the connection ends, give back the session's filesystem state
+	// (quota changes of uploads a client abandoned mid-transfer).
+	defer func() { vfs.ReleaseFS(state.fs) }()
 	if implicitTLS {
 		tlsConn := tls.Server(conn, s.cfg.TLSConfig)
 		if err := tlsConn.Handshake(); err != nil {
@@ -462,8 +465,11 @@ func (s *Server) handleConn(ctx context.Context, conn net.Conn, implicitTLS bool
 				s.sessions.End(state.session.ID)
 				state.session = nil
 			}
+			vfs.ReleaseFS(state.fs)
+			state.fs = nil
 			sess, started := s.sessions.StartLimited(user.Username, "ftp", state.remoteAddr, user.MaxSessions)
 			if !started {
+				vfs.ReleaseFS(userFS)
 				state.user, state.fs = nil, nil
 				writeReply(conn, 530, "Login not allowed: too many concurrent sessions.")
 				s.emitAudit(audit.EventAuthFailure, user.Username, "ftp", "", state.remoteAddr, "failed", auth.ErrTooManySessions.Error())

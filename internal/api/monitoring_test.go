@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kervanserver/kervan/internal/audit"
 	"github.com/kervanserver/kervan/internal/auth"
 	"github.com/kervanserver/kervan/internal/session"
 	"github.com/kervanserver/kervan/internal/store"
@@ -427,5 +428,40 @@ func TestHandleAuditPageBoundedAllocation(t *testing.T) {
 	}
 	if allocated > 40<<20 {
 		t.Fatalf("serving a 100-event page from a ~5.6MB audit log allocated %d bytes: handleAudit must not replay and decode the whole log per request", allocated)
+	}
+}
+
+// /metrics reports, per audit output, the events it dropped, and for remote
+// outputs the length of their own queue. The file output never drops.
+func TestMetricsReportAuditDeliveryPerOutput(t *testing.T) {
+	file, err := audit.NewFileSink(filepath.Join(t.TempDir(), "audit.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	syslog, err := audit.NewSyslogSink(audit.SyslogSinkOptions{URL: "udp://127.0.0.1:1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := audit.NewEngine(nil, file, syslog)
+	t.Cleanup(engine.Close)
+	srv := &Server{audit: engine}
+
+	rec := httptest.NewRecorder()
+	srv.handleMetrics(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := rec.Body.String()
+	assertContains(t, body, "# TYPE kervan_audit_events_dropped_total counter")
+	assertContains(t, body, `kervan_audit_events_dropped_total{output="1",type="file"} 0`)
+	assertContains(t, body, `kervan_audit_events_dropped_total{output="2",type="syslog"} 0`)
+	assertContains(t, body, "# TYPE kervan_audit_queue_length gauge")
+	assertContains(t, body, `kervan_audit_queue_length{output="2",type="syslog"}`)
+	if strings.Contains(body, `kervan_audit_queue_length{output="1"`) {
+		t.Fatal("the synchronous file output has no queue and must not report one")
+	}
+
+	// Without an audit engine (audit disabled) there are no audit series.
+	rec = httptest.NewRecorder()
+	(&Server{}).handleMetrics(rec, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	if strings.Contains(rec.Body.String(), "kervan_audit_") {
+		t.Fatal("audit metrics reported with no audit engine")
 	}
 }

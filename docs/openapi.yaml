@@ -2089,6 +2089,7 @@ components:
         debug_port: {type: integer}
         data_dir: {type: string}
         store_path: {type: string}
+        store_backend: {type: string, enum: [json, sqlite], description: Backend of the user/config store.}
         storage_backend: {type: string}
         storage_root: {type: string}
         audit_log_path: {type: string}

@@ -48,7 +48,7 @@ marks aspirational items from the spec as *planned*.
 
 ## Requirements
 
-- **Go 1.26.1+** (toolchain pinned to `go1.26.8` in [go.mod](go.mod))
+- **Go 1.26.1+** (toolchain pinned to `go1.26.9` in [go.mod](go.mod))
 - Linux, macOS or Windows (tested on Windows 11, Linux amd64/arm64)
 
 ---
@@ -134,6 +134,8 @@ API key scopes currently include surfaces such as `server:read`,
 `files:read`, `files:write`, `share:write`, `audit:read`,
 `sessions:write`, and `transfers:read`. Presets (`read-only`,
 `automation`, `operations`, `read-write`) expand to curated scope sets.
+A key's "last used" time is updated at most once a minute, so frequent
+API calls do not each rewrite the store.
 
 ---
 
@@ -423,8 +425,17 @@ All protocols share a common VFS layer ([internal/vfs](internal/vfs)):
 - **Backends shipped:**
   - `local` — filesystem directory rooted at `storage.backends.local.options.root`.
   - `memory` — in-process backend used for tests and ephemeral workloads.
-- **Planned backends:** S3-compatible (AWS / MinIO / R2) with SigV4, multipart
-  upload, directory emulation and metadata sidecar (Spec §4.4.2).
+  - `s3` — S3-compatible object storage (AWS, MinIO, R2, …) through Kervan's
+    own SigV4 client. Options: `endpoint`, `region`, `bucket`, `prefix`,
+    `access_key`, `secret_key`, `force_path_style`, `disable_ssl`. Each
+    user's home directory becomes a key prefix, and directories are
+    emulated with empty marker objects.
+- **S3 limits:** an object is downloaded to a temporary file when opened and
+  uploaded in one `PutObject` when a written file is closed, so large files
+  need local temporary space and are limited by S3's single-PUT maximum
+  (5 GB); multipart upload is not implemented. Permissions and times are not
+  stored, and symlinks are unsupported. The metadata sidecar from Spec
+  §4.4.2 is not implemented.
 
 ---
 
@@ -540,6 +551,19 @@ Groups are permission and storage-quota templates:
   `quota.default_max_files` as the default. Overwriting a file does not
   count as a new one. Quotas only apply when `quota.enabled` is
   true, and never to admins.
+- A user's quota is shared by all of their connections and WebUI/API
+  requests, so parallel uploads cannot together exceed it. Usage is
+  tracked on every write and re-measured from storage at sign-in once the
+  last measurement is older than `quota.check_interval` (default `60s`;
+  `0` or a negative value also means `60s`) and none of the user's
+  uploads, deletes or renames is in progress. An upload left unfinished
+  by a dropped connection stops counting as in progress when that
+  connection ends, and changes in progress never hold off a
+  re-measurement for more than ten intervals (at least 10 minutes).
+  That picks up files changed outside Kervan. A changed
+  quota takes effect for open connections at the user's next sign-in or
+  file request. Renaming an account keeps its usage; a deleted account
+  re-created under the same name starts from a fresh measurement.
 - **Secondary groups** record membership only.
 - Renaming a group updates its members. A group with members can only be
   deleted with `force`, which removes the memberships.
@@ -647,6 +671,17 @@ subsystem check.
   files.
 - HTTP/webhook outputs support custom headers, batch size, flush interval and
   retry count for downstream audit collectors.
+- **Delivery guarantees:** `file` outputs never lose an event. If they fall
+  behind, the actions being audited wait for them rather than events being
+  dropped. Each `http`, `webhook` and `syslog` output has its own queue
+  (4096 events), so a slow or unreachable collector never delays the audit
+  file or other outputs. When such a queue is full, that output alone skips
+  events. At shutdown, remote outputs get 5 seconds to send what is queued;
+  a send still in progress then is interrupted, even to a collector that has
+  stopped reading, and what was not sent counts as dropped.
+  `/metrics` reports `kervan_audit_events_dropped_total` and, for remote
+  outputs, `kervan_audit_queue_length`, both labelled with the output's
+  position in `audit.outputs` (`output="2"`) and its `type`.
 - Events are also queryable over the REST API at `/api/v1/audit/events`.
 - `kervan backup create` packages the embedded store, its `.bak` recovery copy,
   the audit log and the active config into a ZIP archive for offline recovery.
@@ -912,7 +947,7 @@ All listeners (FTP, FTPS, SFTP/SCP and the WebUI/API) share these controls:
 - **Settings without effect** — a few keys are accepted for compatibility but
   do nothing in this release (`ftp.ascii_transfer`,
   `sftp.host_key_algorithms`, `sftp.disable_shell`, `auth.default_provider`,
-  `auth.ldap.connection_pool_size`, `quota.check_interval`, `mcp.transport` other than `stdio`). The server logs
+  `auth.ldap.connection_pool_size`, `mcp.transport` other than `stdio`). The server logs
   a warning at startup when one of them is changed from its default.
 
 ---
@@ -931,19 +966,23 @@ Shipped: FTP/FTPS/SFTP/SCP, local, LDAP and OIDC sign-in with TOTP and SSH
 keys, per-user sign-in restrictions, groups, storage/file-count quotas,
 bandwidth limits, local/memory/S3 storage, password-protected share links,
 API keys, a tamper-evident audit log with file/HTTP/syslog sinks, backup and
-restore, migrations, the WebUI with live updates, Prometheus metrics, and the
-`stdio` MCP server.
+restore, migrations, the WebUI with live updates, Prometheus metrics, the
+`stdio` MCP server, an OpenAPI reference ([docs/openapi.yaml](docs/openapi.yaml)),
+a contributor guide, and fuzz targets for the FTP, SFTP and SCP parsers
+(see [CONTRIBUTING.md](CONTRIBUTING.md#fuzzing)).
 
 Before v1.0:
 
-- An OpenAPI reference for the REST API and a contributor guide.
 - Interop checks with more clients (FileZilla, WinSCP, lftp, Cyberduck).
-- Fuzz tests for the FTP and SFTP parsers.
+- Multipart uploads for the S3 backend.
 
 Later (see [.project/SPECIFICATION.md](.project/SPECIFICATION.md)):
 
 - A queryable audit store and a database-backed metadata store for large
-  installations.
+  installations. Every write to today's JSON store rewrites the whole file,
+  so writes slow down as the number of users grows (about 34 ms at 1,000
+  users and 110 ms at 10,000 on SSD). [.project/STORE-DESIGN.md](.project/STORE-DESIGN.md)
+  measures this and recommends embedded SQLite.
 
 ---
 

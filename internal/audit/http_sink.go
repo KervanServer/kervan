@@ -102,6 +102,9 @@ func (s *HTTPSink) Write(ctx context.Context, evt Event) error {
 	return s.sendBatch(ctx, batch)
 }
 
+// queuedDelivery marks the sink for its own engine queue (see queuedSink).
+func (s *HTTPSink) queuedDelivery() {}
+
 func (s *HTTPSink) Close() error {
 	s.mu.Lock()
 	if s.closed {

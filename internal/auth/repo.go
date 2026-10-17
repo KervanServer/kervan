@@ -228,14 +228,56 @@ func (r *UserRepository) List() ([]*User, error) {
 	return users, nil
 }
 
+// lastLoginResolution is how stale a user's stored last-login time may get
+// before a successful sign-in writes a newer one. Every store write
+// rewrites the whole store file and its backup, at a cost that grows with
+// the number of users, so recording each sign-in made busy accounts (FTP
+// clients reconnecting per transfer, scripts) one store write per login.
+const lastLoginResolution = time.Minute
+
+// errLastLoginFresh aborts the UpdateLastLogin transaction without writing.
+var errLastLoginFresh = errors.New("last-login time is already fresh")
+
+// UpdateLastLogin records a successful sign-in: it sets LastLoginAt and
+// clears the failed-login counter and any lockout.
+//
+// The write is skipped when it would change nothing that matters: the
+// stored time is less than lastLoginResolution old and there is no failure
+// count or lockout to clear. A sign-in after a failure therefore always
+// resets the counter at once, so earlier failures never count towards a
+// later lockout.
 func (r *UserRepository) UpdateLastLogin(id string) error {
-	_, err := r.Mutate(id, func(u *User) error {
-		now := time.Now().UTC()
+	now := time.Now().UTC()
+	fresh := func(u *User) bool {
+		return u.FailedLogins == 0 && u.LockedUntil == nil &&
+			u.LastLoginAt != nil && now.Sub(*u.LastLoginAt) < lastLoginResolution
+	}
+
+	// The common case, an account signing in again within the window,
+	// costs one read and no write.
+	current, err := r.GetByID(id)
+	if err != nil {
+		return err
+	}
+	if current != nil && fresh(current) {
+		return nil
+	}
+
+	// Otherwise write inside one transaction against the latest stored
+	// record, re-checking there, so concurrent sign-ins write once and
+	// fields other writers changed meanwhile are kept.
+	_, err = r.Mutate(id, func(u *User) error {
+		if fresh(u) {
+			return errLastLoginFresh
+		}
 		u.LastLoginAt = &now
 		u.FailedLogins = 0
 		u.LockedUntil = nil
 		return nil
 	})
+	if errors.Is(err, errLastLoginFresh) {
+		return nil
+	}
 	return err
 }
 

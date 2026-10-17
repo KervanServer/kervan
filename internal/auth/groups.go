@@ -224,21 +224,25 @@ func (r *GroupRepository) rewriteMemberships(from, to string) error {
 		return err
 	}
 	key := groupIndexKey(from)
-	for _, u := range members {
-		if groupIndexKey(u.PrimaryGroup) == key {
-			u.PrimaryGroup = to
-		}
-		secondary := u.SecondaryGrps[:0]
-		for _, g := range u.SecondaryGrps {
-			switch {
-			case groupIndexKey(g) != key:
-				secondary = append(secondary, g)
-			case to != "":
-				secondary = append(secondary, to)
+	for _, member := range members {
+		// Rewrite the latest stored record: only the group references
+		// change, so a member's concurrent edits are kept.
+		if _, err := r.users.Mutate(member.ID, func(u *User) error {
+			if groupIndexKey(u.PrimaryGroup) == key {
+				u.PrimaryGroup = to
 			}
-		}
-		u.SecondaryGrps = secondary
-		if err := r.users.Update(u); err != nil {
+			secondary := make([]string, 0, len(u.SecondaryGrps))
+			for _, g := range u.SecondaryGrps {
+				switch {
+				case groupIndexKey(g) != key:
+					secondary = append(secondary, g)
+				case to != "":
+					secondary = append(secondary, to)
+				}
+			}
+			u.SecondaryGrps = secondary
+			return nil
+		}); err != nil {
 			return err
 		}
 	}

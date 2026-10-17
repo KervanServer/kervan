@@ -2,6 +2,21 @@
 
 > Auto-generated comprehensive analysis of Kervan
 > Generated: 2026-04-11
+>
+> **Status update (2026-10-16).** This report is a snapshot from April and
+> several findings are no longer true. Corrected below in place (marked
+> *Update 2026-10-16*); the metrics tables were not re-measured.
+>
+> | April finding | Now |
+> |---|---|
+> | IP allow/deny lists and `max_connections` not enforced | Enforced on every listener (`internal/netguard`, used by FTP, SFTP/SCP and the API), plus a per-IP connection cap and a cross-protocol brute-force IP ban. |
+> | S3 backend "partial" | Shipped as a VFS backend (`storage/s3`, own SigV4 client). Still missing: multipart upload (one `PutObject` per file, 5 GB limit) and the metadata sidecar. |
+> | "No benchmarks or fuzzing" | Five fuzz targets: `FuzzFTPCommands`, `FuzzFTPParsers`, `FuzzSFTPHandler`, `FuzzSCPSink`, `FuzzParseSCPExec` (see `CONTRIBUTING.md#fuzzing`). |
+> | `go test -race` not runnable | Runs in `make check`. |
+> | No CSP or HSTS | Both set by the API middleware (`internal/api/server.go`). |
+> | Toolchain / deps | Go toolchain `go1.26.9`; direct deps `golang.org/x/crypto` v0.58.0, `golang.org/x/sys` v0.49.0, `gopkg.in/yaml.v3`. |
+> | Store "mislabeled and under-documented" | Still a whole-file JSON store, now transactional across processes. Its scaling limit (every write rewrites the file: ~34 ms at 1,000 users, ~110 ms at 10,000 on SSD) is measured in [STORE-DESIGN.md](STORE-DESIGN.md), which recommends embedded SQLite. |
+> | Groups, OIDC, syslog audit sink missing | Implemented (`/api/v1/groups`, OIDC WebUI sign-in, `syslog` audit output). |
 
 ## 1. Executive Summary
 
@@ -34,7 +49,7 @@ Top strengths:
 Top concerns:
 - The documented architecture and the actual architecture diverge sharply. The spec is CobaltDB-centric; the implementation uses a JSON file store in `internal/store/store.go`.
 - The MCP/CLI/deployment task matrix still overstates what is fully shipped. The MCP server exists, but the tool/resource surface is still a narrow MVP and several admin/packaging items remain partial.
-- Several declared config/security controls are not enforced at runtime, including IP allow/deny lists and connection limits.
+- ~~Several declared config/security controls are not enforced at runtime, including IP allow/deny lists and connection limits.~~ *Update 2026-10-16: enforced; see the status table above.*
 
 ## 2. Architecture Analysis
 
@@ -193,8 +208,8 @@ Good:
 
 Risks:
 - WebSocket updates are polling snapshots, not event-based.
-- S3 `PutObject` reads the full body into memory (`internal/storage/s3/client.go:139-153`).
-- `go test -race` could not be run here because the environment lacked CGO support.
+- ~~S3 `PutObject` reads the full body into memory (`internal/storage/s3/client.go:139-153`).~~ *Update 2026-10-16: it spools to a temporary file.*
+- `go test -race` could not be run here because the environment lacked CGO support. *Update 2026-10-16: it runs in `make check`.*
 
 ### 3.4 Security Assessment
 
@@ -207,9 +222,9 @@ Positive:
 - Zero findings from `govulncheck` and `npm audit --omit=dev`
 
 Important gaps:
-- `security.allowed_ips` / `security.denied_ips` are validated but not enforced anywhere.
-- `max_connections` config fields are present but unused.
-- No CSP or HSTS headers.
+- ~~`security.allowed_ips` / `security.denied_ips` are validated but not enforced anywhere.~~ *Update 2026-10-16: enforced on FTP, SFTP/SCP and the API.*
+- ~~`max_connections` config fields are present but unused.~~ *Update 2026-10-16: enforced per protocol, plus `security.max_connections_per_ip`.*
+- ~~No CSP or HSTS headers.~~ *Update 2026-10-16: both are set.*
 - Request-body size limits are inconsistent; only multipart user import applies a hard size cap.
 
 ## 4. Testing Assessment
@@ -244,8 +259,8 @@ Strengths:
 
 Weaknesses:
 - No Playwright/Cypress.
-- No benchmarks or fuzzing.
-- `go test -race` is not currently executable in this environment.
+- ~~No benchmarks or fuzzing.~~ *Update 2026-10-16: five fuzz targets cover the FTP, SFTP and SCP parsers.*
+- ~~`go test -race` is not currently executable in this environment.~~ *Update 2026-10-16: part of `make check`.*
 
 ## 5. Specification vs Implementation Gap Analysis
 
@@ -265,7 +280,7 @@ Weaknesses:
 | API keys for automation auth | ⚠️ Partial | API key auth exists for the HTTP API, but the broader automation story is still narrower than the original spec. |
 | Groups/group API | ❌ Missing | Not implemented. |
 | Quotas | ⚠️ Partial | Byte quota + file size limit only. |
-| S3 backend + metadata sidecar | ⚠️ Partial | Backend exists; planned metadata DB layer does not. |
+| S3 backend + metadata sidecar | ⚠️ Partial | Backend shipped (update 2026-10-16); multipart upload and the metadata sidecar are still missing. |
 | Audit sinks (file/http/syslog/db) | ⚠️ Partial | File + HTTP/webhook only. |
 | MCP server | ⚠️ Partial | Only 3 tools and 3 resources. |
 | Docker scratch image | ❌ Missing | Final image is Alpine. |
@@ -314,7 +329,7 @@ This is mostly good scope creep. It improves operability.
 Highest-impact missing or partial components:
 1. group model + group API
 2. OIDC
-3. enforced IP/network security controls
+3. ~~enforced IP/network security controls~~ (done, update 2026-10-16)
 4. CobaltDB/queryable audit layer promised by docs
 5. richer FTP RFC support
 6. browser-level frontend E2E coverage
@@ -322,7 +337,8 @@ Highest-impact missing or partial components:
 ## 6. Performance & Scalability
 
 Performance observations:
-- S3 uploads buffer full bodies in memory.
+- ~~S3 uploads buffer full bodies in memory.~~ *Update 2026-10-16: spooled to a temporary file; no multipart upload.*
+- *Update 2026-10-16:* every store write rewrites the whole JSON file; cost grows with the number of users (measured in [STORE-DESIGN.md](STORE-DESIGN.md)).
 - WebSocket snapshots are rebuilt every 2 seconds per client.
 - Audit reads are file scans, not indexed queries.
 - Frontend uses route-level lazy loading, but the shared chunks are still fairly large.
@@ -349,9 +365,13 @@ DX problems:
 
 2. `internal/store/store.go:23-36` vs docs/health payloads
    Persistence architecture is mislabeled and under-documented.
+   *Update 2026-10-16: documented; the remaining issue is scaling, see
+   [STORE-DESIGN.md](STORE-DESIGN.md).*
 
 3. `internal/storage/s3/client.go:139-153`
-   Large uploads are buffered in memory.
+   ~~Large uploads are buffered in memory.~~
+   *Update 2026-10-16: they are spooled to a temporary file, not memory; the
+   remaining limit is no multipart upload (5 GB per object).*
 
 ### 🟡 Important
 

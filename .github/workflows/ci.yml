@@ -31,7 +31,9 @@ jobs:
 
       - name: Run gofmt check
         run: |
-          files="$(find . -name '*.go' -not -path './webui/*' -not -path './vendor/*')"
+          # git ls-files, not find: it matches tracked sources only, so local
+          # scratch dirs (.temp_files/) and vendored trees cannot fail the build.
+          files="$(git ls-files '*.go' | grep -v '^webui/')"
           test -n "$files"
           unformatted="$(gofmt -l $files)"
           if [ -n "$unformatted" ]; then
@@ -71,6 +73,59 @@ jobs:
       - name: Run Go tests with -race
         env:
           CGO_ENABLED: "1"
+        run: go test -race ./... -count=1
+
+  windows:
+    name: Windows Store Tests
+    runs-on: windows-latest
+
+    # internal/store has two build-tagged platform implementations that no
+    # Linux job can exercise: replaceFile and lockFile in atomic_windows.go
+    # (MoveFileEx + LockFileEx). They are compile-verified by the backend job
+    # only. GOOS=windows cannot help here — it cross-compiles, it does not run
+    # the tests — so this job needs a real Windows runner.
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run store tests (JSON backend)
+        run: go test ./internal/store/ -count=1 -v
+
+      - name: Run store tests (SQLite backend)
+        env:
+          KERVAN_STORE_BACKEND: sqlite
+        run: go test ./internal/store/ -count=1
+
+      - name: Build binary for Windows
+        env:
+          CGO_ENABLED: "0"
+        run: go build ./cmd/kervan
+
+  race-sqlite:
+    name: Race Detector (SQLite backend)
+    runs-on: ubuntu-latest
+
+    # The backend and race jobs above only exercise the default JSON backend.
+    # The SQLite engine exists to improve concurrency, so its transactions and
+    # locking need the detector too. Mirrors `make check-sqlite`.
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Run Go tests with -race against the SQLite backend
+        env:
+          CGO_ENABLED: "1"
+          KERVAN_STORE_BACKEND: sqlite
         run: go test -race ./... -count=1
 
   webui:

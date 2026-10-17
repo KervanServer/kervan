@@ -1,7 +1,6 @@
 package store
 
 import (
-	"encoding/json"
 	"errors"
 	"runtime"
 )
@@ -25,12 +24,12 @@ func (s *Store) checkNotInUpdate() error {
 }
 
 // runTx runs fn with the calling goroutine marked as the transaction owner,
-// clearing the mark even if fn panics. The caller holds persistMu, so there
-// is at most one owner per Store.
-func (s *Store) runTx(fn func(tx *Tx) error, work map[string]json.RawMessage) error {
+// clearing the mark even if fn panics. Backends run at most one transaction
+// per Store at a time, so there is at most one owner.
+func (s *Store) runTx(fn func(tx *Tx) error, tx *Tx) error {
 	s.txOwner.Store(goroutineID())
 	defer s.txOwner.Store(0)
-	return fn(&Tx{s: s, data: work})
+	return fn(tx)
 }
 
 // goroutineID parses the current goroutine's id from its stack header,

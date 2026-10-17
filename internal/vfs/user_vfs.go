@@ -6,6 +6,7 @@ import (
 	"os"
 	"path"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/kervanserver/kervan/internal/throttle"
@@ -19,12 +20,46 @@ type QuotaTracker interface {
 	OnFilesRemoved(n int64)
 }
 
+// QuotaChangeMarker is implemented by quota trackers that are shared between
+// sessions and occasionally re-measured from storage. UserVFS brackets every
+// change to usage (an open write handle, a remove, a rename) with
+// BeginChange/EndChange, so a re-measurement never runs while reserved or
+// released usage has not yet reached storage.
+type QuotaChangeMarker interface {
+	BeginChange()
+	EndChange()
+}
+
+// Releaser is implemented by filesystems that hold per-session state which
+// must be given back when the session ends, whether or not the client closed
+// everything it opened.
+type Releaser interface {
+	Release()
+}
+
+// ReleaseFS releases fsys if it holds per-session state. It is safe to call
+// with nil and with filesystems that hold none.
+func ReleaseFS(fsys FileSystem) {
+	if r, ok := fsys.(Releaser); ok {
+		r.Release()
+	}
+}
+
+// UserVFS is one session's view of a user's storage: one per FTP/SFTP/SCP
+// connection or WebUI/API request. Its owner calls Release when the session
+// ends.
 type UserVFS struct {
 	mounts      *MountTable
 	resolver    *Resolver
 	permissions *UserPermissions
 	quota       QuotaTracker
 	limiters    []*throttle.Limiter
+
+	// changes holds the quota changes this session has begun and not yet
+	// ended (mostly open write handles), so Release can end them.
+	changesMu  sync.Mutex
+	changes    map[uint64]func()
+	nextChange uint64
 }
 
 func NewUserVFS(mounts *MountTable, perms *UserPermissions, quota QuotaTracker) *UserVFS {
@@ -82,11 +117,17 @@ func (u *UserVFS) Open(name string, flags int, perm os.FileMode) (File, error) {
 	// life of the process. One Stat serves both quota facts, so a write open
 	// pays at most one extra HEAD on the S3 backend.
 	var truncatedBytes int64
+	// The change stays open until the write handle is closed.
+	endChange := func() {}
+	if isWrite && u.quota != nil {
+		endChange = u.beginQuotaChange()
+	}
 	if isWrite && u.quota != nil && (flags&os.O_CREATE != 0 || flags&os.O_TRUNC != 0) {
 		info, statErr := backend.Stat(relPath)
 		switch {
 		case statErr != nil && errors.Is(statErr, os.ErrNotExist) && flags&os.O_CREATE != 0:
 			if err := u.quota.OnFileCreated(); err != nil {
+				endChange()
 				return nil, err
 			}
 			reservedFile = true
@@ -99,6 +140,7 @@ func (u *UserVFS) Open(name string, flags int, perm os.FileMode) (File, error) {
 		if reservedFile {
 			u.quota.OnFilesRemoved(1)
 		}
+		endChange()
 		return nil, err
 	}
 	if len(u.limiters) > 0 {
@@ -126,9 +168,59 @@ func (u *UserVFS) Open(name string, flags int, perm os.FileMode) (File, error) {
 			size:        initialSize,
 			offset:      initialOffset,
 			maxFileSize: u.permissions.MaxFileSize,
+			endChange:   endChange,
 		}, nil
 	}
 	return f, nil
+}
+
+// beginQuotaChange marks a usage change in progress on a shared tracker and
+// returns the function that ends it; calling that more than once is safe.
+// The change is recorded so Release can end it if the caller never does.
+func (u *UserVFS) beginQuotaChange() func() {
+	marker, ok := u.quota.(QuotaChangeMarker)
+	if !ok {
+		return func() {}
+	}
+	marker.BeginChange()
+	u.changesMu.Lock()
+	defer u.changesMu.Unlock()
+	if u.changes == nil {
+		u.changes = make(map[uint64]func())
+	}
+	id := u.nextChange
+	u.nextChange++
+	var once sync.Once
+	end := func() {
+		once.Do(func() {
+			u.changesMu.Lock()
+			delete(u.changes, id)
+			u.changesMu.Unlock()
+			marker.EndChange()
+		})
+	}
+	u.changes[id] = end
+	return end
+}
+
+// Release ends every quota change this session still has open, typically
+// write handles a disconnected or aborted client never closed. Without it
+// one leaked handle would keep the user's shared tracker "busy" and stop
+// re-measuring from storage for good. Handles closed later end nothing a
+// second time. Only the session that owns this UserVFS may call Release.
+func (u *UserVFS) Release() {
+	if u == nil {
+		return
+	}
+	u.changesMu.Lock()
+	ends := make([]func(), 0, len(u.changes))
+	for _, end := range u.changes {
+		ends = append(ends, end)
+	}
+	u.changesMu.Unlock()
+	for _, end := range ends {
+		end()
+	}
 }
 
 func (u *UserVFS) Stat(name string) (os.FileInfo, error) {
@@ -168,6 +260,9 @@ func (u *UserVFS) Rename(oldname, newname string) error {
 	// Renaming onto an existing file replaces it: release its usage, or the
 	// quota would keep counting data that no longer exists.
 	var replacedBytes, replacedFiles int64
+	if u.quota != nil {
+		defer u.beginQuotaChange()()
+	}
 	if u.quota != nil && oldRel != newRel {
 		if info, err := newBackend.Stat(newRel); err == nil && !info.IsDir() {
 			replacedBytes, replacedFiles = info.Size(), 1
@@ -196,6 +291,7 @@ func (u *UserVFS) Remove(name string) error {
 	}
 	var reclaimBytes, reclaimFiles int64
 	if u.quota != nil {
+		defer u.beginQuotaChange()()
 		reclaimBytes, reclaimFiles, _ = measureUsageForQuota(backend, rel)
 	}
 	if err := backend.Remove(rel); err != nil {
@@ -221,6 +317,7 @@ func (u *UserVFS) RemoveAll(name string) error {
 	}
 	var reclaimBytes, reclaimFiles int64
 	if u.quota != nil {
+		defer u.beginQuotaChange()()
 		reclaimBytes, reclaimFiles, _ = measureUsageForQuota(backend, rel)
 	}
 	if err := backend.RemoveAll(rel); err != nil {
@@ -402,6 +499,18 @@ type quotaFile struct {
 	size        int64
 	offset      int64
 	maxFileSize int64
+	// endChange ends the quota change opened for this write handle.
+	endChange func()
+}
+
+// Close ends the handle's quota change only after the backend has finished
+// writing (S3 uploads on Close), so a re-measurement sees the final size.
+func (q *quotaFile) Close() error {
+	err := q.File.Close()
+	if q.endChange != nil {
+		q.endChange()
+	}
+	return err
 }
 
 func (q *quotaFile) Write(p []byte) (int, error) {

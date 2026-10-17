@@ -81,32 +81,41 @@ func (e *Engine) ProvisionExternalUser(id ExternalIdentity, autoCreate bool) (*U
 		return user, nil
 	}
 
-	if !strings.EqualFold(user.AuthProvider, id.Provider) {
-		return nil, ErrAccountConflict
-	}
-	if user.ExternalID != "" && user.ExternalID != id.Subject {
-		return nil, ErrAccountConflict
-	}
-	if !user.Enabled {
-		return nil, ErrUserDisabled
-	}
-	user.ExternalID = id.Subject
-	if id.Email != "" {
-		user.Email = id.Email
-	}
-	if id.Admin != nil {
-		if *id.Admin {
-			user.Type = UserTypeAdmin
-		} else {
-			user.Type = UserTypeVirtual
+	// Check and sync against the latest stored record in one transaction, so
+	// a disable or local edit saved since the lookup is neither bypassed nor
+	// overwritten.
+	saved, err := e.repo.Mutate(user.ID, func(u *User) error {
+		if !strings.EqualFold(u.AuthProvider, id.Provider) {
+			return ErrAccountConflict
 		}
-	}
-	if id.SyncGroups {
-		user.PrimaryGroup = id.PrimaryGroup
-		user.SecondaryGrps = id.SecondaryGroups
-	}
-	if err := e.repo.Update(user); err != nil {
+		if u.ExternalID != "" && u.ExternalID != id.Subject {
+			return ErrAccountConflict
+		}
+		if !u.Enabled {
+			return ErrUserDisabled
+		}
+		u.ExternalID = id.Subject
+		if id.Email != "" {
+			u.Email = id.Email
+		}
+		if id.Admin != nil {
+			if *id.Admin {
+				u.Type = UserTypeAdmin
+			} else {
+				u.Type = UserTypeVirtual
+			}
+		}
+		if id.SyncGroups {
+			u.PrimaryGroup = id.PrimaryGroup
+			u.SecondaryGrps = append([]string(nil), id.SecondaryGroups...)
+		}
+		return nil
+	})
+	if err != nil {
 		return nil, err
 	}
-	return user, nil
+	if saved == nil {
+		return nil, ErrNotProvisioned
+	}
+	return saved, nil
 }

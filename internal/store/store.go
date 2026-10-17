@@ -5,240 +5,201 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
-	"sort"
 	"strings"
-	"sync"
 	"sync/atomic"
 )
 
 var ErrNotFound = errors.New("not found")
 
-// Store is a JSON-file key/value store. The server and CLI commands open the
-// same file concurrently, so every write is a locked read-modify-write of the
-// file (only the touched key changes) and reads pick up changes written by
-// other processes. Without this, a CLI "user create" against a running
-// server was invisible to it and was silently erased by the server's next
-// write.
-type Store struct {
-	path       string
-	backupPath string
-	lockPath   string
-	mu         sync.RWMutex
-	persistMu  sync.Mutex
-	data       map[string]json.RawMessage
-	stamp      os.FileInfo   // primary file as last loaded or written; guarded by mu
-	dirty      bool          // a write failed to persist; guarded by persistMu
-	txOwner    atomic.Uint64 // goroutine running an Update callback, 0 if none
+// Backend names accepted by OpenWithOptions and KERVAN_STORE_BACKEND.
+const (
+	// BackendJSON is the default: one kervan-store.json (plus .bak) under
+	// the data directory, rewritten in full on every write.
+	BackendJSON = "json"
+	// BackendSQLite stores the same records in kervan-store.db (SQLite in
+	// WAL mode). It is not the default yet; see .project/STORE-DESIGN.md.
+	BackendSQLite = "sqlite"
+)
+
+// backendEnv selects the backend when Options.Backend is empty. It exists so
+// the whole test suite can run against either backend without code changes;
+// it is not a supported configuration knob yet.
+const backendEnv = "KERVAN_STORE_BACKEND"
+
+// Options configures Open.
+type Options struct {
+	// Backend is BackendJSON (default) or BackendSQLite.
+	Backend string
 }
 
+// backend is the storage engine behind Store. Store does the JSON encoding
+// of values, the composite collection:key naming used by the JSON file, and
+// the ErrInsideUpdate guard; a backend only moves raw values.
+type backend interface {
+	get(collection, key string) (json.RawMessage, bool, error)
+	put(collection, key string, raw json.RawMessage) error
+	del(collection, key string) error
+	// list returns a collection's values ordered by key.
+	list(collection string) ([]json.RawMessage, error)
+	// update runs fn in one transaction; fn's error rolls it back.
+	update(fn func(txBackend) error) error
+	close() error
+}
+
+// txBackend is a backend's view inside update. Reads see the transaction's
+// own writes.
+type txBackend interface {
+	get(collection, key string) (json.RawMessage, bool, error)
+	put(collection, key string, raw json.RawMessage) error
+	del(collection, key string) error
+}
+
+// Store is the key/value store for users, groups, API keys, share links and
+// system secrets. The server and CLI commands open the same store at the
+// same time, so every backend makes writes from one process visible to the
+// other and never loses them.
+type Store struct {
+	b       backend
+	kind    string
+	txOwner atomic.Uint64 // goroutine running an Update callback, 0 if none
+}
+
+// Open opens the store in dataDir with the default backend (JSON, unless
+// KERVAN_STORE_BACKEND says otherwise).
 func Open(dataDir string) (*Store, error) {
+	return OpenWithOptions(dataDir, Options{})
+}
+
+// OpenWithOptions opens the store in dataDir with the given options.
+func OpenWithOptions(dataDir string, opts Options) (*Store, error) {
 	if err := os.MkdirAll(dataDir, 0o750); err != nil {
 		return nil, fmt.Errorf("create data directory %s: %w", dataDir, err)
 	}
-	path := filepath.Join(dataDir, "kervan-store.json")
-	s := &Store{
-		path:       path,
-		backupPath: path + ".bak",
-		lockPath:   path + ".lock",
-		data:       make(map[string]json.RawMessage),
+	kind := ResolveBackend(opts.Backend)
+	var (
+		b   backend
+		err error
+	)
+	switch kind {
+	case BackendJSON:
+		b, err = openJSONBackend(dataDir)
+	case BackendSQLite:
+		b, err = openSQLiteBackend(dataDir)
+	default:
+		return nil, fmt.Errorf("unknown store backend %q (want %q or %q)", kind, BackendJSON, BackendSQLite)
 	}
-	if err := s.load(); err != nil {
-		return nil, fmt.Errorf("load store from %s: %w", path, err)
+	if err != nil {
+		return nil, err
 	}
-	if info, err := os.Stat(path); err == nil {
-		s.stamp = info
-	}
-	return s, nil
+	return &Store{b: b, kind: kind}, nil
 }
 
-// Close persists any write that previously failed to reach disk. It never
-// rewrites an up-to-date store: a stale snapshot written on Close would undo
-// another process's changes.
+// ResolveBackend returns the backend Open would use for the given option:
+// the option itself, else KERVAN_STORE_BACKEND, else BackendJSON. The name
+// is normalised but not validated.
+func ResolveBackend(option string) string {
+	kind := strings.ToLower(strings.TrimSpace(option))
+	if kind == "" {
+		kind = strings.ToLower(strings.TrimSpace(os.Getenv(backendEnv)))
+	}
+	if kind == "" {
+		kind = BackendJSON
+	}
+	return kind
+}
+
+// FileName returns the name of the store's main file in the data directory
+// for a backend: kervan-store.json or kervan-store.db.
+func FileName(backend string) string {
+	if ResolveBackend(backend) == BackendSQLite {
+		return sqliteFileName
+	}
+	return "kervan-store.json"
+}
+
+// Backend reports which backend the store uses.
+func (s *Store) Backend() string { return s.kind }
+
+// Path returns the store's main file.
+func (s *Store) Path() string {
+	if p, ok := s.b.(interface{ filePath() string }); ok {
+		return p.filePath()
+	}
+	return ""
+}
+
+// ErrSnapshotUnsupported is returned by Snapshot for backends whose files
+// are copied directly instead (the JSON backend replaces its file
+// atomically on every write, so a plain copy is already consistent).
+var ErrSnapshotUnsupported = errors.New("store: backend does not take snapshots")
+
+// Snapshot writes a consistent copy of the whole store to dst, which must
+// not exist, while the store stays in use (other processes included).
+func (s *Store) Snapshot(dst string) error {
+	if err := s.checkNotInUpdate(); err != nil {
+		return err
+	}
+	sn, ok := s.b.(interface{ snapshot(string) error })
+	if !ok {
+		return ErrSnapshotUnsupported
+	}
+	return sn.snapshot(dst)
+}
+
+// Close releases the store. For the JSON backend it also persists a write
+// that previously failed to reach disk.
 func (s *Store) Close() error {
 	if err := s.checkNotInUpdate(); err != nil {
 		return err
 	}
-	s.persistMu.Lock()
-	defer s.persistMu.Unlock()
-	if !s.dirty {
-		return nil
-	}
-	return s.mutateLocked(func(map[string]json.RawMessage) {})
-}
-
-func (s *Store) Put(collection, key string, value any) error {
-	if err := s.checkNotInUpdate(); err != nil {
-		return err
-	}
-	raw, err := json.Marshal(value)
-	if err != nil {
-		return fmt.Errorf("marshal value for %s/%s: %w", collection, key, err)
-	}
-	ck := s.composite(collection, key)
-	s.persistMu.Lock()
-	defer s.persistMu.Unlock()
-	return s.mutateLocked(func(data map[string]json.RawMessage) { data[ck] = raw })
-}
-
-// mutateLocked applies one change as a read-modify-write of the store file
-// under the cross-process lock. The caller holds persistMu.
-func (s *Store) mutateLocked(apply func(map[string]json.RawMessage)) error {
-	unlock, err := lockFile(s.lockPath)
-	if err != nil {
-		return fmt.Errorf("lock store %s: %w", s.lockPath, err)
-	}
-	defer unlock()
-	s.refresh()
-	s.mu.Lock()
-	apply(s.data)
-	s.mu.Unlock()
-	if err := s.flush(); err != nil {
-		s.dirty = true
-		return err
-	}
-	s.dirty = false
-	return nil
-}
-
-// refresh reloads the primary file when another process replaced it since
-// it was last loaded or written here. A file that cannot be read keeps the
-// in-memory state, which the next write then repairs.
-func (s *Store) refresh() {
-	info, err := os.Stat(s.path)
-	if err != nil {
-		return
-	}
-	s.mu.RLock()
-	current := s.stamp != nil && os.SameFile(s.stamp, info) && s.stamp.ModTime().Equal(info.ModTime()) && s.stamp.Size() == info.Size()
-	s.mu.RUnlock()
-	if current {
-		return
-	}
-	decoded, _, err := loadStoreFile(s.path)
-	if err != nil {
-		return
-	}
-	s.mu.Lock()
-	s.data = decoded
-	s.stamp = info
-	s.mu.Unlock()
-}
-
-// Tx is the view of the store inside Update. Reads see the transaction's own
-// writes; nothing is visible to other readers until Update commits.
-type Tx struct {
-	s    *Store
-	data map[string]json.RawMessage
-}
-
-func (tx *Tx) Get(collection, key string, out any) error {
-	raw, ok := tx.data[tx.s.composite(collection, key)]
-	if !ok {
-		return ErrNotFound
-	}
-	if err := json.Unmarshal(raw, out); err != nil {
-		return fmt.Errorf("decode value for %s/%s: %w", collection, key, err)
-	}
-	return nil
-}
-
-func (tx *Tx) Put(collection, key string, value any) error {
-	raw, err := json.Marshal(value)
-	if err != nil {
-		return fmt.Errorf("marshal value for %s/%s: %w", collection, key, err)
-	}
-	tx.data[tx.s.composite(collection, key)] = raw
-	return nil
-}
-
-func (tx *Tx) Delete(collection, key string) {
-	delete(tx.data, tx.s.composite(collection, key))
-}
-
-// Update runs fn as one read-check-write transaction under the cross-process
-// lock, against the latest file contents. Its writes are persisted together
-// in a single flush; if fn returns an error nothing changes. fn must use only
-// tx: Store methods called from fn's goroutine return ErrInsideUpdate.
-func (s *Store) Update(fn func(tx *Tx) error) error {
-	if err := s.checkNotInUpdate(); err != nil {
-		return err
-	}
-	s.persistMu.Lock()
-	defer s.persistMu.Unlock()
-	unlock, err := lockFile(s.lockPath)
-	if err != nil {
-		return fmt.Errorf("lock store %s: %w", s.lockPath, err)
-	}
-	defer unlock()
-	s.refresh()
-	s.mu.RLock()
-	work := make(map[string]json.RawMessage, len(s.data))
-	for k, v := range s.data {
-		work[k] = v
-	}
-	s.mu.RUnlock()
-	if err := s.runTx(fn, work); err != nil {
-		return err
-	}
-	s.mu.Lock()
-	s.data = work
-	s.mu.Unlock()
-	if err := s.flush(); err != nil {
-		s.dirty = true
-		return err
-	}
-	s.dirty = false
-	return nil
+	return s.b.close()
 }
 
 func (s *Store) Get(collection, key string, out any) error {
 	if err := s.checkNotInUpdate(); err != nil {
 		return err
 	}
-	s.refresh()
-	s.mu.RLock()
-	raw, ok := s.data[s.composite(collection, key)]
-	s.mu.RUnlock()
+	raw, ok, err := s.b.get(collection, key)
+	if err != nil {
+		return err
+	}
 	if !ok {
 		return ErrNotFound
 	}
-	if err := json.Unmarshal(raw, out); err != nil {
-		return fmt.Errorf("decode value for %s/%s: %w", collection, key, err)
+	return decodeValue(collection, key, raw, out)
+}
+
+func (s *Store) Put(collection, key string, value any) error {
+	if err := s.checkNotInUpdate(); err != nil {
+		return err
 	}
-	return nil
+	raw, err := encodeValue(collection, key, value)
+	if err != nil {
+		return err
+	}
+	return s.b.put(collection, key, raw)
 }
 
 func (s *Store) Delete(collection, key string) error {
 	if err := s.checkNotInUpdate(); err != nil {
 		return err
 	}
-	ck := s.composite(collection, key)
-	s.persistMu.Lock()
-	defer s.persistMu.Unlock()
-	return s.mutateLocked(func(data map[string]json.RawMessage) { delete(data, ck) })
+	return s.b.del(collection, key)
 }
 
+// List decodes every value in collection, ordered by key, into out (a
+// pointer to a slice).
 func (s *Store) List(collection string, out any) error {
 	if err := s.checkNotInUpdate(); err != nil {
 		return err
 	}
-	s.refresh()
-	prefix := collection + ":"
-	s.mu.RLock()
-	keys := make([]string, 0, len(s.data))
-	for k := range s.data {
-		if strings.HasPrefix(k, prefix) {
-			keys = append(keys, k)
-		}
+	rows, err := s.b.list(collection)
+	if err != nil {
+		return err
 	}
-	sort.Strings(keys)
-	rows := make([]json.RawMessage, 0, len(keys))
-	for _, k := range keys {
-		rows = append(rows, s.data[k])
+	if rows == nil {
+		rows = []json.RawMessage{}
 	}
-	s.mu.RUnlock()
-
 	joined, err := json.Marshal(rows)
 	if err != nil {
 		return fmt.Errorf("marshal list for collection %s: %w", collection, err)
@@ -249,81 +210,64 @@ func (s *Store) List(collection string, out any) error {
 	return nil
 }
 
-func (s *Store) composite(collection, key string) string {
-	return collection + ":" + key
+// Tx is the view of the store inside Update. Reads see the transaction's own
+// writes; nothing is visible to other readers until Update commits.
+type Tx struct {
+	b txBackend
 }
 
-func (s *Store) load() error {
-	decoded, _, err := loadStoreFile(s.path)
-	if err == nil {
-		s.data = decoded
-		return nil
-	}
-	if !errors.Is(err, os.ErrNotExist) {
-		backupDecoded, backupRaw, backupErr := loadStoreFile(s.backupPath)
-		if backupErr == nil {
-			s.data = backupDecoded
-			_ = writeFileAtomically(s.path, backupRaw, 0o600)
-			return nil
-		}
-		return fmt.Errorf("load store: %w; backup recovery failed: %v", err, backupErr)
-	}
-
-	backupDecoded, backupRaw, backupErr := loadStoreFile(s.backupPath)
-	if backupErr == nil {
-		s.data = backupDecoded
-		_ = writeFileAtomically(s.path, backupRaw, 0o600)
-		return nil
-	}
-	if errors.Is(backupErr, os.ErrNotExist) {
-		return nil
-	}
-	return backupErr
-}
-
-func (s *Store) flush() error {
-	snapshot := s.snapshot()
-	raw, err := json.MarshalIndent(snapshot, "", "  ")
+func (tx *Tx) Get(collection, key string, out any) error {
+	raw, ok, err := tx.b.get(collection, key)
 	if err != nil {
-		return fmt.Errorf("marshal store snapshot: %w", err)
+		return err
 	}
-	if err := writeFileAtomically(s.path, raw, 0o600); err != nil {
-		return fmt.Errorf("write store file %s: %w", s.path, err)
+	if !ok {
+		return ErrNotFound
 	}
-	if info, err := os.Stat(s.path); err == nil {
-		s.mu.Lock()
-		s.stamp = info
-		s.mu.Unlock()
+	return decodeValue(collection, key, raw, out)
+}
+
+func (tx *Tx) Put(collection, key string, value any) error {
+	raw, err := encodeValue(collection, key, value)
+	if err != nil {
+		return err
 	}
-	if err := writeFileAtomically(s.backupPath, raw, 0o600); err != nil {
-		return fmt.Errorf("write store backup file %s: %w", s.backupPath, err)
+	return tx.b.put(collection, key, raw)
+}
+
+// Delete removes a key. A backend error is reported when Update commits.
+func (tx *Tx) Delete(collection, key string) {
+	if err := tx.b.del(collection, key); err != nil {
+		if r, ok := tx.b.(interface{ fail(error) }); ok {
+			r.fail(err)
+		}
+	}
+}
+
+// Update runs fn as one read-check-write transaction against the latest
+// committed state, under the cross-process lock. Its writes are committed
+// together; if fn returns an error nothing changes. fn must use only tx:
+// Store methods called from fn's goroutine return ErrInsideUpdate.
+func (s *Store) Update(fn func(tx *Tx) error) error {
+	if err := s.checkNotInUpdate(); err != nil {
+		return err
+	}
+	return s.b.update(func(tb txBackend) error {
+		return s.runTx(fn, &Tx{b: tb})
+	})
+}
+
+func encodeValue(collection, key string, value any) (json.RawMessage, error) {
+	raw, err := json.Marshal(value)
+	if err != nil {
+		return nil, fmt.Errorf("marshal value for %s/%s: %w", collection, key, err)
+	}
+	return raw, nil
+}
+
+func decodeValue(collection, key string, raw json.RawMessage, out any) error {
+	if err := json.Unmarshal(raw, out); err != nil {
+		return fmt.Errorf("decode value for %s/%s: %w", collection, key, err)
 	}
 	return nil
-}
-
-func (s *Store) snapshot() map[string]json.RawMessage {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	cloned := make(map[string]json.RawMessage, len(s.data))
-	for key, value := range s.data {
-		cloned[key] = append(json.RawMessage(nil), value...)
-	}
-	return cloned
-}
-
-func loadStoreFile(path string) (map[string]json.RawMessage, []byte, error) {
-	// #nosec G304 -- store file path is resolved from controlled application data directory.
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return nil, nil, fmt.Errorf("read store file %s: %w", path, err)
-	}
-	if len(raw) == 0 {
-		return make(map[string]json.RawMessage), raw, nil
-	}
-	var decoded map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &decoded); err != nil {
-		return nil, nil, fmt.Errorf("decode store file %s: %w", path, err)
-	}
-	return decoded, raw, nil
 }

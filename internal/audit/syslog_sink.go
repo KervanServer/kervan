@@ -157,16 +157,29 @@ func NewSyslogSink(opts SyslogSinkOptions) (*SyslogSink, error) {
 	}, nil
 }
 
-func (s *SyslogSink) dial() (net.Conn, error) {
+func (s *SyslogSink) dial(ctx context.Context) (net.Conn, error) {
 	dialer := &net.Dialer{Timeout: s.timeout}
 	if s.network == "tls" {
-		return tls.DialWithDialer(dialer, "tcp", s.address, s.tlsCfg)
+		td := &tls.Dialer{NetDialer: dialer, Config: s.tlsCfg}
+		return td.DialContext(ctx, "tcp", s.address)
 	}
-	return dialer.Dial(s.network, s.address)
+	return dialer.DialContext(ctx, s.network, s.address)
 }
 
 // Write sends one event, reconnecting once if the connection has failed.
-func (s *SyslogSink) Write(_ context.Context, evt Event) error {
+//
+// ctx bounds the whole call, not just each attempt's own timeout: once it is
+// cancelled no new attempt starts, and a dial or write already in progress
+// is interrupted (the write deadline is pulled into the past, which also
+// discards the connection). The audit engine relies on this to finish its
+// shutdown drain on time when a collector stops reading.
+func (s *SyslogSink) Write(ctx context.Context, evt Event) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	msg := s.Format(evt)
 	frame := []byte(msg)
 	if s.stream {
@@ -176,25 +189,46 @@ func (s *SyslogSink) Write(_ context.Context, evt Event) error {
 	defer s.mu.Unlock()
 	var lastErr error
 	for attempt := 0; attempt < 2; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if s.conn == nil {
-			conn, err := s.dial()
+			conn, err := s.dial(ctx)
 			if err != nil {
 				lastErr = err
 				continue
 			}
 			s.conn = conn
 		}
-		_ = s.conn.SetWriteDeadline(time.Now().Add(s.timeout))
-		if _, err := s.conn.Write(frame); err != nil {
+		conn := s.conn
+		_ = conn.SetWriteDeadline(time.Now().Add(s.timeout))
+		stop := context.AfterFunc(ctx, func() {
+			// Unblocks a Write stuck on a collector that stopped reading.
+			_ = conn.SetWriteDeadline(time.Unix(1, 0))
+		})
+		_, err := conn.Write(frame)
+		stop()
+		if err != nil {
+			// A partially written frame would corrupt the octet-counted
+			// stream, so the connection is discarded either way.
 			lastErr = err
-			_ = s.conn.Close()
+			_ = conn.Close()
 			s.conn = nil
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
+			}
 			continue
 		}
 		return nil
 	}
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return ctxErr
+	}
 	return fmt.Errorf("syslog %s://%s: %w", s.network, s.address, lastErr)
 }
+
+// queuedDelivery marks the sink for its own engine queue (see queuedSink).
+func (s *SyslogSink) queuedDelivery() {}
 
 func (s *SyslogSink) Close() error {
 	s.mu.Lock()

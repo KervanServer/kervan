@@ -2395,13 +2395,18 @@ func TestFTPAborWithNoTransferInProgress(t *testing.T) {
 func TestFTPAborDuringTransfer(t *testing.T) {
 	cc, r, backend := loginOnDataPlane(t)
 
-	// Large enough that the server blocks writing to the unread data socket,
-	// so the transfer is genuinely still in flight when ABOR arrives.
+	// The file must be far larger than what the kernel can buffer between
+	// the server's data socket and our unread client socket. Loopback TCP
+	// autotuning lets those buffers hold several MiB (about 2.6 MiB was
+	// measured with Linux defaults), so a 2 MiB file used to fit entirely:
+	// under load the whole copy finished before ABOR arrived, and the server
+	// rightly answered 226 Transfer complete. instead of 426.
+	const size = 64 << 20
 	w, err := backend.Open("/big.bin", os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	if _, err := w.Write([]byte(strings.Repeat("x", 2<<20))); err != nil {
+	if _, err := w.Write(make([]byte, size)); err != nil {
 		t.Fatalf("seed write: %v", err)
 	}
 	if err := w.Close(); err != nil {
@@ -2412,7 +2417,12 @@ func TestFTPAborDuringTransfer(t *testing.T) {
 	if reply := ftpCmd(t, cc, r, "RETR /big.bin"); !strings.HasPrefix(reply, "150") {
 		t.Fatalf("RETR = %q, want 150", reply)
 	}
-	// Deliberately do NOT read dc: the server blocks mid-copy.
+	// Wait until data is flowing, so ABOR provably lands mid-transfer rather
+	// than racing the server's start of the copy. Then stop reading: the
+	// server blocks with most of the file still unsent.
+	if _, err := io.ReadFull(dc, make([]byte, 64<<10)); err != nil {
+		t.Fatalf("read start of transfer: %v", err)
+	}
 
 	if _, err := cc.Write([]byte("ABOR\r\n")); err != nil {
 		t.Fatalf("write ABOR: %v", err)

@@ -256,6 +256,15 @@ func (s *Server) handleConn(cfg *ssh.ServerConfig, c net.Conn) {
 		_ = sshConn.Close()
 		return
 	}
+	// Channels run in their own goroutines. When the connection ends, close
+	// it so they stop, wait for them, then give back the session's
+	// filesystem state (quota changes of uploads that were never finished).
+	var channels sync.WaitGroup
+	defer func() {
+		_ = sshConn.Close()
+		channels.Wait()
+		vfs.ReleaseFS(userFS)
+	}()
 	maxSessions, _ := strconv.Atoi(sshConn.Permissions.Extensions["max_sessions"])
 	sess, started := s.sessions.StartLimited(username, "sftp", c.RemoteAddr().String(), maxSessions)
 	if !started {
@@ -286,7 +295,9 @@ func (s *Server) handleConn(cfg *ssh.ServerConfig, c net.Conn) {
 		if acceptErr != nil {
 			continue
 		}
+		channels.Add(1)
 		go func() {
+			defer channels.Done()
 			// A panic in one channel must end that channel, not the process:
 			// the connection-level recover does not cover this goroutine.
 			defer func() {
