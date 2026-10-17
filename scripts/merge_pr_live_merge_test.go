@@ -127,7 +127,9 @@ func TestLiveMergeAdminInvocation(t *testing.T) {
 	t.Logf("merged #%s -> %s", pr, mergeSHA[:7])
 
 	git(t, "fetch", "--all", "--prune", "--quiet")
-	if code, _ := ghRun(t, "merge-base", "--is-ancestor", mergeSHA, "origin/master"); code != 0 {
+	// git merge-base, not gh: ghRun prefixes "gh", so this was failing as
+	// `gh merge-base` on every run and reporting a healthy merge as lost.
+	if code, _ := gitRun(t, "merge-base", "--is-ancestor", mergeSHA, "origin/master"); code != 0 {
 		t.Fatalf("merge commit %s is NOT an ancestor of origin/master", mergeSHA[:7])
 	}
 
@@ -260,6 +262,25 @@ func gitSoft(t *testing.T, args ...string) {
 	if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
 		t.Logf("git %s: %v (%s)", strings.Join(args, " "), err, strings.TrimSpace(string(out)))
 	}
+}
+
+// gitRun runs a git subcommand and reports the exit code instead of failing:
+// the caller needs to branch on success. `merge-base --is-ancestor` is the case
+// in point -- exit 0 means yes, 1 means no, and both are ordinary answers
+// rather than errors. Distinct from git (fatal on any non-zero) and gitSoft
+// (logs and discards the result).
+func gitRun(t *testing.T, args ...string) (int, string) {
+	t.Helper()
+	out, err := exec.Command("git", args...).CombinedOutput()
+	if err == nil {
+		return 0, string(out)
+	}
+	var exit *exec.ExitError
+	if ok := asExitError(err, &exit); ok {
+		return exit.ExitCode(), string(out)
+	}
+	t.Fatalf("git %s: %v", strings.Join(args, " "), err)
+	return -1, ""
 }
 
 // isGitSHA reports whether s looks like a full 40-hex git object name, so a
