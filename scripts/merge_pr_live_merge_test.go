@@ -97,7 +97,15 @@ func TestLiveMergeAdminInvocation(t *testing.T) {
 		t.Fatalf("throwaway PR #%s has %s changed file(s); refusing to merge", pr, n)
 	}
 
-	waitForRequiredContexts(t, repo, pr, mergeWaitBudget)
+	// waitForRequiredContexts reads check-runs at commits/$ref, so it needs the
+	// PR's head SHA. Passing the PR number looks plausible (it is a valid ref to
+	// the PR API) but not to the commits API: gh answers 422 "No commit found
+	// for SHA: 14" on every poll, and the wait then never converges.
+	headSHA := strings.TrimSpace(ghOut(t, "pr", "view", pr, "--json", "headRefOid", "--jq", ".headRefOid"))
+	if !isGitSHA(headSHA) {
+		t.Fatalf("could not read the head SHA of throwaway PR #%s, got %q", pr, headSHA)
+	}
+	waitForRequiredContexts(t, repo, headSHA, mergeWaitBudget)
 
 	// The write path under test.
 	code, out := runMergePr(t, pr, true)
