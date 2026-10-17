@@ -986,6 +986,19 @@ Later (see [.project/SPECIFICATION.md](.project/SPECIFICATION.md)):
 
 ---
 
+## Continuous integration
+
+Every pull request runs the CI workflow automatically: backend checks
+(gofmt, `go vet`, `staticcheck`, tests), both race-detector jobs (the
+default backend and the SQLite backend), the store suite on a real
+`windows-latest` runner, and the WebUI checks. The Docker image build is
+release work and is skipped on pull requests.
+
+`master` is not branch-protected, so those checks are reported rather
+than enforced - green them locally with `make check` before opening a PR.
+
+---
+
 ## License
 
 Kervan is released under the [MIT License](LICENSE).
