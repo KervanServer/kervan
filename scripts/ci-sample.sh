@@ -52,7 +52,12 @@ case "$N" in (*[!0-9]*|'') die "N must be a positive integer, got '$N'" 1;; esac
 command -v gh >/dev/null || die "gh not found on PATH" 2
 
 REPO="$(gh repo view --json nameWithOwner --jq .nameWithOwner)"
-HEAD="$(git rev-parse "$REF")"
+# Resolve the ref explicitly: on a detached-HEAD checkout (actions/checkout on a
+# pull_request event) the local branch named by REF may not exist, and a bare
+# `git rev-parse` then exits 128 with no message at all.
+if ! HEAD="$(git rev-parse --verify "$REF^{commit}" 2>/dev/null)"; then
+  die "cannot resolve ref '$REF' in this checkout (detached HEAD? try REF=HEAD)" 2
+fi
 TOTAL=0; GREEN=0; SETTLED_FLAG=0
 
 # One check-run page, parsed by a SINGLE json.load.

@@ -87,6 +87,11 @@ func runSample(t *testing.T, env []string, args ...string) (string, int) {
 	base := append(os.Environ(),
 		"PATH="+dir+string(os.PathListSeparator)+os.Getenv("PATH"),
 		"POLL_INTERVAL=0",
+		// REF=HEAD so the test never depends on an ambient branch name. CI
+		// checks out a detached HEAD for pull_request events, so a local
+		// `master` ref does not exist there -- that made this test fail in CI
+		// with a bare exit 128 while passing locally.
+		"REF=HEAD",
 	)
 	// Invoke by path relative to this package dir, not by bare name: the script
 	// is not installed on PATH, only the fake gh is prepended to it.
