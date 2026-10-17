@@ -127,13 +127,30 @@ func TestEngineRemoteSinkHasItsOwnQueue(t *testing.T) {
 	if !r.Queued || r.Output != 2 || r.Type != "custom" {
 		t.Fatalf("remote sink stats = %+v", r)
 	}
-	// The worker holds one event in a blocked Write; the queue holds
-	// sinkQueueSize more; everything else overflowed.
-	if want := uint64(n - sinkQueueSize - 1); r.Dropped != want {
-		t.Fatalf("remote sink dropped %d events, want %d", r.Dropped, want)
+	// The delivery-accounting invariant: every event is either still queued,
+	// blocked in the worker's Write, or counted as dropped.
+	//
+	// Asserting exact equality here is racy and was: Dropped is incremented
+	// by the engine's fan-out goroutine while QueueLength and the in-flight
+	// event belong to the sink's own worker goroutine, with nothing
+	// synchronising them. Under CPU starvation the worker may not have been
+	// scheduled to pull its first event yet, so the split between the three
+	// buckets moves by one and an exact match failed intermittently
+	// ("dropped 498 events, want 499") while never indicating a real leak.
+	const inFlight = 1 // the event the worker holds while blocked in Write
+	accounted := uint64(r.Dropped) + uint64(r.QueueLength) + inFlight
+	if want := uint64(n); accounted != want {
+		t.Fatalf("remote sink accounted for %d events (dropped %d + queued %d + in-flight %d), want %d",
+			accounted, r.Dropped, r.QueueLength, inFlight, want)
 	}
+	// The queue itself must be full: that is what makes the drop real rather
+	// than an artefact of a slow consumer.
 	if r.QueueLength != sinkQueueSize {
 		t.Fatalf("remote queue length %d, want %d", r.QueueLength, sinkQueueSize)
+	}
+	// And the overflow must be the bulk of the burst, not a rounding error.
+	if want := uint64(n - sinkQueueSize - inFlight); r.Dropped < want-1 || r.Dropped > want+1 {
+		t.Fatalf("remote sink dropped %d events, want %d (+/- 1 for worker scheduling)", r.Dropped, want)
 	}
 
 	// Close does not wait forever for a collector that never answers: the
