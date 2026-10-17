@@ -75,6 +75,15 @@ jobs:
           CGO_ENABLED: "1"
         run: go test -race ./... -count=1
 
+      # TEMPORARY (round 69): amplify only the audit package, not the whole
+      # suite. The full -race suite takes 70s, so -count=100 on ./... would be
+      # ~2h for no extra signal; the flaky assertion lives here and 100
+      # iterations of just this package take ~4m. Remove before merge.
+      - name: Stress the audit queue accounting
+        env:
+          CGO_ENABLED: "1"
+        run: go test -race ./internal/audit/ -count=100
+
   windows:
     name: Windows Store Tests
     runs-on: windows-latest
