@@ -122,8 +122,6 @@ func newHarness(t *testing.T, protection string, runs string) *harness {
 	return h
 }
 
-func runtime_isWindows() bool { return os.PathSeparator == '\\' }
-
 // run executes the real script with PR/ADMIN supplied.
 func (h *harness) run(t *testing.T, env map[string]string) (int, string, string) {
 	t.Helper()
