@@ -6,7 +6,7 @@ LDFLAGS := -s -w \
   -X github.com/kervanserver/kervan/internal/build.Commit=$(COMMIT) \
   -X github.com/kervanserver/kervan/internal/build.Date=$(DATE)
 
-.PHONY: build webui test check check-sqlite audit clean docker-build compose-config compose-up compose-down release-snapshot release-check interop
+.PHONY: build webui test check check-sqlite audit clean docker-build compose-config compose-up compose-down release-snapshot release-check interop merge-pr
 
 build: webui
 	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/kervan ./cmd/kervan
@@ -40,6 +40,17 @@ check:
 check-sqlite:
 	KERVAN_STORE_BACKEND=sqlite go test ./... -count=1
 	CGO_ENABLED=1 KERVAN_STORE_BACKEND=sqlite go test -race ./... -count=1
+
+# merge-pr merges a pull request, but only after scripts/merge-pr.sh pre-flights
+# the live state with gh. Every required check must have a completed,
+# successful check-run AT THE CURRENT HEAD SHA; anything pending or failing
+# refuses the merge. The merge body is then generated from that state, so a
+# merge message cannot assert a check state nobody verified.
+#
+#   make merge-pr PR=123          merge only when the gate is satisfied
+#   make merge-pr PR=123 ADMIN=1  additionally use the admin override
+merge-pr:
+	@scripts/merge-pr.sh
 
 # audit scans Go code (reachable stdlib/module vulnerabilities) and the WebUI
 # dependency tree for known security advisories.
