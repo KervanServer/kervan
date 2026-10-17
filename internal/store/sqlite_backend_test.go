@@ -1,6 +1,9 @@
 package store
 
 import (
+	"context"
+	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -316,5 +319,93 @@ func TestSQLiteConcurrentFirstOpensInitialiseSchema(t *testing.T) {
 				t.Fatalf("round %d: open %d: close: %v", r, i, err)
 			}
 		}
+	}
+}
+
+// A writer that loses the lock race outright must be retried, not reported to
+// the caller as SQLITE_BUSY. This is the behaviour behind the retry: a second
+// connection holds the write lock, busy_timeout is 0 so the BEGIN fails
+// immediately instead of waiting, and update() has to survive the contention
+// that follows rather than failing on the first attempt.
+func TestSQLiteUpdateRetriesWhenTheWriteLockIsBusy(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, sqliteFileName)
+	st := openSQLite(t, dir)
+	if err := st.Put("c", "n", 0); err != nil {
+		t.Fatal(err)
+	}
+
+	prevAttempts, prevBackoff := busyRetryAttempts, busyRetryBackoff
+	busyRetryAttempts, busyRetryBackoff = 200, 5*time.Millisecond
+	t.Cleanup(func() { busyRetryAttempts, busyRetryBackoff = prevAttempts, prevBackoff })
+
+	blocker, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(0)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer blocker.Close()
+	held, err := blocker.BeginTx(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("blocker begin: %v", err)
+	}
+	if _, err := held.Exec(`INSERT INTO kv (coll, k, v) VALUES ('c', 'blocker', '"x"')`); err != nil {
+		t.Fatalf("blocker write: %v", err)
+	}
+
+	// _txlock=immediate matters here: it is what production uses, and it makes
+	// BeginTx a BEGIN IMMEDIATE that must take the write lock up front. Without
+	// it the transaction is deferred, contends at the first write instead, and
+	// the retry around BeginTx is never exercised at all.
+	contender, err := sql.Open("sqlite", path+"?_pragma=busy_timeout(0)&_txlock=immediate")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := &sqliteBackend{db: contender, path: path}
+	t.Cleanup(func() { _ = contender.Close() })
+
+	released := make(chan struct{})
+	go func() {
+		time.Sleep(60 * time.Millisecond)
+		_ = held.Rollback()
+		close(released)
+	}()
+
+	err = b.update(func(tx txBackend) error {
+		raw, ok, err := tx.get("c", "n")
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return errors.New("counter missing")
+		}
+		var v int
+		if err := json.Unmarshal(raw, &v); err != nil {
+			return err
+		}
+		out, err := json.Marshal(v + 1)
+		if err != nil {
+			return err
+		}
+		return tx.put("c", "n", out)
+	})
+	<-released
+	if err != nil {
+		t.Fatalf("update while another writer held the lock: %v", err)
+	}
+}
+
+// Only contention is transient. Any other error must surface immediately, or a
+// real fault would sit behind retries and be reported late or not at all.
+func TestRetryWhileBusyDoesNotRetryOtherErrors(t *testing.T) {
+	calls := 0
+	err := retryWhileBusy(func() error {
+		calls++
+		return errors.New("not a lock")
+	})
+	if err == nil || err.Error() != "not a lock" {
+		t.Fatalf("got %v, want the original error unchanged", err)
+	}
+	if calls != 1 {
+		t.Fatalf("op ran %d times, want 1: a non-contention error must not be retried", calls)
 	}
 }

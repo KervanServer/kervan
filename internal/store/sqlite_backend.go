@@ -10,9 +10,12 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	// Pure-Go SQLite (no cgo), so release builds stay CGO_ENABLED=0.
-	_ "modernc.org/sqlite"
+	// Imported by name as well as for its driver side effect: update()
+	// inspects *sqlite.Error to tell a lock contention apart from a real fault.
+	"modernc.org/sqlite"
 )
 
 // sqliteFileName is the database file in the data directory.
@@ -425,14 +428,76 @@ func (s *sqliteBackend) list(collection string) ([]json.RawMessage, error) {
 	return out, nil
 }
 
+// busyRetryAttempts and busyRetryBackoff are vars rather than consts so a test
+// can widen the window; see TestSQLiteUpdateRetriesWhenTheWriteLockIsBusy.
+//
+// busyRetryAttempts is how many times update() will retry a statement SQLite
+// refused because another connection holds a conflicting lock.
+//
+// The DSN's busy_timeout already absorbs the ordinary case (a writer waits up
+// to 10s inside SQLite). These extra attempts exist for the case where that
+// budget is exhausted: seen on a loaded Windows runner, where fsync is slower
+// and file locking is mandatory, so a waiting writer could outlast the timeout
+// and surface a hard SQLITE_BUSY to the caller. Worst case a caller waits
+// busyRetryAttempts * busy_timeout.
+var busyRetryAttempts = 3
+
+// busyRetryBackoff is the base pause between those attempts; it doubles each
+// time (50ms, then 100ms) so contenders do not resynchronise.
+var busyRetryBackoff = 50 * time.Millisecond
+
+// sqliteBusyPrimary is SQLite's SQLITE_BUSY primary result code. The driver
+// does not export the constant, so it is spelled out here; extended codes are
+// masked off with &0xff before comparing.
+const sqliteBusyPrimary = 5
+
+// isSQLiteBusy reports whether err is SQLite refusing an operation because
+// another connection holds a conflicting lock. Only that condition is
+// transient, so it is the only one update() retries.
+func isSQLiteBusy(err error) bool {
+	var serr *sqlite.Error
+	return errors.As(err, &serr) && serr.Code()&0xff == sqliteBusyPrimary
+}
+
+// retryWhileBusy runs op, retrying while SQLite reports the database is
+// locked. Any other error returns immediately: a retry loop that swallowed
+// real failures would hide them.
+func retryWhileBusy(op func() error) error {
+	var err error
+	delay := busyRetryBackoff
+	for attempt := 0; attempt < busyRetryAttempts; attempt++ {
+		if err = op(); err == nil || !isSQLiteBusy(err) {
+			return err
+		}
+		if attempt == busyRetryAttempts-1 {
+			break
+		}
+		time.Sleep(delay)
+		delay *= 2
+	}
+	return err
+}
+
 // update runs fn in one BEGIN IMMEDIATE transaction (the DSN's _txlock), so
-// the write lock is held from the first read; fn's error or a panic rolls
+// the write lock is held from its first read; fn's error or a panic rolls
 // it back.
+//
+// Only the BEGIN is retried, never fn and never the COMMIT.
+//
+// Re-running fn would re-apply its writes. The COMMIT is left alone for a
+// different reason: modernc.org/sqlite's tx.Commit force-rolls-back before
+// returning an error (database/sql requires a clean connection afterwards),
+// so by the time an error reaches us the transaction is already gone and
+// retrying it would commit nothing.
 func (s *sqliteBackend) update(fn func(txBackend) error) (err error) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	tx, err := s.db.BeginTx(context.Background(), nil)
-	if err != nil {
+	var tx *sql.Tx
+	if err := retryWhileBusy(func() error {
+		var berr error
+		tx, berr = s.db.BeginTx(context.Background(), nil)
+		return berr
+	}); err != nil {
 		return fmt.Errorf("begin store transaction: %w", err)
 	}
 	committed := false
