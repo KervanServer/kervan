@@ -6,7 +6,7 @@ LDFLAGS := -s -w \
   -X github.com/kervanserver/kervan/internal/build.Commit=$(COMMIT) \
   -X github.com/kervanserver/kervan/internal/build.Date=$(DATE)
 
-.PHONY: build webui test check check-sqlite audit clean docker-build compose-config compose-up compose-down release-snapshot release-check interop merge-pr ci-sample
+.PHONY: build webui test check check-sqlite check-gitignore audit clean docker-build compose-config compose-up compose-down release-snapshot release-check interop merge-pr ci-sample
 
 build: webui
 	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/kervan ./cmd/kervan
@@ -21,6 +21,7 @@ test:
 # gofmt, vet, staticcheck, tests, race tests, WebUI tests and the embedded
 # dist drift check. Use it instead of pushing to trigger CI.
 check:
+	./scripts/check-gitignore-safety.sh
 	@unformatted="$$(gofmt -l $$(git ls-files '*.go'))"; \
 	  if [ -n "$$unformatted" ]; then echo "gofmt needed:"; echo "$$unformatted"; exit 1; fi
 	go vet ./...
@@ -32,6 +33,14 @@ check:
 	cd webui && npm test
 	go run ./scripts
 	git diff --exit-code -- internal/webui/dist
+
+# check-gitignore guards the rules that keep the memory database untracked.
+# It runs in `check` and in the Backend Checks job, because no Go tool or
+# test suite reads .gitignore: without this, a directory-level negation
+# would commit a live SQLite database and every required context would
+# still pass.
+check-gitignore:
+	./scripts/check-gitignore-safety.sh
 
 # check-sqlite runs the suite against the opt-in SQLite backend. The steps
 # above only exercise the default JSON backend, and the SQLite engine exists
