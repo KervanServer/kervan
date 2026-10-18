@@ -370,6 +370,35 @@ hand-editing `sage.db` while the daemon holds its WAL open, and
 **Not to be applied:** none of these corrections affects the diagnosis. The
 field-loss and anchor-mangling defects below stand on their own evidence.
 
+## Stale snapshot hashes recorded in memory (observed 2026-10-18)
+
+Two memory entries assert that this report is byte-identical to a
+`.temp_files/` copy, and name hashes that are no longer current:
+
+| Memory | Asserts | Status |
+|---|---|---|
+| `01M541Z9N0E9DWSF8QD2Y7TTAE` | both copies byte-identical at `bccef328ef0e…` | **stale** — superseded five times |
+| `01M569R2VFETSK8JGMKPS2XAV0` | the snapshot pins `b46e227d` / 378 lines | **stale** — superseded twice |
+
+Both instruct the reader *"do not re-sync or restore it from memory"*
+while carrying a value memory has not kept current. Measured on
+`origin/master` at `a17e328`, this report hashes `c16edd6b…` at 418
+lines and 13 `##` sections.
+
+**The current hash, line count, and section count are deliberately not
+restated here.** Writing them into this file would change the file and
+invalidate them on landing — the defect PR #37 removed from the
+correction manifest. `docs/evidence/tool-use-dispatch-defect-snapshot.md`
+is the authoritative record, and `scripts/check-snapshot-accuracy.sh`
+fails the build when it disagrees with this file. That guard is what
+makes this drift *detectable*; it cannot make a recorded memory value
+current, which is why the rows above name only the stale claims.
+
+The lesson generalises: **anchoring confirms that a path resolves, never
+that its content is current.** Both entries carry
+`anchorVerified=2026-10-17` and are still wrong, because the anchor is
+the file and the error is in the prose.
+
 ## Status of this report
 
 Filed as a **defect report**, not a fix request with a confirmed cause. It is
