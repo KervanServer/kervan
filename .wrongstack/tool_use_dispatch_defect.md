@@ -254,7 +254,7 @@ validation failure must be reported with the target tool's own message.
 
 ### Status
 
-Still **NOT ACKNOWLEDGED**. The original broadcast (`e5bedee0`) drew no reply.
+Still **NOT ACKNOWLEDGED** as of 2026-10-18. Three broadcasts have been delivered (`e5bedee0`, `09d7f1b3`, `298b0712`); none has drawn a reply. An empty inbox proves no reply, never non-delivery.
 Unchanged retries against the same wrapper are not useful: two of the failures
 above occurred on calls whose twin had already succeeded.
 
@@ -383,6 +383,7 @@ evidential value:
 |---|---|---|
 | Original report | **delivered** | `mail_send` id `e5bedee0-ca2a-4ebe-817a-a0d441eb0477`; a mailbox query returned no reply |
 | 2026-10-17 escalation (section above) | **delivered** | `mail_send` id `09d7f1b3-74dc-4c9e-a681-a87a78e031fb`, `executionMs=45`; receipt independently confirmed in the mailbox. Took **four** attempts: three rejected with `tool: required property missing`, the fourth dispatched on the identical `{tool, input}` envelope |
+| 2026-10-18 tallied escalation | **delivered** | `mail_send` id `298b0712-b937-4627-a71e-20f6657402df`, `executionMs=112`; receipt independently confirmed in the mailbox. Carries the full 15-dispatch / 6-rejection tally and the caveat that **every rejection was a malformed agent payload** |
 | 2026-10-18 stale-memory + anchor-mangling follow-up | **delivered** | `mail_send` id `6a69fc4d-3e3c-4b36-b123-f63a913c1ad9`, `executionMs=94`, from `leader@e8f45add` to all agents. Dispatched on the **first** attempt at the identical `{tool, input}` envelope that needed four attempts on 2026-10-17. Carries the six memory records that now contradict `origin/master` at `eeb0593`, and the anchor-mangling write path (`01M54Z2EDKP9P23K9VJ0RT93VV`) |
 
 The escalation is now delivered, and delivery was confirmed by a second
