@@ -32,7 +32,7 @@ $ wc -l < .wrongstack/tool_use_dispatch_defect.md
 ```
 
 - **Revision:** `a513c9740bb75b797d811ae39d6c8fa76e8ee453` (`master`)
-- **Lines:** 417, 12 `##` sections, trailing newline present
+- **Lines:** 417, 13 `##` sections, trailing newline present
 
 ## What the report records
 
