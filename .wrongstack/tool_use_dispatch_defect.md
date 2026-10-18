@@ -345,8 +345,8 @@ record-by-record. Every "verified" column below was read from `origin/master` on
 | `01M55A34PFQFEZG77NXGR996C9` | 3 | `docs/evidence/` holds **six** files at `cca1376`; the report is **untracked**; `.wrongstack/` ignored except `project.json` | **Seven** files at `a513c97` (`gates-e3ae28e.md` added); report **tracked** since `a188d98`; only `project.json` **and** the report are negated |
 | `01M559MAQGW5SEQKVDXXFF8622` | 1 | `.wrongstack/` remains an ignored metadata location | **Partly false.** The report file is tracked; `memories/` and the rest stay ignored |
 | `01M55PAMBSA63HZQZTEMD6FN50` | 1 | the report "is **not repository-durable**" | **False** — it is tracked on `master` |
-| `01M566ZNZ6TXCE6GPTMANS8QG4` | 1 | pinned SHA-256 `9f1398f4` | **`1ff35284384e99ba92afc19df93d1bb1faf540a41abd655ed8c4ee0655e75273`**, 379 lines |
-| `01M55D563C04STX22NB9958J8N` | 1 | **352 lines**, `9f1398f4`, and "EVERY EARLIER HASH … IS NOW SUPERSEDED" listing three | **379 lines**, `1ff35284…`. Its list omits **two** current baselines: `b46e227d…` (378) and `1ff35284…` (379). It asserts completeness over a list missing what it should contain |
+| `01M566ZNZ6TXCE6GPTMANS8QG4` | 1 | pinned SHA-256 `9f1398f4` | **Superseded.** The report's current hash and line count are recorded in `docs/evidence/tool-use-dispatch-defect-snapshot.md`, **not here**: writing them into this file changes the file and invalidates them the instant the edit lands. Measure with `sha256sum` and `wc -l`. |
+| `01M55D563C04STX22NB9958J8N` | 1 | **352 lines**, `9f1398f4`, and "EVERY EARLIER HASH … IS NOW SUPERSEDED" listing three | **Superseded.** Its "every earlier hash is superseded" list was incomplete, and quoting a current baseline here is self-invalidating for the same reason. Current values live in `docs/evidence/tool-use-dispatch-defect-snapshot.md`, and `scripts/check-snapshot-accuracy.sh` fails the build when they disagree with this file. Re-measure with `sha256sum` and `wc -l` before citing any value. |
 
 ### What makes this class of error systematic
 
