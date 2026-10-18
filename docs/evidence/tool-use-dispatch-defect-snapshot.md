@@ -25,14 +25,14 @@ Taken **2026-10-18 12:50:42 +0300**, on `master` at `eeb0593`:
 
 ```console
 $ sha256sum .wrongstack/tool_use_dispatch_defect.md
-5bf73551dde1be6ee4014369a03d50c10ecbade24509dc81db7653d78fae77ac  .wrongstack/tool_use_dispatch_defect.md
+c16edd6bb1030883b3a7552bf4e60d83c6a8e8823cb20c00cb6f91520f627b51  .wrongstack/tool_use_dispatch_defect.md
 
 $ wc -l < .wrongstack/tool_use_dispatch_defect.md
 378
 ```
 
 - **Revision:** `3b9549e8ff76ddfd37cab8e0726bd4ae3d087067` (`master`)
-- **Lines:** 417, 13 `##` sections, trailing newline present
+- **Lines:** 418, 13 `##` sections, trailing newline present
 
 ## What the report records
 
