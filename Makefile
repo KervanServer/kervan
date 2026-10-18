@@ -6,7 +6,7 @@ LDFLAGS := -s -w \
   -X github.com/kervanserver/kervan/internal/build.Commit=$(COMMIT) \
   -X github.com/kervanserver/kervan/internal/build.Date=$(DATE)
 
-.PHONY: build webui test check check-sqlite check-gitignore check-snapshot audit clean docker-build compose-config compose-up compose-down release-snapshot release-check interop merge-pr ci-sample
+.PHONY: build webui test check check-sqlite check-gitignore check-snapshot memory-corrections audit clean docker-build compose-config compose-up compose-down release-snapshot release-check interop merge-pr ci-sample
 
 build: webui
 	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/kervan ./cmd/kervan
@@ -49,6 +49,13 @@ check-gitignore:
 # that every other check passed.
 check-snapshot:
 	./scripts/check-snapshot-accuracy.sh
+
+# memory-corrections renders the stale-record checklist from the manifest in the
+# tracked defect report, so a maintainer deactivation pass needs no repo reading.
+# Prints only; it never edits memory. Not part of `check` -- it is a report, not a
+# gate, and its output goes to whoever runs it by hand.
+memory-corrections:
+	./scripts/print-memory-corrections.sh
 
 # check-sqlite runs the suite against the opt-in SQLite backend. The steps
 # above only exercise the default JSON backend, and the SQLite engine exists

@@ -45,6 +45,9 @@ jobs:
       - name: Guard evidence-snapshot accuracy
         run: ./scripts/check-snapshot-accuracy.sh
 
+      - name: List stale memory records awaiting deactivation
+        run: ./scripts/print-memory-corrections.sh
+
       - name: Run gofmt check
         run: |
           # git ls-files, not find: it matches tracked sources only, so local
