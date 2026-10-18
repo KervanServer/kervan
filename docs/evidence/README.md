@@ -45,3 +45,4 @@ under the already-tracked `docs/`, and it fights neither ignore rule.
 | `rounds-63-67-internal-store-ledger.md` | Ledger for the `internal/store` investigation, rounds 63–67: invariants, findings, and ruled-out candidates. |
 | `tool-use-dispatch-defect-snapshot.md` | Measured hash of the **untracked** `.wrongstack/tool_use_dispatch_defect.md`, anchoring runtime response time when memory records cannot be retired. |
 | `gates-4dc1efa.md` | `make check` and `make check-sqlite` exit 0 at `4dc1efa`, agreeing with the five hosted contexts on the same SHA. |
+| `hosted-windows-samples.md` | Per-revision hosted `Windows Store Tests` sample sizes (15/11/17 across three revisions) behind the `SQLITE_BUSY` question, and why they are not pooled. |
