@@ -60,6 +60,15 @@
 
 ### Changed
 
+- **CI:** GitHub Actions now runs on every push to `master` and on every pull
+  request, not only on manual dispatch. The push trigger is what makes a merge
+  verifiable: a pull-request run validates the PR head, which is a different
+  commit from the one that lands, so without it nothing checked what `master`
+  actually contained after a merge. `master` is branch-protected — merging
+  requires all five checks to pass on an up-to-date branch, plus one approving
+  review. An admin may merge without that review; the override is recorded in
+  the pull request timeline. Use `make check` locally for the portable checks.
+
 - **CI:** the SQLite store backend is now race-tested on every run. `make
   check` and the CI race job both ran the suite with the default JSON backend
   only, so the SQLite engine's own concurrency — its `BEGIN IMMEDIATE`
