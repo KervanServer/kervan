@@ -8,10 +8,17 @@
 # and the "12 ## sections" text was not. `sha256sum` agreed; the snapshot lied.
 # Nothing else reads those fields, so the drift survived to the next reader.
 #
-# Three fields, each re-derived from the report and compared to the snapshot:
+# Four fields, each re-derived from the report and compared to the snapshot:
 #   1. sha256   - matched against the 64-hex token in the console block
 #   2. lines    - matched against the "**Lines:** N, ..." sentence
 #   3. sections - the `## ` count in the same sentence
+#   4. manifest - the correction-manifest row that states how many files
+#                 docs/evidence/ holds, re-derived from the directory itself.
+#
+# Field 4 is different in kind: it describes something OUTSIDE the report
+# (the tracked docs/evidence/ directory), so unlike 1-3 it cannot invalidate
+# itself when the report is edited. The manifest otherwise drifts silently --
+# nothing reads that row.
 #
 # This is a SKIPPED-if-absent check: if the report or the snapshot is missing the
 # script says so and passes. A guard that fails when its subject does not exist
@@ -70,6 +77,30 @@ if [ "$actual_sections" != "$claimed_sections" ]; then
     echo "  A section was added or removed without re-pinning. This is the field"
     echo "  a sha256 comparison cannot catch, which is why it is checked here."
     fail=1
+fi
+
+# --- check 4: the manifest's docs/evidence/ file count -----------------------
+# The correction manifest's replacement column states how many files
+# docs/evidence/ holds. That claim is about the directory, not about this
+# file, so it is re-derivable here without the write-invalidates-the-value
+# circularity that makes fields 1-3 impossible to self-check.
+actual_evidence=$(find docs/evidence -maxdepth 1 -type f ! -name '.*' 2>/dev/null | wc -l | tr -d ' ')
+claimed_evidence=$(grep -oE '\*\*(One|Two|Three|Four|Five|Six|Seven|Eight|Nine|Ten|Eleven|Twelve)\*\* files' "$REPORT" | head -1 \
+                   | grep -oE 'One|Two|Three|Four|Five|Six|Seven|Eight|Nine|Ten|Eleven|Twelve' | head -1 || true)
+if [ -n "$claimed_evidence" ]; then
+    case "$claimed_evidence" in
+        One) claimed_evidence=1 ;; Two) claimed_evidence=2 ;; Three) claimed_evidence=3 ;;
+        Four) claimed_evidence=4 ;; Five) claimed_evidence=5 ;; Six) claimed_evidence=6 ;;
+        Seven) claimed_evidence=7 ;; Eight) claimed_evidence=8 ;; Nine) claimed_evidence=9 ;;
+        Ten) claimed_evidence=10 ;; Eleven) claimed_evidence=11 ;; Twelve) claimed_evidence=12 ;;
+    esac
+    if [ "$actual_evidence" != "$claimed_evidence" ]; then
+        echo "check-snapshot-accuracy: FAIL - the correction manifest's file count for docs/evidence/ does not match"
+        echo "  manifest: ${claimed_evidence:-<none found>}"
+        echo "  actual   : $actual_evidence"
+        echo "  A record was added or removed without updating the manifest row."
+        fail=1
+    fi
 fi
 
 if [ "$fail" -ne 0 ]; then
