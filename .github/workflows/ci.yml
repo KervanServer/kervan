@@ -45,7 +45,7 @@ jobs:
       - name: Guard evidence-snapshot accuracy
         run: ./scripts/check-snapshot-accuracy.sh
 
-      - name: List stale memory records awaiting deactivation
+      - name: List memory records named in the correction manifest
         run: ./scripts/print-memory-corrections.sh
 
       - name: Run gofmt check
