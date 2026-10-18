@@ -6,7 +6,7 @@ LDFLAGS := -s -w \
   -X github.com/kervanserver/kervan/internal/build.Commit=$(COMMIT) \
   -X github.com/kervanserver/kervan/internal/build.Date=$(DATE)
 
-.PHONY: build webui test check check-sqlite check-gitignore audit clean docker-build compose-config compose-up compose-down release-snapshot release-check interop merge-pr ci-sample
+.PHONY: build webui test check check-sqlite check-gitignore check-snapshot audit clean docker-build compose-config compose-up compose-down release-snapshot release-check interop merge-pr ci-sample
 
 build: webui
 	go build -trimpath -ldflags "$(LDFLAGS)" -o bin/kervan ./cmd/kervan
@@ -22,6 +22,7 @@ test:
 # dist drift check. Use it instead of pushing to trigger CI.
 check:
 	./scripts/check-gitignore-safety.sh
+	./scripts/check-snapshot-accuracy.sh
 	@unformatted="$$(gofmt -l $$(git ls-files '*.go'))"; \
 	  if [ -n "$$unformatted" ]; then echo "gofmt needed:"; echo "$$unformatted"; exit 1; fi
 	go vet ./...
@@ -41,6 +42,13 @@ check:
 # still pass.
 check-gitignore:
 	./scripts/check-gitignore-safety.sh
+
+# check-snapshot guards the prose fields of the evidence snapshot against the
+# file it describes. A hash proves the FILE is unchanged, never that the text
+# claiming its line and section counts is accurate; PR #32 was a stale count
+# that every other check passed.
+check-snapshot:
+	./scripts/check-snapshot-accuracy.sh
 
 # check-sqlite runs the suite against the opt-in SQLite backend. The steps
 # above only exercise the default JSON backend, and the SQLite engine exists
