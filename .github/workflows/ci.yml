@@ -39,6 +39,9 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Guard .gitignore memory-database rules
+        run: ./scripts/check-gitignore-safety.sh
+
       - name: Run gofmt check
         run: |
           # git ls-files, not find: it matches tracked sources only, so local
