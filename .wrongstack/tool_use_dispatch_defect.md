@@ -332,6 +332,44 @@ per-tool capability. A future round should record, for each tool, the full order
 sequence of outcomes rather than a pass/fail tally — a tally hides the ordering
 that this section is trying to establish.
 
+## Correction manifest for the stale memory records — apply all six in one pass
+
+Six records in project memory contradict the repository. They are listed here so a
+maintainer or MemoryManager pass can correct them together rather than
+record-by-record. Every "verified" column below was read from `origin/master` on
+2026-10-18, not recalled.
+
+| Record | Rev | Asserts | Verified state on `origin/master` |
+|---|---|---|---|
+| `01M541F2Z3XSWQ558T8K4VCT31` | 3 | `.wrongstack/*` is gitignored, so reports "are **not delivered to collaborators through Git**" | **False.** PR #25 (`a188d98`) tracks the report; it ships with the repo. `anchorVerified=2026-10-17` endorsed a claim two merges later falsified |
+| `01M55A34PFQFEZG77NXGR996C9` | 3 | `docs/evidence/` holds **six** files at `cca1376`; the report is **untracked**; `.wrongstack/` ignored except `project.json` | **Seven** files at `a513c97` (`gates-e3ae28e.md` added); report **tracked** since `a188d98`; only `project.json` **and** the report are negated |
+| `01M559MAQGW5SEQKVDXXFF8622` | 1 | `.wrongstack/` remains an ignored metadata location | **Partly false.** The report file is tracked; `memories/` and the rest stay ignored |
+| `01M55PAMBSA63HZQZTEMD6FN50` | 1 | the report "is **not repository-durable**" | **False** — it is tracked on `master` |
+| `01M566ZNZ6TXCE6GPTMANS8QG4` | 1 | pinned SHA-256 `9f1398f4` | **`1ff35284384e99ba92afc19df93d1bb1faf540a41abd655ed8c4ee0655e75273`**, 379 lines |
+| `01M55D563C04STX22NB9958J8N` | 1 | **352 lines**, `9f1398f4`, and "EVERY EARLIER HASH … IS NOW SUPERSEDED" listing three | **379 lines**, `1ff35284…`. Its list omits **two** current baselines: `b46e227d…` (378) and `1ff35284…` (379). It asserts completeness over a list missing what it should contain |
+
+### What makes this class of error systematic
+
+`anchorVerified=2026-10-17` on `01M541F2Z3XSWQ558T8K4VCT31` did not catch it. Anchor
+verification confirms a **path** resolves — never that its **content** is still true. A
+record can be perfectly anchored and wrong.
+
+The two records that tell a future session *not* to re-measure —
+`01M55D563C04STX22NB9958J8N` ("do not cite any of these as current") and
+`01M541Z9N0E9DWSF8QD2Y7TTAE` ("do NOT re-sync") — are themselves stale. Re-measure
+with `sha256sum` and `wc -l` before citing any hash.
+
+### Why a session cannot fix these
+
+`memory_update` has failed roughly 30 times against 2 successes in this session;
+`memory_verify` has never dispatched. `01M53D69Y3B5N58H8DZH8FWX5M` forbids
+hand-editing `sage.db` while the daemon holds its WAL open, and
+`scripts/check-gitignore-safety.sh` (live since `16c2829`) fails the build if
+`sage.db` is ever tracked. Deactivation therefore needs a maintainer.
+
+**Not to be applied:** none of these corrections affects the diagnosis. The
+field-loss and anchor-mangling defects below stand on their own evidence.
+
 ## Status of this report
 
 Filed as a **defect report**, not a fix request with a confirmed cause. It is
