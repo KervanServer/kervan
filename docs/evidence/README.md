@@ -8,11 +8,14 @@ that belongs in version control but does not belong in the source tree.
 `.gitignore` excludes both places agent evidence previously landed:
 
 - `.temp_files/` — scratch by design; anything there is discarded with the session.
-- `.wrongstack/` — ignored except `/.wrongstack/project.json`, so
-  `.wrongstack/tool_use_dispatch_defect.md` is untracked.
+- `.wrongstack/` — ignored, then un-ignored file by file. Only
+  `/.wrongstack/project.json` and `/.wrongstack/tool_use_dispatch_defect.md` are
+  tracked; everything else stays ignored, including `memories/sage.db` and its
+  open SQLite WAL. `scripts/check-gitignore-safety.sh` fails the build if that
+  ever changes.
 
-That left no tracked home for evidence. `docs/evidence/` is that home: it sits
-under the already-tracked `docs/`, and it fights neither ignore rule.
+That left no tracked home for evidence records. `docs/evidence/` is that home: it
+sits under the already-tracked `docs/`, and it fights neither ignore rule.
 
 ## What belongs here
 
@@ -43,6 +46,6 @@ under the already-tracked `docs/`, and it fights neither ignore rule.
 |---|---|
 | `store-stress-b2fe9f7.md` | 6,400 race-instrumented `internal/store` executions under 16× CPU load at `b2fe9f7`. |
 | `rounds-63-67-internal-store-ledger.md` | Ledger for the `internal/store` investigation, rounds 63–67: invariants, findings, and ruled-out candidates. |
-| `tool-use-dispatch-defect-snapshot.md` | Measured hash of the **untracked** `.wrongstack/tool_use_dispatch_defect.md`, anchoring runtime response time when memory records cannot be retired. |
+| `tool-use-dispatch-defect-snapshot.md` | Measured hash of the **tracked** `.wrongstack/tool_use_dispatch_defect.md`, anchoring runtime response time when memory records cannot be retired. |
 | `gates-4dc1efa.md` | `make check` and `make check-sqlite` exit 0 at `4dc1efa`, agreeing with the five hosted contexts on the same SHA. |
 | `hosted-windows-samples.md` | Per-revision hosted `Windows Store Tests` sample sizes (15/11/17 across three revisions) behind the `SQLITE_BUSY` question, and why they are not pooled. |
