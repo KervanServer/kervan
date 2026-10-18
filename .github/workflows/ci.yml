@@ -42,6 +42,9 @@ jobs:
       - name: Guard .gitignore memory-database rules
         run: ./scripts/check-gitignore-safety.sh
 
+      - name: Guard evidence-snapshot accuracy
+        run: ./scripts/check-snapshot-accuracy.sh
+
       - name: Run gofmt check
         run: |
           # git ls-files, not find: it matches tracked sources only, so local
