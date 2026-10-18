@@ -17,6 +17,12 @@ node_modules/
 !/.wrongstack/
 /.wrongstack/*
 !/.wrongstack/project.json
+# The tool_use dispatch-defect report is a deliverable, not scratch: it carries
+# the cross-tool dispatch control the runtime team needs. Tracked deliberately --
+# it is untracked by default, which is why docs/evidence/ had to mirror its
+# measurements. Negate the FILE only: memories/ holds sage.db and its open WAL
+# and must stay ignored.
+!/.wrongstack/tool_use_dispatch_defect.md
 
 # build & coverage artifacts
 /dist/
