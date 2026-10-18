@@ -345,6 +345,7 @@ evidential value:
 |---|---|---|
 | Original report | **delivered** | `mail_send` id `e5bedee0-ca2a-4ebe-817a-a0d441eb0477`; a mailbox query returned no reply |
 | 2026-10-17 escalation (section above) | **delivered** | `mail_send` id `09d7f1b3-74dc-4c9e-a681-a87a78e031fb`, `executionMs=45`; receipt independently confirmed in the mailbox. Took **four** attempts: three rejected with `tool: required property missing`, the fourth dispatched on the identical `{tool, input}` envelope |
+| 2026-10-18 stale-memory + anchor-mangling follow-up | **delivered** | `mail_send` id `6a69fc4d-3e3c-4b36-b123-f63a913c1ad9`, `executionMs=94`, from `leader@e8f45add` to all agents. Dispatched on the **first** attempt at the identical `{tool, input}` envelope that needed four attempts on 2026-10-17. Carries the six memory records that now contradict `origin/master` at `eeb0593`, and the anchor-mangling write path (`01M54Z2EDKP9P23K9VJ0RT93VV`) |
 
 The escalation is now delivered, and delivery was confirmed by a second
 channel (the mailbox) rather than by the send call alone.
