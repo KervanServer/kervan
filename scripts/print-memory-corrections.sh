@@ -10,8 +10,16 @@
 # This renders that table as a checklist: id, revision, and what the record
 # should say instead. It prints only -- it never edits memory.
 #
-# Exit: 0 list rendered (or manifest absent), 1 the manifest table is present but
-# unparseable, which would silently yield an EMPTY deactivation list.
+# WHAT THIS IS NOT: it does not query the memory store. Every value below comes
+# from the manifest, which is a point-in-time record written when the corrections
+# were identified. It therefore CANNOT report whether a record is still stale --
+# applying the manifest does not edit this table. Use it to see WHAT was wrong
+# and WHAT it should say, and a status-returning surface to decide whether the
+# work is still outstanding.
+#
+# Exit status depends ONLY on the manifest, never on live memory state: 0 when the
+# manifest is absent or rendered, 1 when it is present but unparseable. A manifest
+# that yields no rows is worse than none -- it looks complete and is not.
 set -euo pipefail
 
 cd "$(git rev-parse --show-toplevel)"
@@ -46,9 +54,9 @@ printf '%s\n' "$rows" | while IFS='|' read -r _ id rev asserts verified _; do
     id=$(trim "$id")
     [ -n "$id" ] || continue
     count=$((count + 1))
-    printf '\n[%d] %s  (revision %s)\n' "$count" "$id" "$(trim "$rev")"
-    printf '    stale   : %s\n' "$(trim "$asserts")"
-    printf '    correct : %s\n' "$(trim "$verified")"
+    printf '\n[%d] %s  (revision recorded in the manifest: %s)\n' "$count" "$id" "$(trim "$rev")"
+    printf '    recorded stale   : %s\n' "$(trim "$asserts")"
+    printf '    recorded correct : %s\n' "$(trim "$verified")"
 done
 
 n=$(printf '%s\n' "$rows" | grep -c '^' || true)
@@ -60,7 +68,12 @@ if [ "${n:-0}" -eq 0 ]; then
 fi
 
 echo
-echo "print-memory-corrections: $n record(s) need deactivation — see the manifest for the full table."
-echo "  None of these can be corrected from a session: memory_update fails intermittently and"
-echo "  memory_verify rarely dispatches, and 01M53D69Y3B5N58H8DZH8FWX5M forbids hand-editing"
-echo "  sage.db while the daemon holds its WAL open."
+echo "print-memory-corrections: $n record(s) listed in the manifest."
+echo "  These are the records that were stale when the manifest was written. This"
+echo "  script reads the manifest only, so it cannot tell you which are still"
+echo "  outstanding — applying the manifest does not change this table. Confirm"
+echo "  current status through a surface that returns record metadata, and delete"
+echo "  this script in the same change once the manifest is fully retired."
+echo "  Retiring them from a session is unreliable: memory_update dispatches"
+echo "  intermittently, no surface here returns record status, and"
+echo "  01M53D69Y3B5N58H8DZH8FWX5M forbids hand-editing sage.db while its WAL is open."
