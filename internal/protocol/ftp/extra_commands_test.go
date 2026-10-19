@@ -149,16 +149,17 @@ func TestFTPMiscCommands(t *testing.T) {
 	_ = f.Close()
 
 	simple := map[string]string{
-		"MODE S":                       "200",
-		"MODE B":                       "504",
-		"STRU F":                       "200",
-		"STRU R":                       "504",
-		"ALLO 1000":                    "202",
-		"XPWD":                         "257",
-		"SITE FROB":                    "504",
-		"SITE CHMOD 644 /doc.txt":      "550", // test user has no chmod permission
-		"SITE CHMOD 9z9 /doc.txt":      "501",
-		"MFMT 20200102030405 /doc.txt": "213",
+		"MODE S":                  "200",
+		"MODE B":                  "504",
+		"STRU F":                  "200",
+		"STRU R":                  "504",
+		"ALLO 1000":               "202",
+		"XPWD":                    "257",
+		"SITE FROB":               "504",
+		"SITE CHMOD 644 /doc.txt": "550", // test user has no chmod permission
+		"SITE CHMOD 9z9 /doc.txt": "501",
+		// Timestamps are chmod-gated metadata, like SITE CHMOD.
+		"MFMT 20200102030405 /doc.txt": "550",
 		"MFMT yesterday /doc.txt":      "501",
 		"MFMT 20200102030405 /nope":    "550",
 	}
@@ -167,8 +168,12 @@ func TestFTPMiscCommands(t *testing.T) {
 			t.Errorf("%s → %q, want %s", cmd, reply, want)
 		}
 	}
-	if info, err := fsys.Stat("/doc.txt"); err != nil || !info.ModTime().Equal(time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)) {
-		t.Fatalf("MFMT did not set mtime: %v %v", info.ModTime(), err)
+	// The refused MFMT must not have touched the file either (the test user
+	// has no chmod permission).
+	if info, err := fsys.Stat("/doc.txt"); err != nil {
+		t.Fatalf("stat after refused MFMT: %v", err)
+	} else if info.ModTime().Equal(time.Date(2020, 1, 2, 3, 4, 5, 0, time.UTC)) {
+		t.Fatalf("refused MFMT still set mtime: %v", info.ModTime())
 	}
 
 	_, _ = cc.Write([]byte("HELP\r\n"))

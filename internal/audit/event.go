@@ -19,6 +19,7 @@ const (
 	EventDirDelete  EventType = "dir.delete"
 
 	EventPasswordChange EventType = "auth.password_change"
+	EventTOTPChange     EventType = "auth.totp_change"
 
 	// Administrative changes made through the WebUI/API.
 	EventAdminUserCreate   EventType = "admin.user.create"

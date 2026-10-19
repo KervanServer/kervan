@@ -249,7 +249,70 @@ func TestFileUploadSuccessLeavesNoTempFile(t *testing.T) {
 	if string(got) != "NEWCONTENT" {
 		t.Fatalf("control: successful upload left %q, want %q", string(got), "NEWCONTENT")
 	}
-	if _, err := fsys.Stat("/f.txt" + uploadTempSuffix); err == nil {
-		t.Fatalf("control: staging file %q survived a successful upload", "/f.txt"+uploadTempSuffix)
+	// The staging name for /f.txt is path.Join(path.Dir(p), uploadTempPrefix+base)
+	// = "/kervan-upload-f.txt".
+	if _, err := fsys.Stat("/kervan-upload-f.txt"); err == nil {
+		t.Fatalf("control: staging file %q survived a successful upload", "/kervan-upload-f.txt")
+	}
+}
+
+// TestFileUploadEnforcesDeniedExtensions pins that the upload policy is
+// evaluated against the TARGET name: handleFilesUpload stages through a
+// sibling temp file, and a ".tmp"-suffixed staging name used to let denied
+// extensions land (the rename is not policy-checked).
+func TestFileUploadEnforcesDeniedExtensions(t *testing.T) {
+	backend := memory.New()
+	mounts := vfs.NewMountTable()
+	mounts.Mount("/", backend, false)
+	fsys := vfs.NewUserVFS(mounts, &vfs.UserPermissions{
+		Upload: true, Download: true, Delete: true,
+		Rename: true, CreateDir: true, ListDir: true,
+		DeniedExts: []string{".exe"},
+	}, nil)
+	s := &Server{fsBuilder: func(string) (vfs.FileSystem, error) { return fsys, nil }}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/files/upload?path=/evil.exe", strings.NewReader("malware"))
+	req.Header.Set("X-Auth-User", "alice")
+	s.handleFilesUpload(rec, req)
+
+	if rec.Code == http.StatusOK {
+		t.Fatalf("upload of .exe succeeded although .exe is in DeniedExts: the policy was evaluated against the staging name, not the target")
+	}
+	if _, err := fsys.Stat("/evil.exe"); err == nil {
+		t.Fatalf("denied-extension upload still created /evil.exe")
+	}
+}
+
+// TestFileUploadEnforcesAllowedExtensions pins the other face of the same
+// contract: with an AllowedExts whitelist, the real extension is what counts —
+// the staging name must not turn a legitimate upload into a rejection.
+func TestFileUploadEnforcesAllowedExtensions(t *testing.T) {
+	backend := memory.New()
+	mounts := vfs.NewMountTable()
+	mounts.Mount("/", backend, false)
+	fsys := vfs.NewUserVFS(mounts, &vfs.UserPermissions{
+		Upload: true, Download: true, Delete: true,
+		Rename: true, CreateDir: true, ListDir: true,
+		AllowedExts: []string{".docx"},
+	}, nil)
+	s := &Server{fsBuilder: func(string) (vfs.FileSystem, error) { return fsys, nil }}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/files/upload?path=/report.docx", strings.NewReader("doc body"))
+	req.Header.Set("X-Auth-User", "alice")
+	s.handleFilesUpload(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("upload of .docx with AllowedExts [.docx] = %d, want 200: body %q", rec.Code, rec.Body.String())
+	}
+	r, err := fsys.Open("/report.docx", os.O_RDONLY, 0)
+	if err != nil {
+		t.Fatalf("reopen after upload: %v", err)
+	}
+	defer r.Close()
+	got, _ := io.ReadAll(r)
+	if string(got) != "doc body" {
+		t.Fatalf("stored content = %q, want %q", got, "doc body")
 	}
 }

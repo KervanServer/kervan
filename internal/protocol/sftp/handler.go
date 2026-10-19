@@ -251,6 +251,13 @@ func (h *sftpHandler) handleClose(payload []byte) error {
 	if !ok {
 		return h.replyStatus(id, fxFailure, "invalid handle")
 	}
+	// CLOSE consumes the handle whatever status it replies with (draft-
+	// ietf-secsh-filexfer-02 §6.3): the file is closed or unusable, and the
+	// transfer record and audit event are already emitted. A retained entry
+	// would leak one of maxOpenHandles until the session ends and let a
+	// retried CLOSE re-audit the same close; a retry therefore gets the same
+	// "invalid handle" answer as any unknown handle.
+	delete(h.handles, handle)
 	switch v := entry.(type) {
 	case *openFile:
 		closeErr := v.file.Close()
@@ -272,7 +279,6 @@ func (h *sftpHandler) handleClose(payload []byte) error {
 	case *openDir:
 		_ = v
 	}
-	delete(h.handles, handle)
 	return h.replyStatus(id, fxOK, "ok")
 }
 

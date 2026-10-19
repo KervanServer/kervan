@@ -347,8 +347,8 @@ privileged ports like `990` without running as root.
   urgent data, which is how Python's `ftplib` sends it.
 - `STOU` stores under a unique name: the hint you give, or `upload`, then
   `.1`, `.2`, … The `150` reply names the file.
-- `MFMT` sets modification times. `SITE CHMOD` needs the `chmod`
-  permission; `SITE HELP` lists the SITE commands.
+- `MFMT` sets modification times; like `SITE CHMOD` it needs the `chmod`
+  permission. `SITE HELP` lists the SITE commands.
 - `STAT` shows connection status, or with a path lists it on the control
   connection. Also supported: `HELP`, `MODE S`, `STRU F`, `ALLO`, and the
   legacy `XPWD`/`XCWD`/`XCUP`/`XMKD`/`XRMD`.

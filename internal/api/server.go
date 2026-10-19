@@ -602,11 +602,18 @@ func (s *Server) handleTOTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		hadEnabled := user.TOTPEnabled
 		if !s.mutateTOTP(w, user, func(u *auth.User) {
 			u.TOTPEnabled = false
 			u.TOTPSecret = ""
 		}) {
 			return
+		}
+		if hadEnabled {
+			// Disabling an active second factor is a security-posture change
+			// and is audited like the other account mutations; clearing a
+			// never-enabled pending secret is not.
+			s.emitAudit(r, audit.EventTOTPChange, "", "ok", "two-factor disabled", map[string]string{"action": "disabled"})
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"disabled": true})
 	default:
@@ -652,11 +659,18 @@ func (s *Server) handleTOTPSetup(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to generate secret"})
 		return
 	}
+	rotated := user.TOTPEnabled
 	if !s.mutateTOTP(w, user, func(u *auth.User) {
 		u.TOTPSecret = secret
 		u.TOTPEnabled = false
 	}) {
 		return
+	}
+	if rotated {
+		// Rotating the secret of an ENABLED factor is a security-posture
+		// change and is audited; a first-time setup only prepares a pending
+		// secret and changes nothing until enable.
+		s.emitAudit(r, audit.EventTOTPChange, "", "ok", "two-factor secret rotated", map[string]string{"action": "rotated"})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"enabled":      false,
@@ -708,6 +722,7 @@ func (s *Server) handleTOTPEnable(w http.ResponseWriter, r *http.Request) {
 	if !s.mutateTOTP(w, user, func(u *auth.User) { u.TOTPEnabled = true }) {
 		return
 	}
+	s.emitAudit(r, audit.EventTOTPChange, "", "ok", "two-factor enabled", map[string]string{"action": "enabled"})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"enabled": true,
 		"pending": false,
@@ -1447,9 +1462,13 @@ func (s *Server) handleFilesShare(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, shareLinkJSON(link))
 }
 
-// uploadTempSuffix names the sibling file handleFilesUpload streams into
-// before renaming it over the target.
-const uploadTempSuffix = ".kervan-upload.tmp"
+// uploadTempPrefix names the sibling file handleFilesUpload streams into
+// before renaming it over the target. It is a PREFIX of the target's base
+// name, so the staging file's extension equals the target's: UserVFS.Open
+// applies the Allowed/DeniedExts policy to the name being opened, and a
+// ".tmp"-suffixed staging name would bypass denied extensions and reject
+// allowed ones.
+const uploadTempPrefix = "kervan-upload-"
 
 func (s *Server) handleFilesUpload(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
@@ -1475,7 +1494,7 @@ func (s *Server) handleFilesUpload(w http.ResponseWriter, r *http.Request) {
 	// upload was rejected partway — a client disconnect, a quota rejection or a
 	// disk error left the target truncated to a partial prefix even though the
 	// handler answered 500 and accepted nothing.
-	tmpPath := p + uploadTempSuffix
+	tmpPath := path.Join(path.Dir(p), uploadTempPrefix+path.Base(p))
 	tmp, err := fsys.Open(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})

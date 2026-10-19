@@ -210,3 +210,43 @@ func TestUserVFSPermissionDenials(t *testing.T) {
 		t.Fatalf("expected chmod denial, got %v", err)
 	}
 }
+
+// TestUserVFSChtimesRequiresChmodPermission pins the metadata rule shared
+// with SITE CHMOD and SFTP SETSTAT (see the SETSTAT contract comment in
+// internal/protocol/sftp/handler.go): changing timestamps is a
+// chmod-permission operation — refused with os.ErrPermission without the
+// permission, applied and persisted with it.
+func TestUserVFSChtimesRequiresChmodPermission(t *testing.T) {
+	newFS := func(chmod bool) *vfs.UserVFS {
+		backend := memory.New()
+		f, err := backend.Open("/a.txt", os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o644)
+		if err != nil {
+			t.Fatalf("seed file: %v", err)
+		}
+		_ = f.Close()
+		mounts := vfs.NewMountTable()
+		mounts.Mount("/", backend, false)
+		return vfs.NewUserVFS(mounts, &vfs.UserPermissions{
+			Upload: true, Download: true, Delete: true, Rename: true, CreateDir: true, ListDir: true,
+			Chmod: chmod,
+		}, nil)
+	}
+	stamp := time.Date(2020, 1, 2, 15, 4, 5, 0, time.UTC)
+
+	denied := newFS(false)
+	if err := denied.Chtimes("/a.txt", stamp, stamp); !errors.Is(err, os.ErrPermission) {
+		t.Fatalf("Chtimes without the chmod permission = %v, want os.ErrPermission", err)
+	}
+
+	allowed := newFS(true)
+	if err := allowed.Chtimes("/a.txt", stamp, stamp); err != nil {
+		t.Fatalf("Chtimes with the chmod permission: %v", err)
+	}
+	info, err := allowed.Stat("/a.txt")
+	if err != nil {
+		t.Fatalf("stat after Chtimes: %v", err)
+	}
+	if !info.ModTime().Equal(stamp) {
+		t.Fatalf("mtime after Chtimes = %v, want %v", info.ModTime(), stamp)
+	}
+}

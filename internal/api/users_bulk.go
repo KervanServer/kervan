@@ -94,6 +94,13 @@ func (s *Server) handleUsersImport(w http.ResponseWriter, r *http.Request) {
 		}
 		report.Created++
 		report.Usernames = append(report.Usernames, createdUser.Username)
+		// Bulk creation is an admin action like any other: one create event
+		// per imported user, matching the single-create path in handleUsers.
+		s.emitAudit(r, audit.EventAdminUserCreate, "", "ok", "user created (import)", map[string]string{
+			"target_user": createdUser.Username,
+			"admin":       strconv.FormatBool(createdUser.Type == auth.UserTypeAdmin),
+			"import":      "true",
+		})
 	}
 	writeJSON(w, http.StatusOK, report)
 }

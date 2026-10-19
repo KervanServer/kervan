@@ -425,6 +425,12 @@ func (u *UserVFS) Chown(name string, uid, gid int) error {
 }
 
 func (u *UserVFS) Chtimes(name string, atime, mtime time.Time) error {
+	// Changing timestamps is metadata like chmod (SFTP SETSTAT treats the
+	// chmod permission as its gate: "a user without the chmod permission
+	// gets OK with the change skipped"), so it is denied without it.
+	if !u.permissions.Chmod {
+		return os.ErrPermission
+	}
 	backend, rel, ro, err := u.lookup(name)
 	if err != nil {
 		return err

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kervanserver/kervan/internal/storage/memory"
 	"github.com/kervanserver/kervan/internal/vfs"
 )
 
@@ -430,5 +431,127 @@ func TestHandleReadDirSkipsUnstatableEntries(t *testing.T) {
 	}
 	if code != fxEOF {
 		t.Fatalf("second READDIR returned status code %d, want fxEOF (%d)", code, fxEOF)
+	}
+}
+
+// closeFailingFS serves files whose Close fails after the underlying file
+// has closed, as real storage can (e.g. S3 uploads on Close).
+type closeFailingFS struct {
+	*memory.Backend
+	failClose bool
+}
+
+type closeFailingFile struct {
+	vfs.File
+	failClose bool
+}
+
+func (f closeFailingFile) Close() error {
+	err := f.File.Close()
+	if f.failClose {
+		return errors.New("simulated storage failure on close")
+	}
+	return err
+}
+
+func (fs *closeFailingFS) Open(name string, flags int, perm os.FileMode) (vfs.File, error) {
+	f, err := fs.Backend.Open(name, flags, perm)
+	if err != nil {
+		return nil, err
+	}
+	return closeFailingFile{File: f, failClose: fs.failClose}, nil
+}
+
+func openSFTPFile(t *testing.T, h *sftpHandler, ch *attrsTestChannel, id uint32, path string) string {
+	t.Helper()
+	var open attrsPacket
+	open = appendAttrsPacketU32(open, id)
+	open = appendAttrsPacketString(open, path)
+	open = appendAttrsPacketU32(open, sshFxWrite|sshFxCreat)
+	open = appendAttrsPacketU32(open, 0) // ATTRS flags: none
+	if err := h.handleOpen(open); err != nil {
+		t.Fatalf("handleOpen: %v", err)
+	}
+	ptype, payload, err := readPacket(bytes.NewReader(ch.buf.Bytes()))
+	if err != nil {
+		t.Fatalf("read OPEN reply: %v", err)
+	}
+	if ptype != fxpHandle {
+		t.Fatalf("OPEN reply type = %d, want fxpHandle", ptype)
+	}
+	reader := &attrsPacketParser{buf: payload}
+	if _, err := reader.u32(); err != nil {
+		t.Fatalf("OPEN reply id: %v", err)
+	}
+	handle, err := reader.str()
+	if err != nil {
+		t.Fatalf("OPEN reply handle: %v", err)
+	}
+	ch.buf.Reset()
+	return handle
+}
+
+func closeSFTPHandle(t *testing.T, h *sftpHandler, ch *attrsTestChannel, id uint32, handle string) uint32 {
+	t.Helper()
+	var closePkt attrsPacket
+	closePkt = appendAttrsPacketU32(closePkt, id)
+	closePkt = appendAttrsPacketString(closePkt, handle)
+	if err := h.handleClose(closePkt); err != nil {
+		t.Fatalf("handleClose: %v", err)
+	}
+	ptype, payload, err := readPacket(bytes.NewReader(ch.buf.Bytes()))
+	if err != nil {
+		t.Fatalf("read CLOSE reply: %v", err)
+	}
+	if ptype != fxpStatus {
+		t.Fatalf("CLOSE reply type = %d, want fxpStatus", ptype)
+	}
+	reader := &attrsPacketParser{buf: payload}
+	if _, err := reader.u32(); err != nil {
+		t.Fatalf("CLOSE reply id: %v", err)
+	}
+	code, err := reader.u32()
+	if err != nil {
+		t.Fatalf("CLOSE reply code: %v", err)
+	}
+	ch.buf.Reset()
+	return code
+}
+
+// TestHandleCloseConsumesHandleEvenWhenCloseFails pins CLOSE semantics
+// (draft-ietf-secsh-filexfer-02 §6.3): whatever status the reply carries,
+// the handle is released. The close failure must still be reported, but the
+// closed file must not keep occupying a maxOpenHandles slot until the
+// session ends, and a retried CLOSE must answer "invalid handle" instead of
+// re-running Close (auditFileClosed emits one event per opened file).
+func TestHandleCloseConsumesHandleEvenWhenCloseFails(t *testing.T) {
+	fs := &closeFailingFS{Backend: memory.New(), failClose: true}
+	ch := &attrsTestChannel{}
+	h := &sftpHandler{ch: ch, fsys: fs, handles: map[string]any{}}
+
+	handle := openSFTPFile(t, h, ch, 1, "/a.txt")
+	if code := closeSFTPHandle(t, h, ch, 2, handle); code != fxFailure {
+		t.Fatalf("CLOSE reply code = %d, want fxFailure (the close failure must be reported)", code)
+	}
+	if _, still := h.handles[handle]; still {
+		t.Fatalf("failed CLOSE kept handle %q in the table: a closed file must not occupy a handle slot", handle)
+	}
+	if code := closeSFTPHandle(t, h, ch, 3, handle); code != fxFailure {
+		t.Fatalf("retried CLOSE reply code = %d, want fxFailure (the consumed handle is unknown)", code)
+	}
+}
+
+// Control: a successful CLOSE still replies fxOK and consumes the handle.
+func TestHandleCloseConsumesHandleWhenCloseSucceeds(t *testing.T) {
+	fs := &closeFailingFS{Backend: memory.New()}
+	ch := &attrsTestChannel{}
+	h := &sftpHandler{ch: ch, fsys: fs, handles: map[string]any{}}
+
+	handle := openSFTPFile(t, h, ch, 1, "/b.txt")
+	if code := closeSFTPHandle(t, h, ch, 2, handle); code != fxOK {
+		t.Fatalf("CLOSE reply code = %d, want fxOK", code)
+	}
+	if _, still := h.handles[handle]; still {
+		t.Fatalf("successful CLOSE kept handle %q in the table", handle)
 	}
 }

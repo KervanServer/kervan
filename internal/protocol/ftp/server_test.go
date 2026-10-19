@@ -3037,10 +3037,13 @@ func TestFTPSiteChmodAppliesWhenPermitted(t *testing.T) {
 	}
 }
 
-// TestFTPMfmtSetsModificationTime drives MFMT end to end: a valid stamp must be
-// applied and reported, and the two malformed-input branches must be distinct.
+// TestFTPMfmtSetsModificationTime drives MFMT end to end: with the chmod
+// permission a valid stamp is applied and reported and the malformed-input
+// branches stay distinct; without it MFMT is refused like SITE CHMOD and
+// leaves the file untouched — timestamps are chmod-gated metadata (the SFTP
+// SETSTAT contract in internal/protocol/sftp/handler.go).
 func TestFTPMfmtSetsModificationTime(t *testing.T) {
-	cc, r, backend := loginOnDataPlane(t)
+	cc, r, backend := loginOnDataPlaneChmod(t)
 	seedBackendFile(t, backend, "/a.txt", "A")
 
 	if reply := ftpCmd(t, cc, r, "MFMT 20200102150405 /a.txt"); !strings.HasPrefix(reply, "213") {
@@ -3062,6 +3065,19 @@ func TestFTPMfmtSetsModificationTime(t *testing.T) {
 	// A well-formed request against a missing object -> 550.
 	if reply := ftpCmd(t, cc, r, "MFMT 20200102150405 /missing.txt"); !strings.HasPrefix(reply, "550") {
 		t.Fatalf("MFMT on a missing file = %q, want 550", reply)
+	}
+
+	// Without the chmod permission MFMT is refused like SITE CHMOD, and a
+	// refused stamp must not modify the file.
+	denied, rDenied, deniedBackend := loginOnDataPlane(t)
+	seedBackendFile(t, deniedBackend, "/denied.txt", "A")
+	if reply := ftpCmd(t, denied, rDenied, "MFMT 20200102150405 /denied.txt"); !strings.HasPrefix(reply, "550") {
+		t.Fatalf("MFMT without the chmod permission = %q, want 550", reply)
+	}
+	if info, err := deniedBackend.Stat("/denied.txt"); err != nil {
+		t.Fatalf("stat after refused MFMT: %v", err)
+	} else if info.ModTime().Equal(time.Date(2020, 1, 2, 15, 4, 5, 0, time.UTC)) {
+		t.Fatalf("refused MFMT still set mtime to %v; the file must be untouched", info.ModTime())
 	}
 }
 
