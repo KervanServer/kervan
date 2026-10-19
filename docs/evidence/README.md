@@ -46,6 +46,7 @@ sits under the already-tracked `docs/`, and it fights neither ignore rule.
 |---|---|
 | `store-stress-b2fe9f7.md` | 6,400 race-instrumented `internal/store` executions under 16× CPU load at `b2fe9f7`. |
 | `rounds-63-67-internal-store-ledger.md` | Ledger for the `internal/store` investigation, rounds 63–67: invariants, findings, and ruled-out candidates. |
+| `rounds-71-91-bughunt-session-ledger.md` | Ledger for the proof-driven hunt continuation, rounds 71–91: five fixed defects with proofs, ruled-out candidates, and full-repository coverage notes. |
 | `tool-use-dispatch-defect-snapshot.md` | Measured hash of the **tracked** `.wrongstack/tool_use_dispatch_defect.md`, anchoring runtime response time when memory records cannot be retired. |
 | `gates-e3ae28e.md` | All ten local `make check` steps exit 0 at `e3ae28e`, including `go test -race ./...`, plus the control run on its parent — and the first red result, shown to be foreign output in a shared `/tmp` log. |
 | `gates-4dc1efa.md` | `make check` and `make check-sqlite` exit 0 at `4dc1efa`, agreeing with the five hosted contexts on the same SHA. |

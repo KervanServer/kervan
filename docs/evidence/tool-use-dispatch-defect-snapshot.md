@@ -21,17 +21,17 @@ A file in version control is the durable substrate. This snapshot is that anchor
 
 ## Measurement
 
-Taken **2026-10-18 12:50:42 +0300**, on `master` at `eeb0593`:
+Taken **2026-10-19 13:15:10 +0300**, on `master` at `0074c4a`:
 
 ```console
 $ sha256sum .wrongstack/tool_use_dispatch_defect.md
-96dc9e5dab7d079b2ff4401eeafff8ed3d75866ab36905e971d9a0d8f3994a8d  .wrongstack/tool_use_dispatch_defect.md
+c061a52285f903f7c90f630b74e6376a389727400bbbfb97872f9ba6402ff8c5  .wrongstack/tool_use_dispatch_defect.md
 
 $ wc -l < .wrongstack/tool_use_dispatch_defect.md
 378
 ```
 
-- **Revision:** `a17e328cee0a889f2c70dcb09931176343052098` (`master`)
+- **Revision:** `0074c4a5c1f215f3aa79f2431226d431549edef6` (`master`)
 - **Lines:** 447, 14 `##` sections, trailing newline present
 
 ## What the report records
