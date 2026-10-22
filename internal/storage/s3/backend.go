@@ -158,10 +158,45 @@ func (b *Backend) Lstat(name string) (os.FileInfo, error) { return b.Stat(name) 
 func (b *Backend) Rename(oldname, newname string) error {
 	oldClean := clean(oldname)
 	newClean := clean(newname)
+	if oldClean == newClean {
+		return nil
+	}
 
 	info, err := b.Stat(oldClean)
 	if err != nil {
 		return err
+	}
+	if info.IsDir() && strings.HasPrefix(newClean, strings.TrimSuffix(oldClean, "/")+"/") {
+		return os.ErrInvalid
+	}
+	// Replacement is a file-only privilege (see UserVFS.Rename and the
+	// memory/local backends): a file may replace an existing file, and a
+	// directory may replace an empty directory; anything else must be
+	// rejected. Without this guard, a file rename onto a directory leaves an
+	// object at the exact key shadowing it (Stat reports a file, ReadDir
+	// fails, the children stranded), a directory rename onto a file strands
+	// the moved subtree behind the file object, and a directory rename onto
+	// a non-empty directory silently overwrites colliding destination keys.
+	dstInfo, dstErr := b.Stat(newClean)
+	switch {
+	case dstErr == nil:
+		if dstInfo.IsDir() != info.IsDir() {
+			if dstInfo.IsDir() {
+				return errors.New("cannot rename a file over a directory")
+			}
+			return errors.New("cannot rename a directory over a file")
+		}
+		if dstInfo.IsDir() {
+			entries, listErr := b.ReadDir(newClean)
+			if listErr != nil {
+				return listErr
+			}
+			if len(entries) > 0 {
+				return errors.New("directory not empty")
+			}
+		}
+	case !errors.Is(dstErr, os.ErrNotExist):
+		return dstErr
 	}
 	if info.IsDir() {
 		return b.renameDir(oldClean, newClean)
