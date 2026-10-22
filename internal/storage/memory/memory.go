@@ -104,6 +104,31 @@ func (b *Backend) Rename(oldname, newname string) error {
 	if n.isDir && strings.HasPrefix(newP, strings.TrimSuffix(oldP, "/")+"/") {
 		return os.ErrInvalid
 	}
+	// Replacement is a file-only privilege (see UserVFS.Rename): a file may
+	// replace an existing file, and a directory may replace an empty
+	// directory, mirroring rename(2) and the local backend. Anything else
+	// must fail: overwriting the destination's map entry here would leave
+	// the old destination subtree keyed under the destination path — orphaned
+	// yet still directly reachable, invisible to listings, and still counted
+	// by any quota.
+	if dst, exists := b.nodes[newP]; exists {
+		switch {
+		case dst.isDir && !n.isDir:
+			return errors.New("cannot rename a file over a directory")
+		case !dst.isDir && n.isDir:
+			return errors.New("cannot rename a directory over a file")
+		case dst.isDir && n.isDir:
+			prefix := newP
+			if prefix != "/" {
+				prefix += "/"
+			}
+			for k := range b.nodes {
+				if strings.HasPrefix(k, prefix) {
+					return errors.New("directory not empty")
+				}
+			}
+		}
+	}
 	if err := b.ensureParentLocked(path.Dir(newP)); err != nil {
 		return err
 	}
