@@ -21,20 +21,20 @@ A file in version control is the durable substrate. This snapshot is that anchor
 
 ## Measurement
 
-Taken **2026-10-22**, on `master` at `a01da78b46914455d76762f6f559174eb3819ab3`,
-working tree including the correction-manifest row update (**Eight**→**Nine**
-files, for `rounds-r02-r10-bughunt-session-ledger.md`). The previous
-measurement `c061a522…` at `0074c4a` is superseded:
+Taken **2026-10-22**, on `master` at `f048da0a60c73bb27c31a4dc021ed94e8bf160dd`,
+working tree including the correction-manifest row update (**Nine**→**Ten**
+files, for `rounds-r11-r15-bughunt-session-ledger.md`). The previous
+measurement `987b245d…` at `a01da78` is superseded:
 
 ```console
 $ sha256sum .wrongstack/tool_use_dispatch_defect.md
-987b245ddc055439eae47734fff6d825ce950a4d9b27da9dc4f450c5dafe8c29  .wrongstack/tool_use_dispatch_defect.md
+300dd274dc4fc21ddb0a2ab0e2793fda90f5e26af6cce545a2e2cb026eb8edc2  .wrongstack/tool_use_dispatch_defect.md
 
 $ wc -l < .wrongstack/tool_use_dispatch_defect.md
 447
 ```
 
-- **Revision:** `a01da78b46914455d76762f6f559174eb3819ab3` (`master`, working
+- **Revision:** `f048da0a60c73bb27c31a4dc021ed94e8bf160dd` (`master`, working
   tree with the manifest count-row update above)
 - **Lines:** 447, 14 `##` sections, trailing newline present
 
@@ -68,5 +68,6 @@ not evidence of delivery failure, nor of resolution.
 It records a **hash of an untracked, mutable file**, not a fix. It carries no
 evidence that any wrapper defect was corrected, and it will itself go stale the
 moment the report is edited. Re-measure rather than trusting this hash when the
-runtime team responds — four earlier hashes (`bccef328…`, `8f683514…`,
-`f712a610…`, `c061a522…`) have already been superseded by the value above.
+runtime team responds — five earlier hashes (`bccef328…`, `8f683514…`,
+`f712a610…`, `c061a522…`, `987b245d…`) have already been superseded by the
+value above.
