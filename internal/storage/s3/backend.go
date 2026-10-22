@@ -66,9 +66,9 @@ func (b *Backend) Open(name string, flags int, _ os.FileMode) (vfs.File, error) 
 		// Exclusive create is an atomic no-overwrite contract (POSIX
 		// open(2)): SFTP SSH_FXF_EXCL opens, FTP STOU and the API upload
 		// staging path rely on the backend refusing an existing path. This
-		// client cannot issue conditional PUTs, so the refusal is a
-		// pre-flight Stat; a racing writer can still win between this check
-		// and Close's PutObject.
+		// pre-flight Stat refuses paths that already exist; the handle then
+		// commits with a conditional PUT (see Close), so an object created
+		// while the handle is open still cannot be clobbered.
 		if _, err := b.Stat(name); err == nil {
 			return nil, os.ErrExist
 		} else if !errors.Is(err, os.ErrNotExist) {
@@ -112,6 +112,10 @@ func (b *Backend) Open(name string, flags int, _ os.FileMode) (vfs.File, error) 
 	if flags&os.O_APPEND != 0 {
 		_, _ = file.Seek(0, io.SeekEnd)
 	}
+	// Past the exclusive guard the path did not exist at open time; the
+	// handle commits conditionally so the no-overwrite contract also holds
+	// for objects created while the handle is open.
+	file.exclusive = flags&(os.O_CREATE|os.O_EXCL) == os.O_CREATE|os.O_EXCL
 	return file, nil
 }
 
@@ -612,8 +616,12 @@ type file struct {
 	size     int64
 	modTime  time.Time
 	writable bool
-	closed   bool
-	backend  *Backend
+	// exclusive marks an O_CREATE|O_EXCL handle: its Close must commit with
+	// a conditional PUT so an object created after the open's pre-flight
+	// Stat still cannot be clobbered.
+	exclusive bool
+	closed    bool
+	backend   *Backend
 }
 
 func (f *file) Read(p []byte) (int, error) {
@@ -686,10 +694,25 @@ func (f *file) Close() error {
 				f.size = info.Size()
 			}
 			ctx, cancel := f.backend.operationContext()
-			err := f.backend.client.PutObject(ctx, f.backend.bucket, f.key, f.handle, f.size, "application/octet-stream")
-			cancel()
-			if err != nil {
-				result = err
+			if f.exclusive {
+				// Commit conditionally: if another writer created the object
+				// between the open's pre-flight Stat and this upload, S3
+				// refuses with 412 and the exclusive-create contract survives
+				// the race instead of silently clobbering the winner.
+				err := f.backend.client.PutObjectIfNoneMatch(ctx, f.backend.bucket, f.key, f.handle, f.size, "application/octet-stream")
+				cancel()
+				switch {
+				case errors.Is(err, ErrPreconditionFailed):
+					result = os.ErrExist
+				case err != nil:
+					result = err
+				}
+			} else {
+				err := f.backend.client.PutObject(ctx, f.backend.bucket, f.key, f.handle, f.size, "application/octet-stream")
+				cancel()
+				if err != nil {
+					result = err
+				}
 			}
 		}
 	}

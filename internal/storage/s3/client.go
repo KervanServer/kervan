@@ -20,6 +20,7 @@ import (
 )
 
 var ErrNotFound = errors.New("s3 object not found")
+var ErrPreconditionFailed = errors.New("s3 precondition failed")
 
 const (
 	maxS3ListResponseBytes = 16 << 20
@@ -170,6 +171,41 @@ func (c *Client) PutObject(ctx context.Context, bucket, key string, body io.Read
 	return nil
 }
 
+// PutObjectIfNoneMatch uploads body to bucket/key but only when no object
+// exists at the key yet (If-None-Match: *). S3 evaluates the condition
+// atomically at commit time, so a concurrent writer that lands first turns
+// this into ErrPreconditionFailed instead of a silent overwrite — the
+// server-side half of the exclusive-create contract.
+func (c *Client) PutObjectIfNoneMatch(ctx context.Context, bucket, key string, body io.Reader, size int64, contentType string) error {
+	reader, cleanup, err := ensureReadSeeker(body)
+	if err != nil {
+		return err
+	}
+	defer cleanup()
+	payloadHash, err := sha256HexReader(reader)
+	if err != nil {
+		return err
+	}
+	if _, err := reader.Seek(0, io.SeekStart); err != nil {
+		return err
+	}
+	req, err := c.newObjectRequest(ctx, http.MethodPut, bucket, key, reader)
+	if err != nil {
+		return err
+	}
+	req.ContentLength = size
+	if contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	req.Header.Set("If-None-Match", "*")
+	resp, err := c.do(req, payloadHash)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	return nil
+}
+
 func (c *Client) DeleteObject(ctx context.Context, bucket, key string) error {
 	req, err := c.newObjectRequest(ctx, http.MethodDelete, bucket, key, nil)
 	if err != nil {
@@ -300,6 +336,8 @@ func (c *Client) do(req *http.Request, payloadHash string) (*http.Response, erro
 	switch resp.StatusCode {
 	case http.StatusNotFound:
 		return nil, ErrNotFound
+	case http.StatusPreconditionFailed:
+		return nil, ErrPreconditionFailed
 	default:
 		if len(body) == 0 {
 			return nil, fmt.Errorf("s3 request failed: %s", resp.Status)

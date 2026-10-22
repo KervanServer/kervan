@@ -54,6 +54,17 @@ func (f *fakeS3Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			f.handleCopy(w, bucket, key, copySource)
 			return
 		}
+		// Conditional writes: If-None-Match: * succeeds only when no object
+		// exists at the key, otherwise S3 answers 412 Precondition Failed.
+		if r.Header.Get("If-None-Match") == "*" {
+			f.mu.Lock()
+			_, exists := f.objects[bucket][key]
+			f.mu.Unlock()
+			if exists {
+				http.Error(w, "AtLeastOneOfThePreconditionsYouSpecifiedDidNotHold", http.StatusPreconditionFailed)
+				return
+			}
+		}
 		payload, _ := io.ReadAll(r.Body)
 		f.mu.Lock()
 		f.ensureBucket(bucket)
