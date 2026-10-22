@@ -342,7 +342,7 @@ record-by-record. Every "verified" column below was read from `origin/master` on
 | Record | Rev | Asserts | Verified state on `origin/master` |
 |---|---|---|---|
 | `01M541F2Z3XSWQ558T8K4VCT31` | 3 | `.wrongstack/*` is gitignored, so reports "are **not delivered to collaborators through Git**" | **False.** PR #25 (`a188d98`) tracks the report; it ships with the repo. `anchorVerified=2026-10-17` endorsed a claim two merges later falsified |
-| `01M55A34PFQFEZG77NXGR996C9` | 3 | `docs/evidence/` holds **six** files at `cca1376`; the report is **untracked**; `.wrongstack/` ignored except `project.json` | **Eight** files at `0074c4a` (`rounds-71-91-bughunt-session-ledger.md` added); report **tracked** since `a188d98`; only `project.json` **and** the report are negated |
+| `01M55A34PFQFEZG77NXGR996C9` | 3 | `docs/evidence/` holds **six** files at `cca1376`; the report is **untracked**; `.wrongstack/` ignored except `project.json` | **Nine** files after `a01da78` (`rounds-r02-r10-bughunt-session-ledger.md` added); report **tracked** since `a188d98`; only `project.json` **and** the report are negated |
 | `01M559MAQGW5SEQKVDXXFF8622` | 1 | `.wrongstack/` remains an ignored metadata location | **Partly false.** The report file is tracked; `memories/` and the rest stay ignored |
 | `01M55PAMBSA63HZQZTEMD6FN50` | 1 | the report "is **not repository-durable**" | **False** — it is tracked on `master` |
 | `01M566ZNZ6TXCE6GPTMANS8QG4` | 1 | pinned SHA-256 `9f1398f4` | **Superseded.** The report's current hash and line count are recorded in `docs/evidence/tool-use-dispatch-defect-snapshot.md`, **not here**: writing them into this file changes the file and invalidates them the instant the edit lands. Measure with `sha256sum` and `wc -l`. |

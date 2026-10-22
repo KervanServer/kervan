@@ -21,17 +21,21 @@ A file in version control is the durable substrate. This snapshot is that anchor
 
 ## Measurement
 
-Taken **2026-10-19 13:15:10 +0300**, on `master` at `0074c4a`:
+Taken **2026-10-22**, on `master` at `a01da78b46914455d76762f6f559174eb3819ab3`,
+working tree including the correction-manifest row update (**Eight**→**Nine**
+files, for `rounds-r02-r10-bughunt-session-ledger.md`). The previous
+measurement `c061a522…` at `0074c4a` is superseded:
 
 ```console
 $ sha256sum .wrongstack/tool_use_dispatch_defect.md
-c061a52285f903f7c90f630b74e6376a389727400bbbfb97872f9ba6402ff8c5  .wrongstack/tool_use_dispatch_defect.md
+987b245ddc055439eae47734fff6d825ce950a4d9b27da9dc4f450c5dafe8c29  .wrongstack/tool_use_dispatch_defect.md
 
 $ wc -l < .wrongstack/tool_use_dispatch_defect.md
-378
+447
 ```
 
-- **Revision:** `0074c4a5c1f215f3aa79f2431226d431549edef6` (`master`)
+- **Revision:** `a01da78b46914455d76762f6f559174eb3819ab3` (`master`, working
+  tree with the manifest count-row update above)
 - **Lines:** 447, 14 `##` sections, trailing newline present
 
 ## What the report records
@@ -64,5 +68,5 @@ not evidence of delivery failure, nor of resolution.
 It records a **hash of an untracked, mutable file**, not a fix. It carries no
 evidence that any wrapper defect was corrected, and it will itself go stale the
 moment the report is edited. Re-measure rather than trusting this hash when the
-runtime team responds — three earlier hashes (`bccef328…`, `8f683514…`,
-`f712a610…`) have already been superseded by the value above.
+runtime team responds — four earlier hashes (`bccef328…`, `8f683514…`,
+`f712a610…`, `c061a522…`) have already been superseded by the value above.
