@@ -249,10 +249,12 @@ func TestFileUploadSuccessLeavesNoTempFile(t *testing.T) {
 	if string(got) != "NEWCONTENT" {
 		t.Fatalf("control: successful upload left %q, want %q", string(got), "NEWCONTENT")
 	}
-	// The staging name for /f.txt is path.Join(path.Dir(p), uploadTempPrefix+base)
-	// = "/kervan-upload-f.txt".
-	if _, err := fsys.Stat("/kervan-upload-f.txt"); err == nil {
-		t.Fatalf("control: staging file %q survived a successful upload", "/kervan-upload-f.txt")
+	entries, err := fsys.ReadDir("/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "f.txt" {
+		t.Fatalf("control: unexpected files after upload: %v", entries)
 	}
 }
 

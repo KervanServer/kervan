@@ -1494,8 +1494,11 @@ func (s *Server) handleFilesUpload(w http.ResponseWriter, r *http.Request) {
 	// upload was rejected partway — a client disconnect, a quota rejection or a
 	// disk error left the target truncated to a partial prefix even though the
 	// handler answered 500 and accepted nothing.
-	tmpPath := path.Join(path.Dir(p), uploadTempPrefix+path.Base(p))
-	tmp, err := fsys.Open(tmpPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644)
+	// Each request owns its staging name: a fixed sibling name could truncate
+	// and then remove an unrelated user file. Keep the target extension so
+	// extension policies still apply, and refuse existing files where supported.
+	tmpPath := path.Join(path.Dir(p), uploadTempPrefix+rand.Text()+"-"+path.Base(p))
+	tmp, err := fsys.Open(tmpPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o644)
 	if err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 		return
