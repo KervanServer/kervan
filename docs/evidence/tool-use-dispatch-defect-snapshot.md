@@ -1,13 +1,16 @@
 # Snapshot — `.wrongstack/tool_use_dispatch_defect.md`
 
-Tracked measurement of an **untracked** defect report, so the runtime team's
+Tracked measurement of a mutable defect report, so the runtime team's
 response time is anchored even when memory records go stale.
 
 ## Why this record exists
 
-`.wrongstack/tool_use_dispatch_defect.md` is ignored by `.gitignore` (only
-`/.wrongstack/project.json` is negated), so it lives and dies with the working
-tree. The findings inside it are also held in project memory — and memory
+When this snapshot was created, `.wrongstack/tool_use_dispatch_defect.md`
+was ignored by `.gitignore` and lived and died with the working tree. It has
+been **git-tracked since `a188d98`** (alongside `/.wrongstack/project.json`),
+so it now ships with the repository — but it remains freely mutable, so the
+measured pins below stay necessary. The findings inside it are also held in
+project memory — and memory
 records proved unreliable as a durable record:
 
 - A `supersedes` link records a correction but does **not** deactivate the
@@ -65,7 +68,8 @@ not evidence of delivery failure, nor of resolution.
 
 ## What this snapshot does *not* show
 
-It records a **hash of an untracked, mutable file**, not a fix. It carries no
+It records a **hash of a mutable file** (git-tracked since `a188d98`, not
+stabilized by that), not a fix. It carries no
 evidence that any wrapper defect was corrected, and it will itself go stale the
 moment the report is edited. Re-measure rather than trusting this hash when the
 runtime team responds — five earlier hashes (`bccef328…`, `8f683514…`,
