@@ -376,10 +376,21 @@ func (b *Backend) ReadDir(name string) ([]fs.DirEntry, error) {
 	return entries, nil
 }
 
-func (b *Backend) Symlink(_, _ string) error           { return errors.New("not supported") }
-func (b *Backend) Readlink(_ string) (string, error)   { return "", errors.New("not supported") }
-func (b *Backend) Chmod(_ string, _ os.FileMode) error { return nil }
-func (b *Backend) Chown(_ string, _, _ int) error      { return nil }
+func (b *Backend) Symlink(_, _ string) error         { return errors.New("not supported") }
+func (b *Backend) Readlink(_ string) (string, error) { return "", errors.New("not supported") }
+func (b *Backend) Chmod(name string, _ os.FileMode) error {
+	cleanName := clean(name)
+	if _, err := b.Stat(cleanName); err != nil {
+		return err
+	}
+	// S3 objects carry no POSIX mode bits — every Stat, listing and SFTP
+	// attrs reply reports 0o644 no matter what. Refuse instead of reporting
+	// a success the next read contradicts: FTP SITE CHMOD then answers 550
+	// and SFTP SETSTAT applies its documented OK-with-skip policy
+	// (isHardSetstatError only fails on os.ErrNotExist).
+	return errors.New("s3 backend cannot change permissions")
+}
+func (b *Backend) Chown(_ string, _, _ int) error { return nil }
 func (b *Backend) Chtimes(name string, _, _ time.Time) error {
 	cleanName := clean(name)
 	if _, err := b.Stat(cleanName); err != nil {
