@@ -10,6 +10,7 @@ import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
 import { Skeleton } from "@/components/ui/skeleton"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
+import { formatBytes } from "@/lib/format"
 
 type Props = { token: string }
 
@@ -98,9 +99,9 @@ export function MonitoringPage({ token }: Props) {
                 <MetricCard label="Disabled Users" value={formatNumber(metrics.kervan_users_disabled_total)} />
                 <MetricCard label="Locked Accounts" value={formatNumber(metrics.kervan_auth_locked_accounts)} />
                 <MetricCard label="Goroutines" value={formatNumber(metrics.kervan_goroutines)} />
-                <MetricCard label="Uploaded" value={formatBytes(metrics.kervan_transfer_upload_bytes_total)} />
-                <MetricCard label="Downloaded" value={formatBytes(metrics.kervan_transfer_download_bytes_total)} />
-                <MetricCard label="Heap Memory" value={formatBytes(metrics.kervan_memory_bytes)} />
+                <MetricCard label="Uploaded" value={metricBytes(metrics.kervan_transfer_upload_bytes_total)} />
+                <MetricCard label="Downloaded" value={metricBytes(metrics.kervan_transfer_download_bytes_total)} />
+                <MetricCard label="Heap Memory" value={metricBytes(metrics.kervan_memory_bytes)} />
                 <MetricCard label="Transfers (Total)" value={formatNumber(metrics.kervan_transfers_total)} />
                 <MetricCard label="Transfers (Failed)" value={formatNumber(metrics.kervan_transfers_failed_total)} />
               </div>
@@ -182,18 +183,10 @@ function formatNumber(value: unknown): string {
   return Math.round(value).toLocaleString()
 }
 
-function formatBytes(value: unknown): string {
-  if (typeof value !== "number" || value <= 0 || Number.isNaN(value)) {
-    return "0 B"
-  }
-  const units = ["B", "KB", "MB", "GB", "TB"]
-  let idx = 0
-  let current = value
-  while (current >= 1024 && idx < units.length - 1) {
-    current /= 1024
-    idx++
-  }
-  return `${current.toFixed(current >= 10 || idx === 0 ? 0 : 1)} ${units[idx]}`
+// Metrics arrive as untyped values; lib formatBytes renders non-positive or
+// non-numeric input as "0 B", so only the number check is needed here.
+function metricBytes(value: unknown): string {
+  return formatBytes(typeof value === "number" ? value : 0)
 }
 
 function stringValue(value: unknown, fallback = "n/a"): string {

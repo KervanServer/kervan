@@ -1,6 +1,9 @@
 const BYTE_UNITS = ["B", "KB", "MB", "GB", "TB"]
 
 export function formatBytes(value: number): string {
+  if (Number.isNaN(value) || value <= 0) {
+    return "0 B"
+  }
   let current = value
   let idx = 0
   while (current >= 1024 && idx < BYTE_UNITS.length - 1) {

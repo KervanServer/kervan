@@ -16,14 +16,7 @@ vi.mock("@/lib/api", () => ({
   },
 }))
 
-vi.mock("@/lib/use-live-snapshot", () => ({
-  useLiveSnapshot: vi.fn(),
-}))
-
-import { useLiveSnapshot } from "@/lib/use-live-snapshot"
-
 const mockedAPI = vi.mocked(api)
-const mockedUseLiveSnapshot = vi.mocked(useLiveSnapshot)
 
 describe("TwoFactorCard", () => {
   beforeEach(() => {
@@ -53,11 +46,6 @@ describe("TwoFactorCard", () => {
     })
     mockedAPI.totpDisable.mockResolvedValue({
       disabled: true,
-    })
-    mockedUseLiveSnapshot.mockReturnValue({
-      snapshot: null,
-      connected: true,
-      error: null,
     })
   })
   it("prepares and enables totp setup", async () => {
