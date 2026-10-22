@@ -47,6 +47,9 @@ func (b *Backend) Open(name string, flags int, perm os.FileMode) (vfs.File, erro
 	defer b.mu.Unlock()
 
 	n, ok := b.nodes[p]
+	if ok && flags&(os.O_CREATE|os.O_EXCL) == os.O_CREATE|os.O_EXCL {
+		return nil, os.ErrExist
+	}
 	if !ok {
 		if flags&os.O_CREATE == 0 {
 			return nil, os.ErrNotExist
