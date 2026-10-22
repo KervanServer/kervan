@@ -62,6 +62,19 @@ func New(opts Options) (*Backend, error) {
 
 func (b *Backend) Open(name string, flags int, _ os.FileMode) (vfs.File, error) {
 	key := b.s3Key(name)
+	if flags&(os.O_CREATE|os.O_EXCL) == os.O_CREATE|os.O_EXCL {
+		// Exclusive create is an atomic no-overwrite contract (POSIX
+		// open(2)): SFTP SSH_FXF_EXCL opens, FTP STOU and the API upload
+		// staging path rely on the backend refusing an existing path. This
+		// client cannot issue conditional PUTs, so the refusal is a
+		// pre-flight Stat; a racing writer can still win between this check
+		// and Close's PutObject.
+		if _, err := b.Stat(name); err == nil {
+			return nil, os.ErrExist
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+	}
 	writeMode := flags&(os.O_WRONLY|os.O_RDWR|os.O_CREATE|os.O_TRUNC|os.O_APPEND) != 0
 	if !writeMode {
 		file, err := b.openTempFile(name, key, false)
