@@ -201,8 +201,10 @@ func (b *Backend) MkdirAll(name string, perm os.FileMode) error {
 		} else {
 			cur = cur + "/" + part
 		}
-		if _, ok := b.nodes[cur]; !ok {
+		if n, ok := b.nodes[cur]; !ok {
 			b.nodes[cur] = &node{name: part, isDir: true, mode: perm | fs.ModeDir, modTime: time.Now().UTC()}
+		} else if !n.isDir {
+			return errors.New("path component is not a directory")
 		}
 	}
 	return nil
