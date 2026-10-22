@@ -98,8 +98,29 @@ func (b *Backend) Rename(oldname, newname string) error {
 	if !ok {
 		return os.ErrNotExist
 	}
+	if oldP == newP {
+		return nil
+	}
+	if n.isDir && strings.HasPrefix(newP, strings.TrimSuffix(oldP, "/")+"/") {
+		return os.ErrInvalid
+	}
 	if err := b.ensureParentLocked(path.Dir(newP)); err != nil {
 		return err
+	}
+	if n.isDir {
+		// Move descendants as well as the directory node. Stage the new keys
+		// separately so iterating nodes cannot revisit newly inserted entries.
+		moved := make(map[string]*node)
+		prefix := oldP + "/"
+		for p, child := range b.nodes {
+			if strings.HasPrefix(p, prefix) {
+				moved[path.Join(newP, strings.TrimPrefix(p, prefix))] = child
+				delete(b.nodes, p)
+			}
+		}
+		for p, child := range moved {
+			b.nodes[p] = child
+		}
 	}
 	delete(b.nodes, oldP)
 	n.name = path.Base(newP)
