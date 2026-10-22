@@ -376,11 +376,23 @@ func (b *Backend) ReadDir(name string) ([]fs.DirEntry, error) {
 	return entries, nil
 }
 
-func (b *Backend) Symlink(_, _ string) error              { return errors.New("not supported") }
-func (b *Backend) Readlink(_ string) (string, error)      { return "", errors.New("not supported") }
-func (b *Backend) Chmod(_ string, _ os.FileMode) error    { return nil }
-func (b *Backend) Chown(_ string, _, _ int) error         { return nil }
-func (b *Backend) Chtimes(_ string, _, _ time.Time) error { return nil }
+func (b *Backend) Symlink(_, _ string) error           { return errors.New("not supported") }
+func (b *Backend) Readlink(_ string) (string, error)   { return "", errors.New("not supported") }
+func (b *Backend) Chmod(_ string, _ os.FileMode) error { return nil }
+func (b *Backend) Chown(_ string, _, _ int) error      { return nil }
+func (b *Backend) Chtimes(name string, _, _ time.Time) error {
+	cleanName := clean(name)
+	if _, err := b.Stat(cleanName); err != nil {
+		return err
+	}
+	// S3 objects cannot carry an arbitrary modification time: Last-Modified
+	// is server-managed and no S3 operation can set it. Refuse instead of
+	// reporting a success a later read contradicts: FTP MFMT then answers
+	// 550, SFTP SETSTAT applies its documented OK-with-skip policy
+	// (isHardSetstatError only fails on os.ErrNotExist), and SCP keeps
+	// treating times as best-effort.
+	return errors.New("s3 backend cannot set modification times")
+}
 
 func (b *Backend) Statvfs(_ string) (*vfs.StatVFS, error) {
 	return &vfs.StatVFS{
