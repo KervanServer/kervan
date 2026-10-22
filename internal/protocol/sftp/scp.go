@@ -543,6 +543,14 @@ func parseSCPRecord(header string, kind byte) (mode uint32, size int64, name str
 	if err != nil {
 		return 0, 0, "", errors.New("invalid file mode")
 	}
+	// Keep only the permission bits. Real scp clients send 4-digit octal
+	// modes (<= 0o7777); a crafted longer value lands on Go's special
+	// FileMode bits (0o40000000 = ModeSetuid, 0o20000000 = ModeSetgid,
+	// 0o10000000 = ModeSocket, ...), which a privileged local deployment
+	// would plant on disk and the memory backend stores verbatim. The
+	// SFTP SETSTAT path masks too (handler.go), and OpenSSH's server
+	// applies create-modes as permission bits only.
+	m &= 0o777
 	sz, err := strconv.ParseInt(parts[1], 10, 64)
 	if err != nil || sz < 0 {
 		return 0, 0, "", errors.New("invalid file size")

@@ -520,3 +520,82 @@ func TestSCPSourceEmitsWellFramedOrdinaryDirectoryName(t *testing.T) {
 		t.Fatalf("control: expected an E record to close the directory, got %q", end)
 	}
 }
+
+// TestSCPSinkModeIsPermissionBitsOnly pins the create-mode contract: an
+// SCP record's octal mode must be reduced to its permission bits before
+// it reaches the backend. Crafted longer values land on Go's special
+// FileMode bits (0o40000000=ModeSetuid, 0o20000000=ModeSetgid,
+// 0o10000000=ModeSocket, ...), which a privileged local deployment would
+// plant on disk and the memory backend persists verbatim; the SFTP
+// SETSTAT path masks too, and OpenSSH's server applies create-modes as
+// permission bits only.
+func TestSCPSinkModeIsPermissionBitsOnly(t *testing.T) {
+	for _, raw := range []string{
+		"C40000000 5 u.txt",
+		"C20000000 5 g.txt",
+		"C10000000 5 s.txt",
+		"C4755 5 x.txt",
+	} {
+		mode, _, _, err := parseSCPRecord(raw, 'C')
+		if err != nil {
+			t.Fatalf("%s: parse error: %v", raw, err)
+		}
+		if mode&^0o777 != 0 {
+			t.Fatalf("%s: parsed mode %o carries bits beyond the permission bits", raw, mode)
+		}
+	}
+	if mode, _, _, err := parseSCPRecord("C0644 5 file.txt", 'C'); err != nil || mode != 0o644 {
+		t.Fatalf("control: ordinary mode must pass through unchanged: mode=%o err=%v", mode, err)
+	}
+
+	// Sink level: the stored file itself must not carry special bits.
+	fsys := memory.New()
+	srv := NewServer(Config{}, nil, nil, nil, nil, nil, nil)
+	serverConn, clientConn := net.Pipe()
+	t.Cleanup(func() {
+		_ = serverConn.Close()
+		_ = clientConn.Close()
+	})
+	go func() {
+		_ = srv.runSCPSink(pipeSCPChannel{Conn: serverConn}, fsys, "/", false, "alice", "remote", func() {})
+		_ = serverConn.Close()
+	}()
+	readAck := func() byte {
+		t.Helper()
+		if err := clientConn.SetReadDeadline(time.Now().Add(3 * time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		var b [1]byte
+		if _, err := io.ReadFull(clientConn, b[:]); err != nil {
+			t.Fatalf("read ack: %v", err)
+		}
+		return b[0]
+	}
+	write := func(s string) {
+		t.Helper()
+		if err := clientConn.SetWriteDeadline(time.Now().Add(3 * time.Second)); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := clientConn.Write([]byte(s)); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+	if readAck() != 0 {
+		t.Fatal("initial sink ack != 0")
+	}
+	write("C40000000 5 u.txt\n")
+	if readAck() != 0 {
+		t.Fatal("header ack != 0")
+	}
+	write("world\x00")
+	if readAck() != 0 {
+		t.Fatal("file ack != 0")
+	}
+	info, err := fsys.Stat("/u.txt")
+	if err != nil {
+		t.Fatalf("uploaded file missing: %v", err)
+	}
+	if info.Mode()&^0o777 != 0 {
+		t.Fatalf("uploaded file carries bits beyond permissions: mode %v", info.Mode())
+	}
+}
